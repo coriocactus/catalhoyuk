@@ -18,8 +18,9 @@ export CLICOLOR=1
 PS1='%B%F{white}%n@%m%b:%f%F{049}%~%f%F{white}$ %f'
 
 path=(
-  /opt/homebrew/bin(N-/)
-  /opt/homebrew/sbin(N-/)
+  ${${:-$(uname) == "Darwin" \
+    ? "/opt/homebrew/bin(N-/) /opt/homebrew/sbin(N-/)" \
+    : "/home/linuxbrew/.linuxbrew/bin(N-/) /home/linuxbrew/.linuxbrew/sbin(N-/)"}/os}
   $HOME/.local/bin(N-/)
   $HOME/.ghcup/bin(N-/)
   $path
