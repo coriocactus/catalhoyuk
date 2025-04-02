@@ -2,17 +2,17 @@
 
 set nocompatible
 
-let VIM_DIR = $HOME . "/.vim"
-let BACKUP_DIR = $HOME . "/.vim/backup"
-let SWAP_DIR = $HOME . "/.vim/swap"
-let UNDO_DIR = $HOME . "/.vim/undo"
-if !isdirectory(VIM_DIR) | call mkdir(VIM_DIR, "", 0770) | endif
-if !isdirectory(SWAP_DIR) | call mkdir(SWAP_DIR, "", 0700) | endif
-if !isdirectory(UNDO_DIR) | call mkdir(UNDO_DIR, "", 0700) | endif
-if !isdirectory(BACKUP_DIR) | call mkdir(BACKUP_DIR, "", 0700) | endif
-execute "set directory=" . SWAP_DIR . "//"
-execute "set undodir=" . UNDO_DIR . "//"
-execute "set backupdir=" . BACKUP_DIR . "//"
+let VIM_DIR = $HOME . '/.vim'
+let BACKUP_DIR = $HOME . '/.vim/backup'
+let SWAP_DIR = $HOME . '/.vim/swap'
+let UNDO_DIR = $HOME . '/.vim/undo'
+if !isdirectory(VIM_DIR) | call mkdir(VIM_DIR, '', 0770) | endif
+if !isdirectory(SWAP_DIR) | call mkdir(SWAP_DIR, '', 0700) | endif
+if !isdirectory(UNDO_DIR) | call mkdir(UNDO_DIR, '', 0700) | endif
+if !isdirectory(BACKUP_DIR) | call mkdir(BACKUP_DIR, '', 0700) | endif
+execute 'set directory=' . SWAP_DIR . '//'
+execute 'set undodir=' . UNDO_DIR . '//'
+execute 'set backupdir=' . BACKUP_DIR . '//'
 set swapfile
 set undofile
 set backup
@@ -66,25 +66,29 @@ nnoremap <leader>p "+p
 nnoremap <leader>s :%s/\<<C-r><C-w>\>/<C-r><C-w>/gI<Left><Left><Left>
 nnoremap <silent> <leader>x <cmd>!chmod +x %<CR>
 
-function! TooLong(...)
+function! SensibleLineWidth(...)
     let l:max_length = a:0 >= 1 ? a:1 : 80
     let @/ = '\%>' . l:max_length . 'v.\+'
     if search(@/, 'n') > 0
         normal! n
     else
-        echo "No lines longer than " . l:max_length . " characters."
+        echo 'No lines longer than ' . l:max_length . ' characters.'
     endif
 endfunction
-command! -nargs=? TooLong call TooLong(<args>)
-nnoremap <leader>t :TooLong<CR>
+command! -nargs=? SensibleLineWidth call SensibleLineWidth(<args>)
 
-function! NoWhites()
+function! TrimTrailingWhitespace()
     let l:save = winsaveview()
     %s/\s\+$//ge
     call winrestview(l:save)
 endfunction
-command! NoWhites call NoWhites()
-nnoremap <leader>w :NoWhites<CR>
+command! TrimTrailingWhitespace call TrimTrailingWhitespace()
+nnoremap <leader>w :TrimTrailingWhitespace<CR>
+
+let g:temp_dir = $HOME . '/.vim/tmp'
+if !isdirectory(g:temp_dir) | call mkdir(g:temp_dir, '', 0700) | endif
+com! TempTab exe 'tabe ' . g:temp_dir . '/' . strftime('%Y%m%d%H%M%S') . '.md'
+nnoremap <leader>t :TempTab<CR>
 
 call plug#begin()
 Plug 'sheerun/vim-polyglot'
@@ -113,7 +117,7 @@ if empty(glob(VIM_DIR . '/autoload/plug.vim'))
                 \ . 'junegunn/vim-plug/master/plug.vim'
 endif
 
-autocmd VimEnter * 
+autocmd VimEnter *
             \ if len(filter(values(g:plugs), '!isdirectory(v:val.dir)')) |
             \   PlugInstall --sync |
             \   source $MYVIMRC |
@@ -145,6 +149,7 @@ augroup END
 
 nmap <silent> [g :ALENext<CR>
 nmap <silent> ]g :ALEPrevious<CR>
+let g:python_recommended_style = 0
 let g:ale_fixers = {'python': ['ruff']}
 let g:ale_linters = {
             \ 'python': [
@@ -165,8 +170,8 @@ let g:ale_linters = {
 
 command! -bang -nargs=* Rg
             \ call fzf#vim#grep(
-            \   "rg --column --line-number --no-heading "
-            \   . "--color=always --smart-case "
+            \   'rg --column --line-number --no-heading '
+            \   . '--color=always --smart-case '
             \   . shellescape(<q-args>),
             \   2,
             \   {
@@ -201,7 +206,5 @@ autocmd VimLeave *
             \   . "$(echo $SHELL | awk -F '/' '{print $NF}')"
             \ )
 
-let s:ssh_config = expand('~/.vimrc-ssh')                                                                                                                                                                  
-if filereadable(s:ssh_config)                                                                                                                                                                                        
-    execute 'source ' . s:ssh_config                                                                                                                                                                                 
-endif
+let s:ssh_config = expand('~/.vimrc-ssh')
+if filereadable(s:ssh_config) | execute 'source ' . s:ssh_config | endif
