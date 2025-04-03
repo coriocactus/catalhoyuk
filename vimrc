@@ -89,6 +89,8 @@ let g:temp_dir = $HOME . '/.vim/tmp'
 if !isdirectory(g:temp_dir) | call mkdir(g:temp_dir, '', 0700) | endif
 com! TempTab exe 'tabe ' . g:temp_dir . '/' . strftime('%Y%m%d%H%M%S') . '.md'
 nnoremap <leader>t :TempTab<CR>
+nnoremap <leader><Tab> :tabnext<CR>
+nnoremap <leader><S-Tab> :tabprevious<CR>
 
 call plug#begin()
 Plug 'sheerun/vim-polyglot'
@@ -105,7 +107,7 @@ Plug 'markonm/traces.vim'
 Plug 'yggdroot/indentline'
 Plug 'tpope/vim-fugitive'
 Plug 'github/copilot.vim'
-Plug 'joshwongcc/claudia.vim'
+Plug 'coriocactus/claudia.vim'
 Plug 'ojroques/vim-oscyank', {'branch': 'main'}
 call plug#end()
 
