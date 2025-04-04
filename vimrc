@@ -87,10 +87,8 @@ nnoremap <leader>w :TrimTrailingWhitespace<CR>
 
 let g:temp_dir = $HOME . '/.vim/tmp'
 if !isdirectory(g:temp_dir) | call mkdir(g:temp_dir, '', 0700) | endif
-com! TempTab exe 'tabe ' . g:temp_dir . '/' . strftime('%Y%m%d%H%M%S') . '.md'
-nnoremap <leader>t :TempTab<CR>
-nnoremap <leader><Tab> :tabnext<CR>
-nnoremap <leader><S-Tab> :tabprevious<CR>
+com! TempBuf exe 'enew | set filetype=markdown | file ' . g:temp_dir . '/' . strftime('%Y%m%d%H%M%S') . '.md'
+nnoremap <leader>t :TempBuf<CR>
 
 call plug#begin()
 Plug 'sheerun/vim-polyglot'
