@@ -1,5 +1,7 @@
+brew "agg"
 brew "ansible"
 brew "aria2"
+brew "asciinema"
 brew "awscli"
 brew "caddy"
 brew "curl"

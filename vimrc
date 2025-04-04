@@ -56,8 +56,8 @@ nnoremap J mzJ`z
 nnoremap n nzzzv
 nnoremap N Nzzzv
 
-vnoremap <leader>d "_d
-nnoremap <leader>d "_d
+vnoremap <leader>d "+d
+nnoremap <leader>d "+d
 vnoremap <leader>y "+y
 nnoremap <leader>y "+y
 vnoremap <leader>p "+p
@@ -210,3 +210,5 @@ autocmd VimLeave *
 
 let s:ssh_config = expand('~/.vimrc-ssh')
 if filereadable(s:ssh_config) | execute 'source ' . s:ssh_config | endif
+
+" let g:copilot_enabled = v:false
