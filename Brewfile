@@ -1,6 +1,9 @@
+tap "oven-sh/bun"
+
 brew "ansible"
 brew "aria2"
 brew "awscli"
+brew "bun"
 brew "caddy"
 brew "curl"
 brew "docker"
