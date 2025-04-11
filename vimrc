@@ -64,7 +64,6 @@ vnoremap <leader>p "+p
 nnoremap <leader>p "+p
 
 nnoremap <leader>s :%s/\<<C-r><C-w>\>/<C-r><C-w>/gI<Left><Left><Left>
-nnoremap <silent> <leader>x <cmd>!chmod +x %<CR>
 
 function! SensibleLineWidth(...)
     let l:max_length = a:0 >= 1 ? a:1 : 80
