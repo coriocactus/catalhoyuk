@@ -32,6 +32,7 @@ brew "vim"
 brew "wrk"
 brew "zsh"
 
+cask "basictex"
 cask "brave-browser"
 cask "ghostty"
 cask "orbstack"

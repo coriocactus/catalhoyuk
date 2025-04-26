@@ -189,7 +189,7 @@ nnoremap <leader>g :Git<CR>
 nnoremap <leader>u :UndotreeToggle<CR>
 let g:undotree_SetFocusWhenToggle = 1
 
-let g:indentLine_fileTypeExclude = ['json', 'markdown']
+let g:indentLine_fileTypeExclude = ['json', 'markdown', 'tex']
 
 autocmd VimEnter * if argc() == 0 | Explore | endif
 
