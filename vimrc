@@ -66,23 +66,49 @@ nnoremap <leader>p "+p
 nnoremap <leader>s :%s/\<<C-r><C-w>\>/<C-r><C-w>/gI<Left><Left><Left>
 
 function! SensibleLineWidth(...)
-    let l:max_length = a:0 >= 1 ? a:1 : 80
-    let @/ = '\%>' . l:max_length . 'v.\+'
-    if search(@/, 'n') > 0
-        normal! n
-    else
-        echo 'No lines longer than ' . l:max_length . ' characters.'
-    endif
+  let l:max_length = a:0 >= 1 ? a:1 : 80
+  let @/ = '\%>' . l:max_length . 'v.\+'
+  if search(@/, 'n') > 0
+    normal! n
+  else
+    echo 'No lines longer than ' . l:max_length . ' characters.'
+  endif
 endfunction
 command! -nargs=? SensibleLineWidth call SensibleLineWidth(<args>)
 
 function! TrimTrailingWhitespace()
-    let l:save = winsaveview()
-    %s/\s\+$//ge
-    call winrestview(l:save)
+  let l:save = winsaveview()
+  %s/\s\+$//ge
+  call winrestview(l:save)
 endfunction
 command! TrimTrailingWhitespace call TrimTrailingWhitespace()
 nnoremap <leader>w :TrimTrailingWhitespace<CR>
+
+function! VisualSearch(direction) abort
+  let save_reg = getreg('"')
+  let save_type = getregtype('"')
+  try
+    silent normal! gv"sy
+    let lines_list = getreg('s', 1, 1)
+    if empty(lines_list) || (len(lines_list) == 1 && empty(lines_list[0]))
+      let raw_pattern_check = getreg('s')
+      if empty(raw_pattern_check)
+        echohl WarningMsg | echo "Visual selection is empty." | echohl None
+        call setreg('"', save_reg, save_type)
+        return
+      endif
+    endif
+    let pattern = join(lines_list, "\n")
+    let escaped_pattern = '\V' . escape(pattern, '\' . a:direction)
+    call setreg('/', escaped_pattern)
+    set hlsearch
+    call feedkeys(a:direction . "\<CR>", 'nt')
+  finally
+    call setreg('"', save_reg, save_type)
+  endtry
+endfunction
+vnoremap <silent> <leader>* :<C-U>call VisualSearch('/')<CR>
+vnoremap <silent> <leader># :<C-U>call VisualSearch('?')<CR>
 
 let g:temp_dir = $HOME . '/.vim/tmp'
 if !isdirectory(g:temp_dir) | call mkdir(g:temp_dir, '', 0700) | endif
@@ -109,41 +135,41 @@ Plug 'ojroques/vim-oscyank', {'branch': 'main'}
 call plug#end()
 
 if empty(glob(VIM_DIR . '/autoload/plug.vim'))
-    silent execute '!curl -fLo '
-                \ . VIM_DIR
-                \ . '/autoload/plug.vim --create-dirs '
-                \ . 'https://raw.githubusercontent.com/'
-                \ . 'junegunn/vim-plug/master/plug.vim'
+  silent execute '!curl -fLo '
+        \ . VIM_DIR
+        \ . '/autoload/plug.vim --create-dirs '
+        \ . 'https://raw.githubusercontent.com/'
+        \ . 'junegunn/vim-plug/master/plug.vim'
 endif
 
 autocmd VimEnter *
-            \ if len(filter(values(g:plugs), '!isdirectory(v:val.dir)')) |
-            \   PlugInstall --sync |
-            \   source $MYVIMRC |
-            \ endif
+      \ if len(filter(values(g:plugs), '!isdirectory(v:val.dir)')) |
+      \   PlugInstall --sync |
+      \   source $MYVIMRC |
+      \ endif
 
 function! s:on_lsp_buffer_enabled() abort
-    setlocal omnifunc=lsp#complete
-    setlocal signcolumn=yes
-    if exists('+tagfunc') | setlocal tagfunc=lsp#tagfunc | endif
-    nmap <buffer> gd <plug>(lsp-definition)
-    nmap <buffer> gs <plug>(lsp-document-symbol-search)
-    nmap <buffer> gS <plug>(lsp-workspace-symbol-search)
-    nmap <buffer> gr <plug>(lsp-references)
-    nmap <buffer> gi <plug>(lsp-implementation)
-    nmap <buffer> gt <plug>(lsp-type-definition)
-    nmap <buffer> <leader>rn <plug>(lsp-rename)
-    nmap <buffer> <leader>d <plug>(lsp-document-diagnostics)
-    nmap <buffer> K <plug>(lsp-hover)
-    nnoremap <buffer> <expr><c-n> lsp#scroll(+4)
-    nnoremap <buffer> <expr><c-p> lsp#scroll(-4)
-    let g:lsp_format_sync_timeout = 1000
-    autocmd! BufWritePre *.rs,*.go call execute('LspDocumentFormatSync')
+  setlocal omnifunc=lsp#complete
+  setlocal signcolumn=yes
+  if exists('+tagfunc') | setlocal tagfunc=lsp#tagfunc | endif
+  nmap <buffer> gd <plug>(lsp-definition)
+  nmap <buffer> gs <plug>(lsp-document-symbol-search)
+  nmap <buffer> gS <plug>(lsp-workspace-symbol-search)
+  nmap <buffer> gr <plug>(lsp-references)
+  nmap <buffer> gi <plug>(lsp-implementation)
+  nmap <buffer> gt <plug>(lsp-type-definition)
+  nmap <buffer> <leader>rn <plug>(lsp-rename)
+  nmap <buffer> <leader>d <plug>(lsp-document-diagnostics)
+  nmap <buffer> K <plug>(lsp-hover)
+  nnoremap <buffer> <expr><c-n> lsp#scroll(+4)
+  nnoremap <buffer> <expr><c-p> lsp#scroll(-4)
+  let g:lsp_format_sync_timeout = 1000
+  autocmd! BufWritePre *.rs,*.go call execute('LspDocumentFormatSync')
 endfunction
 
 augroup lsp_install
-    au!
-    autocmd User lsp_buffer_enabled call s:on_lsp_buffer_enabled()
+  au!
+  autocmd User lsp_buffer_enabled call s:on_lsp_buffer_enabled()
 augroup END
 
 nmap <silent> [g :ALENext<CR>
@@ -151,33 +177,33 @@ nmap <silent> ]g :ALEPrevious<CR>
 let g:python_recommended_style = 0
 let g:ale_fixers = {'python': ['ruff']}
 let g:ale_linters = {
-            \ 'python': [
-            \   'ruff'
-            \ ],
-            \ 'haskell': [
-            \   'cabal_ghc',
-            \   'cspell',
-            \   'ghc_mod',
-            \   'hdevtools',
-            \   'hie',
-            \   'hlint',
-            \   'hls',
-            \   'stack_build',
-            \   'stack_ghc'
-            \ ],
-            \ }
+      \ 'python': [
+      \   'ruff'
+      \ ],
+      \ 'haskell': [
+      \   'cabal_ghc',
+      \   'cspell',
+      \   'ghc_mod',
+      \   'hdevtools',
+      \   'hie',
+      \   'hlint',
+      \   'hls',
+      \   'stack_build',
+      \   'stack_ghc'
+      \ ],
+      \ }
 
 command! -bang -nargs=* Rg
-            \ call fzf#vim#grep(
-            \   'rg --column --line-number --no-heading '
-            \   . '--color=always --smart-case '
-            \   . shellescape(<q-args>),
-            \   2,
-            \   {
-            \     'options': '--delimiter : --nth 4..'
-            \   },
-            \   <bang>0
-            \ )
+      \ call fzf#vim#grep(
+      \   'rg --column --line-number --no-heading '
+      \   . '--color=always --smart-case '
+      \   . shellescape(<q-args>),
+      \   2,
+      \   {
+      \     'options': '--delimiter : --nth 4..'
+      \   },
+      \   <bang>0
+      \ )
 
 nnoremap <leader>r :Rg<CR>
 nnoremap <leader>f :Files<CR>
@@ -194,16 +220,16 @@ let g:indentLine_fileTypeExclude = ['json', 'markdown', 'tex']
 autocmd VimEnter * if argc() == 0 | Explore | endif
 
 autocmd BufReadPost,FileReadPost,BufNewFile,BufEnter,FocusGained *
-            \ call system(
-            \   'tmux rename-window '
-            \   . expand('%:t')
-            \ )
+      \ call system(
+      \   'tmux rename-window '
+      \   . expand('%:t')
+      \ )
 
 autocmd VimLeave *
-            \ silent call system(
-            \   "tmux rename-window "
-            \   . "$(echo $SHELL | awk -F '/' '{print $NF}')"
-            \ )
+      \ silent call system(
+      \   "tmux rename-window "
+      \   . "$(echo $SHELL | awk -F '/' '{print $NF}')"
+      \ )
 
 let s:ssh_config = expand('~/.vimrc-ssh')
 if filereadable(s:ssh_config) | execute 'source ' . s:ssh_config | endif
