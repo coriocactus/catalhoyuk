@@ -85,30 +85,38 @@ command! TrimTrailingWhitespace call TrimTrailingWhitespace()
 nnoremap <leader>w :TrimTrailingWhitespace<CR>
 
 function! VisualSearch(direction) abort
-  let save_reg = getreg('"')
-  let save_type = getregtype('"')
+  let save_unnamed_reg = getreg('"')
+  let save_unnamed_type = getregtype('"')
+  let save_search_reg = getreg('/')
+  let save_hlsearch = &hlsearch
+
   try
     silent normal! gv"sy
-    let lines_list = getreg('s', 1, 1)
-    if empty(lines_list) || (len(lines_list) == 1 && empty(lines_list[0]))
-      let raw_pattern_check = getreg('s')
-      if empty(raw_pattern_check)
-        echohl WarningMsg | echo "Visual selection is empty." | echohl None
-        call setreg('"', save_reg, save_type)
-        return
-      endif
+
+    let raw_pattern = getreg('s')
+
+    if empty(raw_pattern)
+      echohl WarningMsg | echo "Visual selection is empty." | echohl None
+      return
     endif
-    let pattern = join(lines_list, "\n")
-    let escaped_pattern = '\V' . escape(pattern, '\' . a:direction)
-    call setreg('/', escaped_pattern)
+
+    let escaped_pattern = escape(raw_pattern, '\' . a:direction)
+
+    let final_pattern = substitute(escaped_pattern, '\n', '\\_.', 'g')
+    let final_pattern = '\V' . final_pattern
+
+    " echom "Search Pattern: " . string(final_pattern)
+    call setreg('/', final_pattern)
     set hlsearch
-    call feedkeys(a:direction . "\<CR>", 'nt')
+
+    execute "normal!" a:direction . "\<Esc>"
+
   finally
-    call setreg('"', save_reg, save_type)
+    call setreg('"', save_unnamed_reg, save_unnamed_type)
   endtry
 endfunction
-vnoremap <silent> <leader>* :<C-U>call VisualSearch('/')<CR>
-vnoremap <silent> <leader># :<C-U>call VisualSearch('?')<CR>
+vnoremap <silent> * :<C-U>call VisualSearch('/')<CR>
+vnoremap <silent> # :<C-U>call VisualSearch('?')<CR>
 
 let g:temp_dir = $HOME . '/.vim/tmp'
 if !isdirectory(g:temp_dir) | call mkdir(g:temp_dir, '', 0700) | endif
