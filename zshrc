@@ -15,7 +15,7 @@ export VISUAL="$(which vim)"
 export EDITOR="$VISUAL"
 export CLICOLOR=1
 
-PS1='%B%F{white}%n@%m%b:%f%F{2}%~%f%F{white}$ %f'
+PS1='%B%F{15}%n@%m%b:%f%F{2}%~%f%F{15}$ %f'
 
 if [[ $(uname) == "Darwin" ]]; then
   path+=(
