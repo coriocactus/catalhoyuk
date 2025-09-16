@@ -21,6 +21,7 @@ if [[ $(uname) == "Darwin" ]]; then
   path+=(
     /opt/homebrew/bin(N-/)
     /opt/homebrew/sbin(N-/)
+    /opt/homebrew/opt/rustup/bin(N-/)
   )
 else
   path+=(
@@ -32,6 +33,7 @@ fi
 path=(
   $HOME/.local/bin(N-/)
   $HOME/.ghcup/bin(N-/)
+  $HOME/.cargo/bin(N-/)
   $path
 )
 
