@@ -175,31 +175,27 @@ function! s:on_lsp_buffer_enabled() abort
   autocmd! BufWritePre *.rs,*.go call execute('LspDocumentFormatSync')
 endfunction
 
+nmap <silent> [g :ALENext<CR>
+nmap <silent> ]g :ALEPrevious<CR>
+let g:python_recommended_style = 0
+
+" let g:lsp_settings_filetype_python = ['pyright-langserver']
+let g:lsp_settings_filetype_python = ['pylsp']
+let g:lsp_experimental_workspace_folders = 1
+let g:lsp_settings_filetype_rust = ['rust-analyzer', 'bacon-ls']
+let g:lsp_settings = {
+      \ 'rust-analyzer': {
+      \   'initialization_options': {
+      \     'checkOnSave': v:false,
+      \     'diagnostics': v:false,
+      \   }
+      \ },
+      \}
+
 augroup lsp_install
   au!
   autocmd User lsp_buffer_enabled call s:on_lsp_buffer_enabled()
 augroup END
-
-nmap <silent> [g :ALENext<CR>
-nmap <silent> ]g :ALEPrevious<CR>
-let g:python_recommended_style = 0
-let g:ale_fixers = {'python': ['ruff']}
-let g:ale_linters = {
-      \ 'python': [
-      \   'ruff'
-      \ ],
-      \ 'haskell': [
-      \   'cabal_ghc',
-      \   'cspell',
-      \   'ghc_mod',
-      \   'hdevtools',
-      \   'hie',
-      \   'hlint',
-      \   'hls',
-      \   'stack_build',
-      \   'stack_ghc'
-      \ ],
-      \ }
 
 command! -bang -nargs=* Rg
       \ call fzf#vim#grep(
@@ -241,5 +237,12 @@ autocmd VimLeave *
 
 let s:ssh_config = expand('~/.vimrc-ssh')
 if filereadable(s:ssh_config) | execute 'source ' . s:ssh_config | endif
+
+if &term =~ "screen\\|tmux"
+  let &t_BE = "\e[?2004h"
+  let &t_BD = "\e[?2004l"
+  exec "set t_PS=\e[200~"
+  exec "set t_PE=\e[201~"
+endif
 
 " let g:copilot_enabled = v:false
