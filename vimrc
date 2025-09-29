@@ -179,18 +179,8 @@ nmap <silent> [g :ALENext<CR>
 nmap <silent> ]g :ALEPrevious<CR>
 let g:python_recommended_style = 0
 
-" let g:lsp_settings_filetype_python = ['pyright-langserver']
 let g:lsp_settings_filetype_python = ['pylsp']
-let g:lsp_experimental_workspace_folders = 1
-let g:lsp_settings_filetype_rust = ['rust-analyzer', 'bacon-ls']
-let g:lsp_settings = {
-      \ 'rust-analyzer': {
-      \   'initialization_options': {
-      \     'checkOnSave': v:false,
-      \     'diagnostics': v:false,
-      \   }
-      \ },
-      \}
+" let g:lsp_settings_filetype_python = ['pyright-langserver']
 
 augroup lsp_install
   au!
