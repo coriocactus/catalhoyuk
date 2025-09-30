@@ -1,4 +1,31 @@
-" .vimrc
+" =================================================================================================
+" ▬▬▬.◙.▬▬▬
+" ═▂▄▄▓▄▄▂
+" ◢◤ █▀▀████▄▄▄◢◤
+" █▄ █ █▄ ███▀▀▀▀▀▀╬
+" ◥█████◤
+" ══╩══╩═
+" ╬═╬
+" ╬═╬
+" ╬═╬
+" ╬═╬
+" ╬═╬ { .vimrc }
+" ╬═╬☻/
+" ╬═╬/▌
+" ╬═╬/  \
+" ▬▬▬.◙.▬▬▬
+"
+" headings:
+" https://patorjk.com/software/taag/#p=display&f=Terrace&t=.vimrc&x=none&v=4&h=4&w=80&we=false
+"
+" =================================================================================================
+" ░██                              ░██
+" ░██
+" ░████████   ░██████    ░███████  ░██ ░███████   ░███████
+" ░██    ░██       ░██  ░██        ░██░██    ░██ ░██
+" ░██    ░██  ░███████   ░███████  ░██░██         ░███████
+" ░███   ░██ ░██   ░██         ░██ ░██░██    ░██        ░██
+" ░██░█████   ░█████░██  ░███████  ░██ ░███████   ░███████
 
 set nocompatible
 
@@ -42,28 +69,133 @@ set scrolloff=0
 
 set redrawtime=10000
 
-syntax on
+" =================================================================================================
+"    ░██    ░██                                              
+"    ░██    ░██                                              
+" ░████████ ░████████   ░███████  ░█████████████   ░███████  
+"    ░██    ░██    ░██ ░██    ░██ ░██   ░██   ░██ ░██    ░██ 
+"    ░██    ░██    ░██ ░█████████ ░██   ░██   ░██ ░█████████ 
+"    ░██    ░██    ░██ ░██        ░██   ░██   ░██ ░██        
+"     ░████ ░██    ░██  ░███████  ░██   ░██   ░██  ░███████  
 
+syntax on
 colorscheme slate
 highlight ColorColumn ctermbg=238
 
+" =================================================================================================
+"                                  ░██                                          
+"                                                                               
+"  ░███████  ░████████  ░██    ░██ ░██░██░████  ░███████  ░████████   ░███████  
+" ░██    ░██ ░██    ░██ ░██    ░██ ░██░███     ░██    ░██ ░██    ░██ ░██        
+" ░█████████ ░██    ░██  ░██  ░██  ░██░██      ░██    ░██ ░██    ░██  ░███████  
+" ░██        ░██    ░██   ░██░██   ░██░██      ░██    ░██ ░██    ░██        ░██ 
+"  ░███████  ░██    ░██    ░███    ░██░██       ░███████  ░██    ░██  ░███████  
+
 if $TERM=='screen-256color' | set ttymouse=xterm2 | endif
 
-vnoremap J :m '>+1<CR>gv=gv
-vnoremap K :m '<-2<CR>gv=gv
+if &term =~ "screen\\|tmux"
+  let &t_BE = "\e[?2004h"
+  let &t_BD = "\e[?2004l"
+  exec "set t_PS=\e[200~"
+  exec "set t_PE=\e[201~"
+endif
 
-nnoremap J mzJ`z
-nnoremap n nzzzv
-nnoremap N Nzzzv
+let s:ssh_config = expand('~/.vimrc-ssh')
+if filereadable(s:ssh_config) | execute 'source ' . s:ssh_config | endif
 
-vnoremap <leader>d "+d
-nnoremap <leader>d "+d
-vnoremap <leader>y "+y
-nnoremap <leader>y "+y
-vnoremap <leader>p "+p
-nnoremap <leader>p "+p
+" =================================================================================================
+"                          ░██                              ░██ ░██
+"                          ░██                             ░██  ░██
+"  ░███████  ░████████  ░████████  ░███████  ░██░████     ░██   ░██  ░███████   ░██████   ░██    ░██  ░███████
+" ░██    ░██ ░██    ░██    ░██    ░██    ░██ ░███        ░██    ░██ ░██    ░██       ░██  ░██    ░██ ░██    ░██
+" ░█████████ ░██    ░██    ░██    ░█████████ ░██        ░██     ░██ ░█████████  ░███████   ░██  ░██  ░█████████
+" ░██        ░██    ░██    ░██    ░██        ░██       ░██      ░██ ░██        ░██   ░██    ░██░██   ░██
+"  ░███████  ░██    ░██     ░████  ░███████  ░██      ░██       ░██  ░███████   ░█████░██    ░███     ░███████
 
-nnoremap <leader>s :%s/\<<C-r><C-w>\>/<C-r><C-w>/gI<Left><Left><Left>
+autocmd VimEnter * if argc() == 0 | Explore | endif
+autocmd BufReadPost,FileReadPost,BufNewFile,BufEnter,FocusGained * call system('tmux rename-window ' . expand('%:t'))
+autocmd VimLeave * silent call system("tmux rename-window " . "$(echo $SHELL | awk -F '/' '{print $NF}')")
+
+" =================================================================================================
+"            ░██                       ░██
+"            ░██
+" ░████████  ░██ ░██    ░██  ░████████ ░██░████████   ░███████
+" ░██    ░██ ░██ ░██    ░██ ░██    ░██ ░██░██    ░██ ░██
+" ░██    ░██ ░██ ░██    ░██ ░██    ░██ ░██░██    ░██  ░███████
+" ░███   ░██ ░██ ░██   ░███ ░██   ░███ ░██░██    ░██        ░██
+" ░██░█████  ░██  ░█████░██  ░█████░██ ░██░██    ░██  ░███████
+" ░██                              ░██
+" ░██                        ░███████
+
+call plug#begin()
+  Plug 'mbbill/undotree'
+  Plug 'markonm/traces.vim'
+  Plug 'yggdroot/indentline'
+  Plug 'tpope/vim-fugitive'
+  Plug 'junegunn/fzf', { 'do': { -> fzf#install() } }
+  Plug 'junegunn/fzf.vim'
+  Plug 'ojroques/vim-oscyank', {'branch': 'main'}
+
+  Plug 'sheerun/vim-polyglot'
+  Plug 'dense-analysis/ale'
+
+  Plug 'coriocactus/claudia.vim'
+  Plug 'github/copilot.vim'
+call plug#end()
+
+if empty(glob(VIM_DIR . '/autoload/plug.vim'))
+  silent execute '!curl -fLo ' . VIM_DIR . '/autoload/plug.vim --create-dirs ' . 'https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim'
+endif
+
+autocmd VimEnter * if len(filter(values(g:plugs), '!isdirectory(v:val.dir)')) | PlugInstall --sync | source $MYVIMRC | endif
+
+" -------------------------------------------------------------------------------------------------
+
+let g:python_recommended_style = 0
+let g:undotree_SetFocusWhenToggle = 1
+let g:indentLine_fileTypeExclude = ['json', 'markdown', 'tex']
+" let g:copilot_enabled = v:false
+
+" =================================================================================================
+" ░██ ░██              ░██                                    ░██    ░██
+" ░██                  ░██                                    ░██    ░██
+" ░██ ░██░████████  ░████████     ░██████   ░████████   ░████████    ░██  ░███████  ░████████
+" ░██ ░██░██    ░██    ░██             ░██  ░██    ░██ ░██    ░██    ░██ ░██        ░██    ░██
+" ░██ ░██░██    ░██    ░██        ░███████  ░██    ░██ ░██    ░██    ░██  ░███████  ░██    ░██
+" ░██ ░██░██    ░██    ░██       ░██   ░██  ░██    ░██ ░██   ░███    ░██        ░██ ░███   ░██
+" ░██ ░██░██    ░██     ░████     ░█████░██ ░██    ░██  ░█████░██    ░██  ░███████  ░██░█████
+"                                                                                   ░██
+
+let g:ale_floating_preview = 1
+let g:ale_completion_enabled = 1
+
+set omnifunc=ale#completion#OmniFunc
+set completeopt=menu,noselect
+
+nnoremap K <cmd>ALEHover<CR>
+nmap <silent> [g :ALENext<CR>
+nmap <silent> ]g :ALEPrevious<CR>
+nnoremap gd <cmd>ALEGoToDefinition<CR>
+nnoremap gr <cmd>ALEFindReferences<CR>
+nnoremap ca <cmd>ALECodeAction<CR>
+
+let g:ale_linters = {
+      \  "python": ['pylsp', 'ruff'],
+      \  "javascript": ['tsserver'],
+      \  "typescript": ['tsserver'],
+      \  "haskell": ['hls'],
+      \  "html": ['vscode-langservers-extracted'],
+      \  "css": ['vscode-langservers-extracted'],
+\}
+
+" =================================================================================================
+"               ░██    ░██░██
+"               ░██       ░██
+" ░██    ░██ ░████████ ░██░██  ░███████
+" ░██    ░██    ░██    ░██░██ ░██
+" ░██    ░██    ░██    ░██░██  ░███████
+" ░██   ░███    ░██    ░██░██        ░██
+"  ░█████░██     ░████ ░██░██  ░███████
 
 function! SensibleLineWidth(...)
   let l:max_length = a:0 >= 1 ? a:1 : 80
@@ -82,7 +214,7 @@ function! TrimTrailingWhitespace()
   call winrestview(l:save)
 endfunction
 command! TrimTrailingWhitespace call TrimTrailingWhitespace()
-nnoremap <leader>w :TrimTrailingWhitespace<CR>
+nnoremap <silent> <leader>w :TrimTrailingWhitespace<CR>
 
 function! VisualSearch(direction) abort
   let save_unnamed_reg = getreg('"')
@@ -105,7 +237,7 @@ function! VisualSearch(direction) abort
     let final_pattern = substitute(escaped_pattern, '\n', '\\_.', 'g')
     let final_pattern = '\V' . final_pattern
 
-    " echom "Search Pattern: " . string(final_pattern)
+    " echom "[DEBUG] Search Pattern: " . string(final_pattern)
     call setreg('/', final_pattern)
     set hlsearch
 
@@ -123,81 +255,32 @@ if !isdirectory(g:temp_dir) | call mkdir(g:temp_dir, '', 0700) | endif
 com! TempBuf exe 'enew | set filetype=markdown | file ' . g:temp_dir . '/' . strftime('%Y%m%d%H%M%S') . '.md'
 nnoremap <leader>t :TempBuf<CR>
 
-call plug#begin()
-Plug 'sheerun/vim-polyglot'
-Plug 'prabirshrestha/vim-lsp'
-Plug 'mattn/vim-lsp-settings'
-Plug 'dense-analysis/ale'
-Plug 'rhysd/vim-lsp-ale'
-Plug 'prabirshrestha/asyncomplete.vim'
-Plug 'prabirshrestha/asyncomplete-lsp.vim'
-Plug 'junegunn/fzf', { 'do': { -> fzf#install() } }
-Plug 'junegunn/fzf.vim'
-Plug 'mbbill/undotree'
-Plug 'markonm/traces.vim'
-Plug 'yggdroot/indentline'
-Plug 'tpope/vim-fugitive'
-Plug 'github/copilot.vim'
-Plug 'coriocactus/claudia.vim'
-Plug 'ojroques/vim-oscyank', {'branch': 'main'}
-call plug#end()
+command! -bang -nargs=* Rg call fzf#vim#grep('rg --column --line-number --no-heading --color=always --smart-case ' . shellescape(<q-args>), 2, {'options': '--delimiter : --nth 4..'}, <bang>0)
 
-if empty(glob(VIM_DIR . '/autoload/plug.vim'))
-  silent execute '!curl -fLo '
-        \ . VIM_DIR
-        \ . '/autoload/plug.vim --create-dirs '
-        \ . 'https://raw.githubusercontent.com/'
-        \ . 'junegunn/vim-plug/master/plug.vim'
-endif
+" =================================================================================================
+"            ░██                               ░██                             ░██
+"            ░██                               ░██                             ░██
+"  ░███████  ░████████   ░███████  ░██░████ ░████████  ░███████  ░██    ░██ ░████████  ░███████
+" ░██        ░██    ░██ ░██    ░██ ░███        ░██    ░██    ░██ ░██    ░██    ░██    ░██
+"  ░███████  ░██    ░██ ░██    ░██ ░██         ░██    ░██        ░██    ░██    ░██     ░███████
+"        ░██ ░██    ░██ ░██    ░██ ░██         ░██    ░██    ░██ ░██   ░███    ░██           ░██
+"  ░███████  ░██    ░██  ░███████  ░██          ░████  ░███████   ░█████░██     ░████  ░███████
 
-autocmd VimEnter *
-      \ if len(filter(values(g:plugs), '!isdirectory(v:val.dir)')) |
-      \   PlugInstall --sync |
-      \   source $MYVIMRC |
-      \ endif
+vnoremap J :m '>+1<CR>gv=gv
+vnoremap K :m '<-2<CR>gv=gv
 
-function! s:on_lsp_buffer_enabled() abort
-  setlocal omnifunc=lsp#complete
-  setlocal signcolumn=yes
-  if exists('+tagfunc') | setlocal tagfunc=lsp#tagfunc | endif
-  nmap <buffer> gd <plug>(lsp-definition)
-  nmap <buffer> gs <plug>(lsp-document-symbol-search)
-  nmap <buffer> gS <plug>(lsp-workspace-symbol-search)
-  nmap <buffer> gr <plug>(lsp-references)
-  nmap <buffer> gi <plug>(lsp-implementation)
-  nmap <buffer> gt <plug>(lsp-type-definition)
-  nmap <buffer> <leader>rn <plug>(lsp-rename)
-  nmap <buffer> <leader>d <plug>(lsp-document-diagnostics)
-  nmap <buffer> K <plug>(lsp-hover)
-  nnoremap <buffer> <expr><c-n> lsp#scroll(+4)
-  nnoremap <buffer> <expr><c-p> lsp#scroll(-4)
-  let g:lsp_format_sync_timeout = 1000
-  autocmd! BufWritePre *.rs,*.go call execute('LspDocumentFormatSync')
-endfunction
+nnoremap J mzJ`z
+nnoremap n nzzzv
+nnoremap N Nzzzv
 
-nmap <silent> [g :ALENext<CR>
-nmap <silent> ]g :ALEPrevious<CR>
-let g:python_recommended_style = 0
+vnoremap <leader>d "+d
+nnoremap <leader>d "+d
+vnoremap <leader>y "+y
+nnoremap <leader>y "+y
+vnoremap <leader>p "+p
+nnoremap <leader>p "+p
 
-let g:lsp_settings_filetype_python = ['pylsp']
-" let g:lsp_settings_filetype_python = ['pyright-langserver']
-
-augroup lsp_install
-  au!
-  autocmd User lsp_buffer_enabled call s:on_lsp_buffer_enabled()
-augroup END
-
-command! -bang -nargs=* Rg
-      \ call fzf#vim#grep(
-      \   'rg --column --line-number --no-heading '
-      \   . '--color=always --smart-case '
-      \   . shellescape(<q-args>),
-      \   2,
-      \   {
-      \     'options': '--delimiter : --nth 4..'
-      \   },
-      \   <bang>0
-      \ )
+nnoremap <leader>s :%s/\<<C-r><C-w>\>/<C-r><C-w>/gI<Left><Left><Left>
 
 nnoremap <leader>r :Rg<CR>
 nnoremap <leader>f :Files<CR>
@@ -207,32 +290,5 @@ nnoremap <leader>l :BLines<CR>
 nnoremap <leader>g :Git<CR>
 
 nnoremap <leader>u :UndotreeToggle<CR>
-let g:undotree_SetFocusWhenToggle = 1
 
-let g:indentLine_fileTypeExclude = ['json', 'markdown', 'tex']
-
-autocmd VimEnter * if argc() == 0 | Explore | endif
-
-autocmd BufReadPost,FileReadPost,BufNewFile,BufEnter,FocusGained *
-      \ call system(
-      \   'tmux rename-window '
-      \   . expand('%:t')
-      \ )
-
-autocmd VimLeave *
-      \ silent call system(
-      \   "tmux rename-window "
-      \   . "$(echo $SHELL | awk -F '/' '{print $NF}')"
-      \ )
-
-let s:ssh_config = expand('~/.vimrc-ssh')
-if filereadable(s:ssh_config) | execute 'source ' . s:ssh_config | endif
-
-if &term =~ "screen\\|tmux"
-  let &t_BE = "\e[?2004h"
-  let &t_BD = "\e[?2004l"
-  exec "set t_PS=\e[200~"
-  exec "set t_PE=\e[201~"
-endif
-
-" let g:copilot_enabled = v:false
+" =================================================================================================
