@@ -166,24 +166,26 @@ let g:indentLine_fileTypeExclude = ['json', 'markdown', 'tex']
 
 let g:ale_floating_preview = 1
 let g:ale_completion_enabled = 1
+let g:ale_python_auto_uv = v:true
 
 set omnifunc=ale#completion#OmniFunc
 set completeopt=menu,noselect
 
-nnoremap K <cmd>ALEHover<CR>
-nmap <silent> [g :ALENext<CR>
-nmap <silent> ]g :ALEPrevious<CR>
-nnoremap gd <cmd>ALEGoToDefinition<CR>
-nnoremap gr <cmd>ALEFindReferences<CR>
-nnoremap ca <cmd>ALECodeAction<CR>
+nnoremap <leader>a <cmd>ALEToggleBuffer<CR>
+nnoremap <silent> K <cmd>ALEHover<CR>
+nnoremap <silent> [g <cmd>ALENext<CR>
+nnoremap <silent> ]g <cmd>ALEPrevious<CR>
+nnoremap <silent> gd <cmd>ALEGoToDefinition<CR>
+nnoremap <silent> gr <cmd>ALEFindReferences<CR>
+nnoremap <silent> ca <cmd>ALECodeAction<CR>
 
 let g:ale_linters = {
-      \  "python": ['pylsp', 'ruff'],
+      \  'python': ['pylsp', 'ruff'],
       \  "javascript": ['tsserver'],
       \  "typescript": ['tsserver'],
       \  "haskell": ['hls'],
-      \  "html": ['vscode-langservers-extracted'],
-      \  "css": ['vscode-langservers-extracted'],
+      \  "html": ['djlint'],
+      \  "css": ['stylelint'],
 \}
 
 " =================================================================================================
@@ -212,7 +214,7 @@ function! TrimTrailingWhitespace()
   call winrestview(l:save)
 endfunction
 command! TrimTrailingWhitespace call TrimTrailingWhitespace()
-nnoremap <silent> <leader>w :TrimTrailingWhitespace<CR>
+nnoremap <silent> <leader>w <cmd>TrimTrailingWhitespace<CR>
 
 function! VisualSearch(direction) abort
   let save_unnamed_reg = getreg('"')
@@ -251,7 +253,7 @@ vnoremap <silent> # :<C-U>call VisualSearch('?')<CR>
 let g:temp_dir = $HOME . '/.vim/tmp'
 if !isdirectory(g:temp_dir) | call mkdir(g:temp_dir, '', 0700) | endif
 com! TempBuf exe 'enew | set filetype=markdown | file ' . g:temp_dir . '/' . strftime('%Y%m%d%H%M%S') . '.md'
-nnoremap <leader>t :TempBuf<CR>
+nnoremap <leader>t <cmd>TempBuf<CR>
 
 command! -bang -nargs=* Rg call fzf#vim#grep('rg --column --line-number --no-heading --color=always --smart-case ' . shellescape(<q-args>), 2, {'options': '--delimiter : --nth 4..'}, <bang>0)
 
@@ -278,15 +280,15 @@ nnoremap <leader>y "+y
 vnoremap <leader>p "+p
 nnoremap <leader>p "+p
 
-nnoremap <leader>s :%s/\<<C-r><C-w>\>/<C-r><C-w>/gI<Left><Left><Left>
+nnoremap <leader>s <cmd>%s/\<<C-r><C-w>\>/<C-r><C-w>/gI<Left><Left><Left>
 
-nnoremap <leader>r :Rg<CR>
-nnoremap <leader>f :Files<CR>
-nnoremap <leader>b :Buffers<CR>
-nnoremap <leader>l :BLines<CR>
+nnoremap <leader>r <cmd>Rg<CR>
+nnoremap <leader>f <cmd>Files<CR>
+nnoremap <leader>b <cmd>Buffers<CR>
+nnoremap <leader>l <cmd>BLines<CR>
 
-nnoremap <leader>g :Git<CR>
+nnoremap <leader>g <cmd>Git<CR>
 
-nnoremap <leader>u :UndotreeToggle<CR>
+nnoremap <leader>u <cmd>UndotreeToggle<CR>
 
 " =================================================================================================
