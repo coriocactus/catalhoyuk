@@ -1,4 +1,5 @@
 " =================================================================================================
+" let g:copilot_enabled = v:false
 " ▬▬▬.◙.▬▬▬
 " ═▂▄▄▓▄▄▂
 " ◢◤ █▀▀████▄▄▄◢◤
@@ -149,12 +150,9 @@ endif
 
 autocmd VimEnter * if len(filter(values(g:plugs), '!isdirectory(v:val.dir)')) | PlugInstall --sync | source $MYVIMRC | endif
 
-" -------------------------------------------------------------------------------------------------
-
 let g:python_recommended_style = 0
 let g:undotree_SetFocusWhenToggle = 1
 let g:indentLine_fileTypeExclude = ['json', 'markdown', 'tex']
-" let g:copilot_enabled = v:false
 
 " =================================================================================================
 " ░██ ░██              ░██                                    ░██    ░██
