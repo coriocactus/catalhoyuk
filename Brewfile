@@ -45,12 +45,12 @@ brew "uv"
 brew "node"
 brew "nvm"
 brew "oven-sh/bun/bun"
+brew "deno"
 
 brew "djlint"
 brew "stylelint"
 brew "pyright"
 brew "python-lsp-server"
-brew "typescript-language-server"
 
 cask "brave-browser"
 cask "firefox"
