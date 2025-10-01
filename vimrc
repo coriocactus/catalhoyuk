@@ -166,7 +166,14 @@ let g:indentLine_fileTypeExclude = ['json', 'markdown', 'tex']
 
 let g:ale_floating_preview = 1
 let g:ale_completion_enabled = 1
-let g:ale_python_auto_uv = v:true
+let g:ale_python_auto_uv = 1
+let g:ale_python_pylsp_auto_uv = 1
+let g:ale_python_ruff_auto_uv = 1
+let g:ale_python_pylsp_config = {'pylsp': {
+      \ 'plugins': {
+      \   'pylsp_mypy': { 'enabled': v:false },
+      \ },
+\}}
 
 set omnifunc=ale#completion#OmniFunc
 set completeopt=menu,noselect
@@ -180,12 +187,12 @@ nnoremap <silent> gr <cmd>ALEFindReferences<CR>
 nnoremap <silent> ca <cmd>ALECodeAction<CR>
 
 let g:ale_linters = {
-      \  'python': ['pylsp', 'ruff'],
-      \  "javascript": ['tsserver'],
-      \  "typescript": ['tsserver'],
-      \  "haskell": ['hls'],
-      \  "html": ['djlint'],
-      \  "css": ['stylelint'],
+      \ 'python': ['pylsp', 'ruff'],
+      \ 'javascript': ['tsserver'],
+      \ 'typescript': ['tsserver'],
+      \ 'haskell': ['hls'],
+      \ 'html': ['djlint'],
+      \ 'css': ['stylelint'],
 \}
 
 " =================================================================================================
