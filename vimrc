@@ -188,8 +188,8 @@ nnoremap <silent> ca <cmd>ALECodeAction<CR>
 
 let g:ale_linters = {
       \ 'python': ['pylsp', 'ruff'],
-      \ 'javascript': ['deno'],
-      \ 'typescript': ['deno'],
+      \ 'javascript': ['eslint', 'deno'],
+      \ 'typescript': ['eslint', 'deno'],
       \ 'haskell': ['hls'],
       \ 'html': ['djlint'],
       \ 'css': ['stylelint'],
