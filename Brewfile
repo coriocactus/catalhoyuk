@@ -51,6 +51,8 @@ brew "djlint"
 brew "stylelint"
 brew "pyright"
 brew "python-lsp-server"
+brew "typescript-language-server"
+brew "eslint"
 
 cask "brave-browser"
 cask "firefox"
