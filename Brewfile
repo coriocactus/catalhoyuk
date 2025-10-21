@@ -16,6 +16,7 @@ brew "fd"
 brew "fzf"
 brew "jq"
 brew "ripgrep"
+brew "the_silver_searcher"
 
 brew "aria2"
 brew "ollama"

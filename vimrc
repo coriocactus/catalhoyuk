@@ -291,6 +291,7 @@ nnoremap <leader>p "+p
 
 nnoremap <leader>s <cmd>%s/\<<C-r><C-w>\>/<C-r><C-w>/gI<Left><Left><Left>
 
+let $FZF_DEFAULT_COMMAND = 'ag -g ""'
 nnoremap <leader>r <cmd>Rg<CR>
 nnoremap <leader>f <cmd>Files<CR>
 nnoremap <leader>b <cmd>Buffers<CR>
