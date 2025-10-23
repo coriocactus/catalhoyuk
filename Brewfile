@@ -47,7 +47,7 @@ brew "uv"
 brew "node"
 brew "nvm"
 brew "oven-sh/bun/bun"
-brew "deno"
+brew "yarn"
 
 brew "djlint"
 brew "stylelint"
