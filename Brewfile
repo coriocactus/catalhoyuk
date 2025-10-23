@@ -55,6 +55,7 @@ brew "pyright"
 brew "python-lsp-server"
 brew "typescript-language-server"
 brew "eslint"
+brew "biome"
 
 cask "brave-browser"
 cask "firefox"
