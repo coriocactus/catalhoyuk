@@ -189,10 +189,10 @@ nnoremap <silent> ca <cmd>ALECodeAction<CR>
 let g:ale_linters = {
       \ 'python': ['pylsp', 'ruff'],
       \ 'haskell': ['hls'],
-      \ 'javascript': ['biome', 'tsserver', 'eslint'],
-      \ 'javascriptreact': ['biome', 'tsserver', 'eslint'],
-      \ 'typescript': ['biome', 'tsserver', 'eslint'],
-      \ 'typescriptreact': ['biome', 'tsserver', 'eslint'],
+      \ 'javascript': ['biome', 'tsserver'],
+      \ 'javascriptreact': ['biome', 'tsserver'],
+      \ 'typescript': ['biome', 'tsserver'],
+      \ 'typescriptreact': ['biome', 'tsserver'],
       \ 'html': ['djlint'],
       \ 'css': ['stylelint'],
 \}
