@@ -101,9 +101,6 @@ if &term =~ "screen\\|tmux"
   exec "set t_PE=\e[201~"
 endif
 
-let s:ssh_config = expand('~/.vimrc-ssh')
-if filereadable(s:ssh_config) | execute 'source ' . s:ssh_config | endif
-
 " =================================================================================================
 "                          ░██                              ░██ ░██
 "                          ░██                             ░██  ░██
@@ -300,5 +297,8 @@ nnoremap <leader>l <cmd>BLines<CR>
 nnoremap <leader>g <cmd>Git<CR>
 
 nnoremap <leader>u <cmd>UndotreeToggle<CR>
+
+let s:ssh_config = expand('~/.vimrc-ssh')
+if filereadable(s:ssh_config) | execute 'source ' . s:ssh_config | endif
 
 " =================================================================================================
