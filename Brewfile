@@ -58,6 +58,7 @@ brew "pyright"
 brew "python-lsp-server"
 brew "stylelint"
 brew "typescript-language-server"
+brew "pre-commit"
 
 cask "brave-browser"
 cask "firefox"
