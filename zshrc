@@ -75,5 +75,6 @@ path=(
   $HOME/.local/bin(N-/)
   $HOME/.ghcup/bin(N-/)
   $HOME/.cargo/bin(N-/)
+  $HOME/.amp/bin(N-/)
   $path
 )
