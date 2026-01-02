@@ -1,6 +1,7 @@
-tap "oven-sh/bun"
-tap "hashicorp/tap"
 tap "aws/tap"
+tap "hashicorp/tap"
+tap "max-sixty/worktrunk"
+tap "oven-sh/bun"
 
 brew "btop"
 brew "curl"
@@ -12,6 +13,7 @@ brew "htop"
 brew "pigz"
 brew "pv"
 brew "scc"
+brew "sd"
 brew "tmux"
 brew "tree"
 brew "vim"
@@ -25,6 +27,7 @@ brew "ripgrep"
 brew "the_silver_searcher"
 
 brew "aria2"
+brew "max-sixty/worktrunk/wt"
 brew "ollama"
 brew "repomix"
 
@@ -37,6 +40,7 @@ brew "awscli"
 brew "hashicorp/tap/terraform"
 
 brew "libpq"
+brew "pgcli"
 brew "postgresql"
 brew "sqlite"
 
