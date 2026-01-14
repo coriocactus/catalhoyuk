@@ -1,5 +1,5 @@
 " =================================================================================================
-" let g:copilot_enabled = v:false
+let g:copilot_enabled = v:false
 "
 " headings:
 " https://patorjk.com/software/taag/#p=display&f=Terrace&t=.vimrc&x=none&v=4&h=4&w=80&we=false
