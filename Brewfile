@@ -8,9 +8,11 @@ brew "tmux"
 brew "vim"
 brew "btop"
 brew "htop"
+
 brew "jj"
 brew "git"
 brew "difftastic"
+brew "mergiraf"
 
 brew "curl"
 brew "tree"
