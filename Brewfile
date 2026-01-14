@@ -73,6 +73,17 @@ brew "stylelint"
 brew "typescript-language-server"
 brew "pre-commit"
 
+brew "ghcup"
+brew "rustup"
+
+brew "aws/tap/copilot-cli"
+brew "awscli"
+brew "hashicorp/tap/terraform"
+
+brew "docker"
+brew "docker-completion"
+brew "docker-compose"
+
 cask "brave-browser"
 cask "firefox"
 cask "ghostty"
