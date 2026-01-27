@@ -42,12 +42,18 @@ PS1='%B%F{15}%n@%m%b:%f%F{2}%~%f%F{15}$ %f'
 # zsh completions
 autoload -Uz compinit && compinit
 
-# history search
+# history search (fallback if fzf unavailable)
 autoload -U history-search-end
 zle -N history-beginning-search-backward-end history-search-end
 zle -N history-beginning-search-forward-end history-search-end
 bindkey "^P" history-beginning-search-backward-end
 bindkey "^N" history-beginning-search-forward-end
+
+# fzf history manager
+if command -v fzf >/dev/null 2>&1; then
+  source <(fzf --zsh)
+  export FZF_CTRL_R_OPTS="--reverse --height=40%"
+fi
 
 # git branches via $BRANCH
 autoload -Uz vcs_info
@@ -73,6 +79,7 @@ fi
 
 path=(
   $HOME/.local/bin(N-/)
+  $HOME/.bun/bin(N-/)
   $HOME/.ghcup/bin(N-/)
   $HOME/.cargo/bin(N-/)
   $HOME/.amp/bin(N-/)
@@ -84,3 +91,5 @@ if command -v wt >/dev/null 2>&1; then eval "$(command wt config shell init zsh)
 export NVM_DIR="$HOME/.nvm"
 [ -s "/opt/homebrew/opt/nvm/nvm.sh" ] && \. "/opt/homebrew/opt/nvm/nvm.sh"
 [ -s "/opt/homebrew/opt/nvm/etc/bash_completion.d/nvm" ] && \. "/opt/homebrew/opt/nvm/etc/bash_completion.d/nvm"
+
+export PLAYWRIGHT_MCP_BROWSER=chromium

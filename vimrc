@@ -137,8 +137,8 @@ call plug#begin()
   Plug 'sheerun/vim-polyglot'
   Plug 'dense-analysis/ale'
 
-  Plug 'coriocactus/claudia.vim'
-  Plug 'github/copilot.vim'
+"  Plug 'coriocactus/claudia.vim'
+"  Plug 'github/copilot.vim'
 call plug#end()
 
 if empty(glob(VIM_DIR . '/autoload/plug.vim'))
