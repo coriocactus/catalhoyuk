@@ -63,6 +63,12 @@ precmd_functions+=(update_git_branch)
 chpwd_functions+=(update_git_branch)
 setopt prompt_subst
 
+# jj closest bookmark via $BOOKMARK
+function update_jj_bookmark() { jj root &>/dev/null && BOOKMARK=$(jj log -r 'closest_bookmark(@)' -T 'bookmarks' --no-graph 2>/dev/null | tr -d ' ') || BOOKMARK="" }
+precmd_functions+=(update_jj_bookmark)
+chpwd_functions+=(update_jj_bookmark)
+setopt prompt_subst
+
 # path
 if [[ $(uname) == "Darwin" ]]; then
   path+=(
