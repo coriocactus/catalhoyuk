@@ -89,6 +89,7 @@ path=(
   $HOME/.ghcup/bin(N-/)
   $HOME/.cargo/bin(N-/)
   $HOME/.amp/bin(N-/)
+  $HOME/.opencode/bin(N-/)
   $path
 )
 
@@ -99,3 +100,4 @@ export NVM_DIR="$HOME/.nvm"
 [ -s "/opt/homebrew/opt/nvm/etc/bash_completion.d/nvm" ] && \. "/opt/homebrew/opt/nvm/etc/bash_completion.d/nvm"
 
 export PLAYWRIGHT_MCP_BROWSER=chromium
+export OPENCODE_ENABLE_EXA=1
