@@ -261,7 +261,15 @@ if !isdirectory(g:temp_dir) | call mkdir(g:temp_dir, '', 0700) | endif
 com! TempBuf exe 'enew | set filetype=markdown | file ' . g:temp_dir . '/' . strftime('%Y%m%d%H%M%S') . '.md'
 nnoremap <leader>t <cmd>TempBuf<CR>
 
-command! -bang -nargs=* Rg call fzf#vim#grep('rg --column --line-number --no-heading --color=always --smart-case ' . shellescape(<q-args>), 2, {'options': '--delimiter : --nth 4..'}, <bang>0)
+function! RipgrepFzf(query, fullscreen)
+  let command_fmt = 'rg --column --line-number --no-heading --color=always --smart-case -- %s || true'
+  let initial_command = printf(command_fmt, shellescape(a:query))
+  let reload_command = printf(command_fmt, '{q}')
+  let spec = {'options': ['--phony', '--query', a:query, '--bind', 'change:reload:'.reload_command]}
+  call fzf#vim#grep(initial_command, 1, fzf#vim#with_preview(spec), a:fullscreen)
+endfunction
+
+command! -nargs=* -bang RG call RipgrepFzf(<q-args>, <bang>0)
 
 " =================================================================================================
 "            ░██                               ░██                             ░██
@@ -279,6 +287,9 @@ nnoremap J mzJ`z
 nnoremap n nzzzv
 nnoremap N Nzzzv
 
+vnoremap < <gv
+vnoremap > >gv
+
 vnoremap <leader>d "+d
 nnoremap <leader>d "+d
 vnoremap <leader>y "+y
@@ -288,11 +299,13 @@ nnoremap <leader>p "+p
 
 nnoremap <leader>s <cmd>%s/\<<C-r><C-w>\>/<C-r><C-w>/gI<Left><Left><Left>
 
-let $FZF_DEFAULT_COMMAND = 'ag -g ""'
-nnoremap <leader>r <cmd>Rg<CR>
+let $FZF_DEFAULT_COMMAND = 'rg --files --hidden --follow --glob "!.git/*"'
+nnoremap <leader>r <cmd>RG<CR>
 nnoremap <leader>f <cmd>Files<CR>
 nnoremap <leader>b <cmd>Buffers<CR>
 nnoremap <leader>l <cmd>BLines<CR>
+nnoremap <leader>h <cmd>History<CR>
+nnoremap <leader>e <cmd>Lexplore<CR>
 
 nnoremap <leader>g <cmd>Git<CR>
 
