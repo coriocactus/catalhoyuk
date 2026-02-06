@@ -299,7 +299,7 @@ nnoremap <leader>p "+p
 
 nnoremap <leader>s <cmd>%s/\<<C-r><C-w>\>/<C-r><C-w>/gI<Left><Left><Left>
 
-let $FZF_DEFAULT_COMMAND = 'rg --files --hidden --follow --glob "!.git/*"'
+let $FZF_DEFAULT_COMMAND = 'fd --type f --hidden --follow --exclude .git'
 nnoremap <leader>r <cmd>RG<CR>
 nnoremap <leader>f <cmd>Files<CR>
 nnoremap <leader>b <cmd>Buffers<CR>
