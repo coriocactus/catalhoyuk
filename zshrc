@@ -70,29 +70,35 @@ chpwd_functions+=(update_jj_bookmark)
 setopt prompt_subst
 
 # path
-if [[ $(uname) == "Darwin" ]]; then
-  path+=(
-    /opt/homebrew/bin(N-/)
-    /opt/homebrew/sbin(N-/)
-    /opt/homebrew/opt/rustup/bin(N-/)
-  )
-else
-  path+=(
-    /home/linuxbrew/.linuxbrew/bin(N-/)
-    /home/linuxbrew/.linuxbrew/sbin(N-/)
-  )
-fi
-
-path=(
+user_paths=(
   $HOME/.local/bin(N-/)
   $HOME/.bun/bin(N-/)
   $HOME/.ghcup/bin(N-/)
   $HOME/.cargo/bin(N-/)
   $HOME/.amp/bin(N-/)
   $HOME/.opencode/bin(N-/)
-  $path
 )
 
+if [[ $(uname) == "Darwin" ]]; then
+  path=(
+    /opt/homebrew/bin(N-/)
+    /opt/homebrew/sbin(N-/)
+    /opt/homebrew/opt/rustup/bin(N-/)
+    $user_paths
+    $path
+  )
+else
+  path=(
+    /home/linuxbrew/.linuxbrew/bin(N-/)
+    /home/linuxbrew/.linuxbrew/sbin(N-/)
+    $user_paths
+    $path
+  )
+fi
+
+typeset -U path
+
+# apps
 if command -v wt >/dev/null 2>&1; then eval "$(command wt config shell init zsh)"; fi
 
 export NVM_DIR="$HOME/.nvm"
