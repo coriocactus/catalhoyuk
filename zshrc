@@ -24,10 +24,14 @@ umask 022
 # keybindings and history
 bindkey -e
 setopt APPEND_HISTORY
-HISTSIZE=10000
-SAVEHIST=10000
-HIST_IGNORE_SPACE=true
-HIST_IGNORE_ALL_DUPS=true
+setopt HIST_IGNORE_SPACE
+setopt HIST_IGNORE_ALL_DUPS
+setopt HIST_SAVE_NO_DUPS
+setopt HIST_FIND_NO_DUPS
+setopt HIST_REDUCE_BLANKS
+setopt INC_APPEND_HISTORY_TIME
+HISTSIZE=2000000
+SAVEHIST=1000000
 HISTFILE=$HOME/.zsh_history
 
 # editor and colors
@@ -46,8 +50,10 @@ autoload -Uz compinit && compinit
 autoload -U history-search-end
 zle -N history-beginning-search-backward-end history-search-end
 zle -N history-beginning-search-forward-end history-search-end
-bindkey "^P" history-beginning-search-backward-end
-bindkey "^N" history-beginning-search-forward-end
+bindkey "^p" history-beginning-search-backward-end
+bindkey "^n" history-beginning-search-forward-end
+bindkey "^[p" beginning-of-history
+bindkey "^[n" end-of-history
 
 # fzf history manager
 if command -v fzf >/dev/null 2>&1; then
@@ -101,6 +107,7 @@ typeset -U path
 # apps
 if command -v wt >/dev/null 2>&1; then eval "$(command wt config shell init zsh)"; fi
 if command -v fnm >/dev/null 2>&1; then eval "$(fnm env --use-on-cd --version-file-strategy=recursive --shell zsh)"; fi
+if command -v eza >/dev/null 2>&1; then alias ls="eza --icons --group-directories-first --sort oldest"; fi
 export PLAYWRIGHT_MCP_BROWSER=chromium
 export OPENCODE_ENABLE_EXA=1
 export XDG_CONFIG_HOME="$HOME/.config"

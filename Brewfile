@@ -8,6 +8,7 @@ brew "tmux"
 brew "vim"
 brew "btop"
 brew "htop"
+brew "eza"
 
 brew "jj"
 brew "git"
