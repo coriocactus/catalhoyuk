@@ -46,7 +46,6 @@ brew "sqlite"
 brew "ruff"
 brew "uv"
 
-brew "node"
 brew "fnm"
 brew "oven-sh/bun/bun"
 brew "yarn"

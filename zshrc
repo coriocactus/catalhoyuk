@@ -90,6 +90,7 @@ if [[ $(uname) == "Darwin" ]]; then
     /opt/homebrew/bin(N-/)
     /opt/homebrew/sbin(N-/)
     /opt/homebrew/opt/rustup/bin(N-/)
+    /opt/homebrew/opt/libpq/bin(N-/)
     $user_paths
     $path
   )
