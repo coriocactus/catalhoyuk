@@ -125,6 +125,10 @@ autocmd VimLeave * silent call system("tmux rename-window " . "$(echo $SHELL | a
 " ░██                              ░██
 " ░██                        ░███████
 
+if empty(glob(VIM_DIR . '/autoload/plug.vim'))
+  silent execute '!curl -fLo ' . VIM_DIR . '/autoload/plug.vim --create-dirs ' . 'https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim'
+endif
+
 call plug#begin()
   Plug 'mbbill/undotree'
   Plug 'markonm/traces.vim'
@@ -140,10 +144,6 @@ call plug#begin()
 "  Plug 'coriocactus/claudia.vim'
 "  Plug 'github/copilot.vim'
 call plug#end()
-
-if empty(glob(VIM_DIR . '/autoload/plug.vim'))
-  silent execute '!curl -fLo ' . VIM_DIR . '/autoload/plug.vim --create-dirs ' . 'https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim'
-endif
 
 autocmd VimEnter * if len(filter(values(g:plugs), '!isdirectory(v:val.dir)')) | PlugInstall --sync | source $MYVIMRC | endif
 
