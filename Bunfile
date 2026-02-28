@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+command -v bun >/dev/null 2>&1 || { echo "bun not found"; exit 1; }
+
+packages=(
+  eslint
+  stylelint
+  typescript
+  typescript-language-server
+  pyright
+  repomix
+)
+
+bun install -g "${packages[@]}"
