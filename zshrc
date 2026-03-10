@@ -106,9 +106,11 @@ fi
 typeset -U path
 
 # apps
-if command -v wt >/dev/null 2>&1; then eval "$(command wt config shell init zsh)"; fi
-if command -v fnm >/dev/null 2>&1; then eval "$(fnm env --use-on-cd --version-file-strategy=recursive --shell zsh)"; fi
-if command -v eza >/dev/null 2>&1; then alias ls="eza --icons --group-directories-first --sort oldest"; fi
 export PLAYWRIGHT_MCP_BROWSER=chromium
 export OPENCODE_ENABLE_EXA=1
 export XDG_CONFIG_HOME="$HOME/.config"
+
+if command -v wt >/dev/null 2>&1; then eval "$(command wt config shell init zsh)"; fi
+if command -v fnm >/dev/null 2>&1; then eval "$(fnm env --use-on-cd --version-file-strategy=recursive --shell zsh)"; fi
+if command -v eza >/dev/null 2>&1; then alias ls="eza --icons --group-directories-first --sort oldest"; fi
+if command -v mise >/dev/null 2>&1; then eval "$(mise activate zsh)"; fi
