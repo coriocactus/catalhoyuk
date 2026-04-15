@@ -69,8 +69,11 @@ precmd_functions+=(update_git_branch)
 chpwd_functions+=(update_git_branch)
 setopt prompt_subst
 
-# jj closest bookmark via $BOOKMARK
-function update_jj_bookmark() { jj root &>/dev/null && BOOKMARK=$(jj log -r 'closest_bookmark(@)' -T 'bookmarks' --no-graph 2>/dev/null | tr ' ' '\n' | grep -v '@' | tr -d '\n') || BOOKMARK="" }
+# jj closest local bookmark via $BOOKMARK
+function update_jj_bookmark() {
+  jj root &>/dev/null || { BOOKMARK=""; return }
+  BOOKMARK=$(jj log -r 'closest_bookmark(@)' -T 'bookmarks.map(|b| if(b.remote(), "", b.name() ++ "\n")).join("")' --no-graph 2>/dev/null | sed -n '1p')
+}
 precmd_functions+=(update_jj_bookmark)
 chpwd_functions+=(update_jj_bookmark)
 setopt prompt_subst
