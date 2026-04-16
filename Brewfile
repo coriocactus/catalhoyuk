@@ -36,7 +36,6 @@ brew "ripgrep"
 
 brew "aria2"
 brew "ffmpeg"
-brew "ollama"
 
 brew "libpq"
 brew "pgcli"
