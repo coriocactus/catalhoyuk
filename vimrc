@@ -140,9 +140,6 @@ call plug#begin()
 
   Plug 'sheerun/vim-polyglot'
   Plug 'dense-analysis/ale'
-
-"  Plug 'coriocactus/claudia.vim'
-"  Plug 'github/copilot.vim'
 call plug#end()
 
 autocmd VimEnter * if len(filter(values(g:plugs), '!isdirectory(v:val.dir)')) | PlugInstall --sync | source $MYVIMRC | endif
