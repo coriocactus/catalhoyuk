@@ -116,3 +116,24 @@ export XDG_CONFIG_HOME="$HOME/.config"
 if command -v fnm >/dev/null 2>&1; then eval "$(fnm env --use-on-cd --version-file-strategy=recursive --shell zsh)"; fi
 if command -v eza >/dev/null 2>&1; then alias ls="eza --icons --group-directories-first --sort oldest"; fi
 if command -v mise >/dev/null 2>&1; then eval "$(mise activate zsh)"; fi
+
+# ssh port forwarding functions
+fip() {
+  (( $# < 2 )) && echo "Usage: fip <host> <port1> [port2] ..." && return 1
+  local host="$1"
+  shift
+  for port in "$@"; do
+    ssh -f -N -L "${port}:localhost:${port}" "$host" && echo "Forwarding localhost:$port -> $host:$port"
+  done
+}
+
+dip() {
+  (( $# == 0 )) && echo "Usage: dip <port1> [port2] ..." && return 1
+  for port in "$@"; do
+    pkill -f "ssh.*-L ${port}:localhost:${port}$" && echo "Stopped forwarding port $port" || echo "No forwarding on port $port"
+  done
+}
+
+lip() {
+  pgrep -af "ssh.*-L [0-9]+:localhost:[0-9]+" | awk '{match($0, /-L [0-9]+:localhost:[0-9]+/, m); n=split($0,a," "); printf "port=%-8s host=%s\n", substr(m[0],4), a[n]}' || echo "No active forwards"
+}
