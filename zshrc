@@ -135,5 +135,5 @@ dip() {
 }
 
 lip() {
-  pgrep -af "ssh.*-L [0-9]+:localhost:[0-9]+" | awk '{match($0, /-L [0-9]+:localhost:[0-9]+/, m); n=split($0,a," "); printf "port=%-8s host=%s\n", substr(m[0],4), a[n]}' || echo "No active forwards"
+  ps aux | grep "ssh.*-L" | grep -v grep | grep -oE '\-L [0-9]+:localhost:[0-9]+' | sed 's/-L //'
 }
