@@ -2,15 +2,68 @@
 
 set -euo pipefail
 
-command -v bun >/dev/null 2>&1 || { echo "bun not found"; exit 1; }
-
-packages=(
+readonly PACKAGES=(
   eslint
   stylelint
   typescript
   typescript-language-server
   pyright
   repomix
+  @playwright/cli
 )
 
-bun install -g "${packages[@]}"
+die() {
+  echo "Error: $*" >&2
+  exit 1
+}
+
+command -v bun >/dev/null 2>&1 || die "bun not found"
+
+is_wanted_package() {
+  local package="$1"
+  local wanted
+
+  for wanted in "${PACKAGES[@]}"; do
+    [[ "$package" == "$wanted" ]] && return 0
+  done
+
+  return 1
+}
+
+list_global_packages() {
+  bun pm ls -g 2>/dev/null |
+    awk '
+      /^[[:space:]]*[├└]── / {
+        pkg = $2
+
+        # Strip trailing version while preserving scoped package names.
+        sub(/@[0-9][^ ]*$/, "", pkg)
+
+        print pkg
+      }
+    '
+}
+
+echo "Installing managed global packages..."
+bun install -g "${PACKAGES[@]}"
+
+unmanaged_packages=()
+
+while IFS= read -r package; do
+  [[ -z "$package" ]] && continue
+
+  if ! is_wanted_package "$package"; then
+    unmanaged_packages+=("$package")
+  fi
+done < <(list_global_packages)
+
+if ((${#unmanaged_packages[@]} > 0)); then
+  echo "Removing unmanaged global packages..."
+
+  for package in "${unmanaged_packages[@]}"; do
+    echo "Removing: $package"
+    bun remove -g "$package"
+  done
+fi
+
+echo "Done."
