@@ -1,9 +1,6 @@
 " =================================================================================================
-" let g:copilot_enabled = v:false
-"
 " headings:
 " https://patorjk.com/software/taag/#p=display&f=Terrace&t=.vimrc&x=none&v=4&h=4&w=80&we=false
-"
 " =================================================================================================
 " ▬▬▬.◙.▬▬▬
 " ═▂▄▄▓▄▄▂
@@ -304,10 +301,11 @@ nnoremap <leader>b <cmd>Buffers<CR>
 nnoremap <leader>l <cmd>BLines<CR>
 nnoremap <leader>h <cmd>History<CR>
 nnoremap <leader>e <cmd>Lexplore<CR>
-
+nnoremap <leader>u <cmd>UndotreeToggle<CR>
 nnoremap <leader>g <cmd>Git<CR>
 
-nnoremap <leader>u <cmd>UndotreeToggle<CR>
+nnoremap <leader>= <cmd>set wrap<CR><cmd>set colorcolumn=<CR>
+nnoremap <leader>0 <cmd>set nowrap<CR><cmd>set colorcolumn=80<CR>
 
 let s:ssh_config = expand('~/.vimrc-ssh')
 if filereadable(s:ssh_config) | execute 'source ' . s:ssh_config | endif
