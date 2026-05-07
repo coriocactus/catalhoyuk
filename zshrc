@@ -137,3 +137,15 @@ dip() {
 lip() {
   ps aux | grep "ssh.*-L" | grep -v grep | grep -oE '\-L [0-9]+:localhost:[0-9]+' | sed 's/-L //'
 }
+
+# purge dead shells
+() {
+  for d in ~/.local/state/fnm_multishells//(N); do
+    local pid="${${d:t}%%_*}"
+    if kill -0 "$pid" 2>/dev/null; then
+      ps -p "$pid" -o comm= 2>/dev/null | grep -qE 'zsh|bash|sh' || rm -rf "$d"
+    else
+      rm -rf "$d"
+    fi
+  done
+}
