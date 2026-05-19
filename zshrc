@@ -113,9 +113,17 @@ export PLAYWRIGHT_MCP_BROWSER=chromium
 export OPENCODE_ENABLE_EXA=1
 export XDG_CONFIG_HOME="$HOME/.config"
 
-if command -v fnm >/dev/null 2>&1; then eval "$(fnm env --use-on-cd --version-file-strategy=recursive --shell zsh)"; fi
-if command -v eza >/dev/null 2>&1; then alias ls="eza --icons --group-directories-first --sort oldest"; fi
-if command -v mise >/dev/null 2>&1; then eval "$(mise activate zsh)"; fi
+# purge dead shells
+() {
+  for d in ~/.local/state/fnm_multishells//(N); do
+    local pid="${${d:t}%%_*}"
+    if kill -0 "$pid" 2>/dev/null; then
+      ps -p "$pid" -o comm= 2>/dev/null | grep -qE 'zsh|bash|sh' || rm -rf "$d"
+    else
+      rm -rf "$d"
+    fi
+  done
+}
 
 # ssh port forwarding functions
 fip() {
@@ -138,14 +146,6 @@ lip() {
   ps aux | grep "ssh.*-L" | grep -v grep | grep -oE '\-L [0-9]+:localhost:[0-9]+' | sed 's/-L //'
 }
 
-# purge dead shells
-() {
-  for d in ~/.local/state/fnm_multishells//(N); do
-    local pid="${${d:t}%%_*}"
-    if kill -0 "$pid" 2>/dev/null; then
-      ps -p "$pid" -o comm= 2>/dev/null | grep -qE 'zsh|bash|sh' || rm -rf "$d"
-    else
-      rm -rf "$d"
-    fi
-  done
-}
+if command -v fnm >/dev/null 2>&1; then eval "$(fnm env --use-on-cd --version-file-strategy=recursive --shell zsh)"; fi
+if command -v eza >/dev/null 2>&1; then alias ls="eza --icons --group-directories-first --sort oldest"; fi
+if command -v mise >/dev/null 2>&1; then eval "$(mise activate zsh)"; fi
