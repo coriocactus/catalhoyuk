@@ -114,7 +114,7 @@ export OPENCODE_ENABLE_EXA=1
 export XDG_CONFIG_HOME="$HOME/.config"
 
 # purge dead shells
-() {
+fnm-purge() {
   for d in ~/.local/state/fnm_multishells//(N); do
     local pid="${${d:t}%%_*}"
     if kill -0 "$pid" 2>/dev/null; then

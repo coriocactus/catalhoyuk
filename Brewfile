@@ -11,7 +11,7 @@ brew "eza"
 brew "jj"
 brew "git"
 brew "difftastic"
-brew "mergiraf"
+brew "weave"
 
 brew "bat"
 brew "croc"
