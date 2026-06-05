@@ -67,6 +67,10 @@ set scrolloff=0
 
 set redrawtime=10000
 
+let g:netrw_liststyle = 3
+let g:netrw_hide = 1
+let g:netrw_list_hide = '\(^\|\s\s\)\zs\.\S\+'
+
 " =================================================================================================
 "    ░██    ░██
 "    ░██    ░██
