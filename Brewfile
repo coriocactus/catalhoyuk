@@ -1,5 +1,6 @@
 tap "hashicorp/tap"
 tap "oven-sh/bun"
+tap "stripe/stripe-cli"
 
 brew "zsh"
 brew "tmux"
@@ -36,6 +37,7 @@ brew "ripgrep"
 
 brew "aria2"
 brew "ffmpeg"
+brew "stripe/stripe-cli/stripe"
 
 brew "libpq"
 brew "pgcli"
