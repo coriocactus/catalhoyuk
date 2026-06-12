@@ -69,7 +69,13 @@ set redrawtime=10000
 
 let g:netrw_liststyle = 3
 let g:netrw_hide = 1
-let g:netrw_list_hide = '\(^\|\s\s\)\zs\.\S\+'
+autocmd VimEnter * let g:netrw_list_hide = join(uniq(sort(split(netrw_gitignore#Hide() .. ',\(^\|\s\s\)\zs\.\S\+,.*\.swp$,.DS_Store,*/tmp/*,*.so,*.zip,^\.git/$,^\.\.\=/\=$', ','))), ',')
+
+augroup remember_folds
+  autocmd!
+  autocmd BufWinLeave * mkview
+  autocmd BufWinEnter * silent! loadview
+augroup END
 
 " =================================================================================================
 "    ░██    ░██
@@ -184,6 +190,7 @@ nnoremap <silent> ca <cmd>ALECodeAction<CR>
 let g:ale_linters = {
       \ 'python': ['pylsp', 'ruff'],
       \ 'elixir': ['expert'],
+      \ 'rust': ['analyzer'],
       \ 'haskell': ['hls'],
       \ 'javascript': ['biome', 'tsserver', 'eslint'],
       \ 'javascriptreact': ['biome', 'tsserver', 'eslint'],
