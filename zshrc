@@ -34,6 +34,11 @@ HISTSIZE=2000000
 SAVEHIST=1000000
 HISTFILE=$HOME/.zsh_history
 
+# disable start-up messages
+[ -f ~/.hushlogin ] || touch ~/.hushlogin
+unset MAILCHECK
+unset MAIL
+
 # editor and colors
 export VISUAL="$(which vim)"
 export EDITOR="$VISUAL"
