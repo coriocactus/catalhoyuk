@@ -190,7 +190,7 @@ nnoremap <silent> ca <cmd>ALECodeAction<CR>
 let g:ale_linters = {
       \ 'python': ['pylsp', 'ruff'],
       \ 'elixir': ['expert'],
-      \ 'rust': ['analyzer'],
+      \ 'rust': ['analyzer', 'cargo'],
       \ 'haskell': ['hls'],
       \ 'javascript': ['biome', 'tsserver', 'eslint'],
       \ 'javascriptreact': ['biome', 'tsserver', 'eslint'],
