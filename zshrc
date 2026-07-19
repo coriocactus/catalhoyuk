@@ -46,7 +46,7 @@ export CLICOLOR=1
 alias ls='ls --color=auto'
 
 # prompt
-PS1='%B%F{15}%n@%m%b:%f%F{2}%~%f%F{15}$ %f'
+PS1='%B%F{15}${USER:-%n}@%m%b:%f%F{2}%~%f%F{15}$ %f'
 
 # zsh completions
 autoload -Uz compinit && compinit
@@ -117,6 +117,7 @@ typeset -U path
 export PLAYWRIGHT_MCP_BROWSER=chromium
 export OPENCODE_ENABLE_EXA=1
 export XDG_CONFIG_HOME="$HOME/.config"
+[ -f "$HOME/.ripgreprc" ] && export RIPGREP_CONFIG_PATH="$HOME/.ripgreprc"
 
 # purge dead shells
 fnm-purge() {
