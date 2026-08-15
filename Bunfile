@@ -3,14 +3,13 @@
 set -euo pipefail
 
 readonly PACKAGES=(
-  eslint
-  stylelint
   typescript
   typescript-language-server
+  eslint
+  stylelint
   pyright
   repomix
   @playwright/cli
-  agent-browser
 )
 
 die() {
