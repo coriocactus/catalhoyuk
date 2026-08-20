@@ -46,7 +46,26 @@ export CLICOLOR=1
 alias ls='ls --color=auto'
 
 # prompt
-PS1='%B%F{15}${USER:-%n}@%m%b:%f%F{2}%~%f%F{15}$ %f'
+prompt_path() {
+  local display_path=${PWD/#${HOME}/\~}
+
+  if (( ${#display_path} <= 45 )); then
+    print -r -- "$display_path"
+    return
+  fi
+
+  local -a dirs=("${(@s:/:)display_path}")
+  local shortened=${dirs[1]}
+  local i
+
+  for (( i = 2; i < ${#dirs}; i++ )); do
+    shortened+="/${dirs[i][1]}"
+  done
+
+  print -r -- "$shortened/${dirs[-1]}"
+}
+PS1='%B%F{15}${USER:-%n}@%m%b:%f%F{2}$(prompt_path)%f%F{15}$ %f'
+setopt prompt_subst
 
 # zsh completions
 autoload -Uz compinit && compinit
@@ -66,22 +85,40 @@ if command -v fzf >/dev/null 2>&1; then
   export FZF_CTRL_R_OPTS="--reverse --height=40%"
 fi
 
+# find a repo marker in the current directory or an ancestor
+function _has_repo_marker() {
+  local dir=${PWD:A}
+  while true; do
+    [[ -e "$dir/$1" ]] && return 0
+    [[ "$dir" == / ]] && return 1
+    dir=${dir:h}
+  done
+}
+
 # git branches via $BRANCH
 autoload -Uz vcs_info
 zstyle ':vcs_info:git:*' formats '%b'
-function update_git_branch() { vcs_info ; BRANCH=${vcs_info_msg_0_:-} }
+function update_git_branch() {
+  if _has_repo_marker .git; then
+    vcs_info
+    BRANCH=${vcs_info_msg_0_:-}
+  else
+    BRANCH=""
+  fi
+}
 precmd_functions+=(update_git_branch)
 chpwd_functions+=(update_git_branch)
-setopt prompt_subst
 
 # jj closest local bookmark via $BOOKMARK
 function update_jj_bookmark() {
-  jj root &>/dev/null || { BOOKMARK=""; return }
-  BOOKMARK=$(jj log -r 'closest_bookmark(@)' -T 'bookmarks.map(|b| if(b.remote(), "", b.name() ++ "\n")).join("")' --no-graph 2>/dev/null | sed -n '1p')
+  if _has_repo_marker .jj; then
+    BOOKMARK=$(jj --ignore-working-copy log -r 'closest_bookmark(@)' -T 'bookmarks.map(|b| if(b.remote(), "", b.name() ++ "\n")).join("")' --no-graph 2>/dev/null | sed -n '1p')
+  else
+    BOOKMARK=""
+  fi
 }
 precmd_functions+=(update_jj_bookmark)
 chpwd_functions+=(update_jj_bookmark)
-setopt prompt_subst
 
 # path
 user_paths=(
@@ -93,23 +130,22 @@ user_paths=(
   $HOME/.opencode/bin(N-/)
 )
 
-if [[ $(uname) == "Darwin" ]]; then
-  path=(
-    /opt/homebrew/bin(N-/)
-    /opt/homebrew/sbin(N-/)
-    /opt/homebrew/opt/rustup/bin(N-/)
-    /opt/homebrew/opt/libpq/bin(N-/)
-    $user_paths
-    $path
-  )
+if (( $+commands[brew] )); then
+  brew_prefix=$(brew --prefix)
+elif [[ $OSTYPE == darwin* ]]; then
+  brew_prefix=/opt/homebrew
 else
-  path=(
-    /home/linuxbrew/.linuxbrew/bin(N-/)
-    /home/linuxbrew/.linuxbrew/sbin(N-/)
-    $user_paths
-    $path
-  )
+  brew_prefix=/home/linuxbrew/.linuxbrew
 fi
+
+path=(
+  $brew_prefix/bin(N-/)
+  $brew_prefix/sbin(N-/)
+  $brew_prefix/opt/rustup/bin(N-/)
+  $brew_prefix/opt/libpq/bin(N-/)
+  $user_paths
+  $path
+)
 
 typeset -U path
 
@@ -118,10 +154,11 @@ export PLAYWRIGHT_MCP_BROWSER=chromium
 export OPENCODE_ENABLE_EXA=1
 export XDG_CONFIG_HOME="$HOME/.config"
 [ -f "$HOME/.ripgreprc" ] && export RIPGREP_CONFIG_PATH="$HOME/.ripgreprc"
+[ -s "$HOME/.bun/_bun" ] && source "$HOME/.bun/_bun"
 
 # purge dead shells
 fnm-purge() {
-  for d in ~/.local/state/fnm_multishells//(N); do
+  for d in ~/.local/state/fnm_multishells/*(N); do
     local pid="${${d:t}%%_*}"
     if kill -0 "$pid" 2>/dev/null; then
       ps -p "$pid" -o comm= 2>/dev/null | grep -qE 'zsh|bash|sh' || rm -rf "$d"
