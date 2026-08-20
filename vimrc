@@ -52,6 +52,7 @@ set expandtab
 set shiftwidth=2
 set softtabstop=2
 set backspace=indent,eol,start
+" set mouse=a
 
 set autoindent
 
@@ -176,6 +177,20 @@ let g:ale_python_pylsp_config = {'pylsp': {
       \ },
 \}}
 
+call ale#Set('typescript_tsgo_executable', 'tsc')
+call ale#Set('typescript_tsgo_use_global', 0)
+call ale#linter#Define('typescript', {
+      \ 'name': 'tsgo',
+      \ 'lsp': 'stdio',
+      \ 'executable': {buffer -> ale#path#FindExecutable(
+      \   buffer,
+      \   'typescript_tsgo',
+      \   ['node_modules/.bin/tsc'],
+      \ )},
+      \ 'command': '%e --lsp --stdio',
+      \ 'project_root': function('ale#handlers#tsserver#GetProjectRoot'),
+\})
+
 set omnifunc=ale#completion#OmniFunc
 set completeopt=menu,noselect
 
@@ -199,6 +214,51 @@ let g:ale_linters = {
       \ 'html': ['djlint'],
       \ 'css': ['stylelint'],
 \}
+
+function! ConfigureTypeScriptAle() abort
+  let b:ale_linters = ['biome']
+
+  let l:typescript_package = ale#path#FindNearestFile(
+        \ bufnr(''),
+        \ 'node_modules/typescript/package.json',
+  \)
+
+  if !empty(l:typescript_package)
+    try
+      let l:typescript = json_decode(join(readfile(l:typescript_package), "\n"))
+      let l:server = str2nr(get(l:typescript, 'version', '')) >= 7
+            \ ? 'tsgo'
+            \ : 'tsserver'
+      call add(b:ale_linters, l:server)
+    catch
+    endtry
+  elseif executable('tsserver')
+    call add(b:ale_linters, 'tsserver')
+  endif
+
+  let l:eslint_config = ale#handlers#eslint#FindConfig(bufnr(''))
+
+  if !empty(l:eslint_config)
+    if fnamemodify(l:eslint_config, ':t') isnot# 'package.json'
+      call add(b:ale_linters, 'eslint')
+    else
+      try
+        let l:package = json_decode(join(readfile(l:eslint_config), "\n"))
+
+        if has_key(l:package, 'eslintConfig')
+          call add(b:ale_linters, 'eslint')
+        endif
+      catch
+      endtry
+    endif
+  endif
+endfunction
+
+augroup ale_typescript
+  autocmd!
+  autocmd FileType typescript,typescriptreact
+        \ call ConfigureTypeScriptAle()
+augroup END
 
 " =================================================================================================
 "               ░██    ░██░██
