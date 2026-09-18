@@ -189,6 +189,7 @@ lip() {
   ps aux | grep "ssh.*-L" | grep -v grep | grep -oE '\-L [0-9]+:localhost:[0-9]+' | sed 's/-L //'
 }
 
+if command -v jj >/dev/null 2>&1; then source <(COMPLETE=zsh jj); fi
 if command -v fnm >/dev/null 2>&1; then eval "$(fnm env --use-on-cd --version-file-strategy=recursive --shell zsh)"; fi
 if command -v eza >/dev/null 2>&1; then alias ls="eza --icons --group-directories-first --sort oldest"; fi
 if command -v mise >/dev/null 2>&1; then eval "$(mise activate zsh)"; fi
