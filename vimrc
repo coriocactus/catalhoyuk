@@ -66,7 +66,8 @@ set laststatus=0
 set cursorline
 set scrolloff=0
 
-set redrawtime=200
+set redrawtime=2000
+set regexpengine=0
 
 let g:netrw_liststyle = 3
 let g:netrw_hide = 1
