@@ -39,12 +39,6 @@ HISTFILE=$HOME/.zsh_history
 unset MAILCHECK
 unset MAIL
 
-# editor and colors
-export VISUAL="$(which vim)"
-export EDITOR="$VISUAL"
-export CLICOLOR=1
-alias ls='ls --color=auto'
-
 # prompt
 prompt_path() {
   local display_path=${PWD/#${HOME}/\~}
@@ -147,6 +141,12 @@ path=(
 )
 
 typeset -U path
+
+# editor and colors
+export VISUAL="$(which vim)"
+export EDITOR="$VISUAL"
+export CLICOLOR=1
+alias ls='ls --color=auto'
 
 # apps
 export PLAYWRIGHT_MCP_BROWSER=chromium
