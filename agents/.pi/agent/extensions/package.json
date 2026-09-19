@@ -1,0 +1,22 @@
+{
+  "name": "pi-local-extensions",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "biome check . --error-on-warnings",
+    "format": "biome format --write .",
+    "typecheck": "node tool-display/tests/typecheck.mjs",
+    "test": "node tool-display/tests/run.mjs && node fullscreen-history/tests/run.mjs",
+    "test:terminal": "node tool-display/tests/terminal.mjs",
+    "verify": "npm run check && npm run typecheck && npm test && npm run test:terminal"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.14",
+    "@xterm/headless": "6.0.0",
+    "node-pty": "1.1.0",
+    "typescript": "7.0.2"
+  },
+  "allowScripts": {
+    "node-pty@1.1.0": true
+  }
+}

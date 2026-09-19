@@ -1,0 +1,27 @@
+{
+  "lastChangelogVersion": "0.85.1",
+  "theme": "dark",
+  "tuiMode": "fullscreen",
+  "fullscreenScrollbar": "auto",
+  "editorPaddingX": 1,
+  "outputPad": 1,
+  "steeringMode": "all",
+  "followUpMode": "one-at-a-time",
+  "quietStartup": true,
+  "enableSkillCommands": false,
+  "hideThinkingBlock": true,
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-6-astra",
+  "defaultThinkingLevel": "xhigh",
+  "enabledModels": [
+    "gpt-6-astra"
+  ],
+  "modelThinkingLevels": {
+    "gpt-6-astra": "xhigh"
+  },
+  "packages": [
+    "npm:pi-web-access",
+    "npm:@plannotator/pi-extension",
+    "npm:@narumitw/pi-btw"
+  ]
+}
