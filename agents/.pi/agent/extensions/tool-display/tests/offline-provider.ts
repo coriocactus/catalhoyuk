@@ -1,13 +1,88 @@
 // Local, deterministic test provider. No HTTP requests or credentials are used.
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { type AssistantMessage, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  type ExtensionAPI,
+  InteractiveMode,
+  ToolExecutionComponent,
+} from "@earendil-works/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
   const root = process.env.DISPLAY_FIXTURE_DIR;
   if (!root) throw new Error("DISPLAY_FIXTURE_DIR must point to the isolated test directory.");
+  pi.on("session_start", (event, ctx) => {
+    writeFileSync(
+      join(root, "runtime-ready.json"),
+      JSON.stringify({
+        reason: event.reason,
+        id: ctx.sessionManager.getSessionId(),
+        time: Date.now(),
+      }),
+    );
+  });
+  pi.on("agent_end", (_event, ctx) => {
+    if (!existsSync(join(root, "update-draft"))) return;
+    ctx.ui.setEditorText("BUSY_DRAFT_UPDATED_WHILE_VIM_OPEN");
+    writeFileSync(join(root, "draft-updated"), "done");
+  });
+  pi.registerCommand("fixture-owners", {
+    description: "Inspect runtime adapter ownership in the isolated test",
+    handler: async (label, ctx) => {
+      const host = InteractiveMode.prototype;
+      const history = Reflect.get(host, Symbol.for("pi-local.fullscreen-history.v1"));
+      const images = Reflect.get(
+        ToolExecutionComponent.prototype,
+        Symbol.for("tool-display.native-images.patch.v1"),
+      );
+      const padding = Reflect.get(host, Symbol.for("tool-display.native-padding.patch.v1"));
+      const restored =
+        Reflect.get(host, "renderSessionEntries") ===
+        Reflect.get(host, Symbol.for("fixture.original-history"));
+      ctx.ui.notify(
+        `OWNERS_${label}_H${history?.owners.size ?? 0}_I${images?.users ?? 0}_P${padding?.users ?? 0}_R${Number(restored)}`,
+        "info",
+      );
+    },
+  });
+  pi.registerCommand("fixture-disable-history", {
+    description: "Disable the isolated history wrapper on reload",
+    handler: async (_args, ctx) => {
+      writeFileSync(join(root, "disable-history"), "disabled");
+      await ctx.reload();
+    },
+  });
+  pi.registerCommand("fixture-resume", {
+    description: "Exercise real session replacement without navigating the picker",
+    handler: async (_args, ctx) => {
+      await ctx.switchSession(join(root, "session.jsonl"));
+    },
+  });
+  pi.registerCommand("fixture-fork", {
+    description: "Exercise real fork replacement",
+    handler: async (_args, ctx) => {
+      const leaf = ctx.sessionManager.getLeafId();
+      if (!leaf) throw new Error("Expected a saved fixture leaf.");
+      await ctx.fork(leaf, { position: "at" });
+    },
+  });
+  pi.registerCommand("fixture-replace", {
+    description: "Gate a replacement until Vim owns the terminal",
+    handler: async (_args, ctx) => {
+      ctx.ui.setEditorText("OUTGOING_DRAFT");
+      ctx.ui.notify("REPLACEMENT_ARMED", "info");
+      for (let i = 0; !existsSync(join(root, "replace-now")); i++) {
+        if (i === 400) throw new Error("Timed out waiting for replacement gate.");
+        await delay(50);
+      }
+      await ctx.newSession({
+        withSession: async (next) => {
+          next.ui.setEditorText("REPLACEMENT_SESSION_DRAFT");
+        },
+      });
+    },
+  });
   pi.registerMarkdownTransformer((markdown) => {
     const marker = markdown.match(/\bARCHIVE_\d{3}\b/)?.[0];
     if (marker) appendFileSync(join(root, "history-rendered"), `${marker}\n`);

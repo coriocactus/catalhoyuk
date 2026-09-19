@@ -30,15 +30,41 @@ import {
 } from "../file-tools-shared/transcript.ts";
 import { ToolGroups, type ToolName } from "./model.ts";
 import { installNativeImageSlot, ownImageRendering, renderNativeImages } from "./native-images.ts";
+import { installNativeOutputPadding, outputPadding, ownOutputPadding } from "./native-padding.ts";
 import { ToolGroupView } from "./view.ts";
 
 const EMPTY: Component = { render: () => [], invalidate() {} };
 type DisplayState = { view?: ToolGroupView };
 
+function installNativeRendering(report: (error: Error) => void): () => void {
+  const releaseImages = installNativeImageSlot(report);
+  try {
+    const releasePadding = installNativeOutputPadding(report);
+    return () => {
+      releasePadding();
+      releaseImages();
+    };
+  } catch (error) {
+    releaseImages();
+    throw error;
+  }
+}
+
 export default function (pi: ExtensionAPI) {
   const groups = new ToolGroups();
   let historyGroups = new WeakMap<HistoryPage, ToolGroups>();
   let transcript: TranscriptView | undefined;
+  let sessionContext: ExtensionContext | undefined;
+  const warnings: string[] = [];
+  const flushWarnings = () => {
+    if (sessionContext)
+      for (const message of warnings.splice(0)) sessionContext.ui.notify(message, "warning");
+  };
+  const report = (error: Error) => {
+    warnings.push(`Tool display: ${error.message}`);
+    queueMicrotask(flushWarnings); // Never add UI messages in the middle of a render.
+  };
+  let releaseRendering: (() => void) | undefined = installNativeRendering(report);
   const unsubscribeTranscript = pi.events.on(TRANSCRIPT_VIEW, (value) => {
     if (!isTranscriptView(value)) return;
     transcript = value;
@@ -46,8 +72,6 @@ export default function (pi: ExtensionAPI) {
     groups.setAllExpanded(value.expanded);
     replay(groups, value.entries, value.cwd);
   });
-  let releaseImages: (() => void) | undefined = installNativeImageSlot();
-  let sessionContext: ExtensionContext | undefined;
   let configuration: { cwd: string; trusted: boolean; settings: SettingsManager } | undefined;
 
   function settingsFor(ctx: ExtensionContext): SettingsManager {
@@ -105,10 +129,11 @@ export default function (pi: ExtensionAPI) {
   }
 
   pi.on("session_start", (_event, ctx) => {
-    releaseImages ??= installNativeImageSlot();
+    releaseRendering ??= installNativeRendering(report);
     configuration = undefined;
     settingsFor(ctx);
     sessionContext = ctx.mode === "tui" ? ctx : undefined;
+    flushWarnings();
     if (sessionContext) rebuild(ctx);
   });
   pi.on("session_tree", (_event, ctx) => {
@@ -117,11 +142,11 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_compact", (_event, ctx) => {
     if (sessionContext) rebuild(ctx);
   });
-  pi.on("session_shutdown", (event) => {
-    if (!event || event.reason === "quit" || event.reason === "reload") unsubscribeTranscript();
+  pi.on("session_shutdown", () => {
+    unsubscribeTranscript();
     transcript = undefined;
-    releaseImages?.();
-    releaseImages = undefined;
+    releaseRendering?.();
+    releaseRendering = undefined;
     sessionContext = undefined;
     configuration = undefined;
     groups.reset();
@@ -181,6 +206,7 @@ export default function (pi: ExtensionAPI) {
                   context.invalidate();
                 },
                 openFile,
+                outputPad: () => outputPadding(context.state),
                 renderImages: (width) => renderNativeImages(context.state, width),
               });
         context.state.view = view;
@@ -194,7 +220,7 @@ export default function (pi: ExtensionAPI) {
         return EMPTY;
       },
     };
-    pi.registerTool(ownImageRendering(definition));
+    pi.registerTool(ownOutputPadding(ownImageRendering(definition)));
   }
 
   register("read", (cwd, settings) =>

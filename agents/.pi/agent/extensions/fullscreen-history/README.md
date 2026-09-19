@@ -20,8 +20,9 @@ Pi itself still reads the session JSONL into memory; this is not disk-level pagi
 or a memory cap. Already displayed rows are retained.
 
 `model.ts` selects entries along parent links; `scroll.ts` observes upward input
-and anchors prepends. `native.ts` isolates the private renderer adapter, pinned to
-**Pi 0.85.1**. It reuses native renderers with separate pending-tool state, never
-patches installed files, and requires revalidation for Pi upgrades.
+and anchors prepends, including input arriving before the next layout. `native.ts`
+isolates the private renderer adapter, checks the required APIs, and falls back to
+the native transcript with a warning if setup is incompatible. Each outgoing
+session disposes its adapter. No installed files are patched.
 
 See [development and tests](../README.md).

@@ -33,13 +33,14 @@ export default function (pi: ExtensionAPI) {
     adapter.synchronize();
   });
   pi.on("session_tree", () => adapter.reset());
-  pi.on("session_shutdown", (event) => {
+  pi.on("session_shutdown", () => {
     unsubscribe?.();
     unsubscribe = undefined;
     if (pending) clearImmediate(pending);
     pending = undefined;
     context = undefined;
-    if (event.reason === "quit" || event.reason === "reload") adapter.dispose();
-    else adapter.reset(); // Retain registration for pre-session_start new/resume/fork renders.
+    // Every replacement gets a new factory before transcript reconstruction.
+    // The outgoing registration must never outlive its runtime.
+    adapter.dispose();
   });
 }
