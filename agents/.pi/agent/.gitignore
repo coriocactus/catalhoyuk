@@ -1,0 +1,8 @@
+/auth.json
+/models-store.json
+/trust.json
+/sessions/
+/npm/
+/git/
+node_modules/
+*.lock/
