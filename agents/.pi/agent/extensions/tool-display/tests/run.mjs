@@ -30,6 +30,7 @@ const themes = await import(join(pkg, "dist/modes/interactive/theme/theme.js"));
 const tui = await import(require.resolve("@earendil-works/pi-tui"));
 core.initTheme("dark");
 const nativeRender = core.ToolExecutionComponent.prototype.render;
+const nativeLookup = core.InteractiveMode.prototype.getRegisteredToolDefinition;
 const PIXEL_PNG =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII=";
 const root = mkdtempSync(join(tmpdir(), "pi-tool-display-"));
@@ -41,6 +42,11 @@ after(async () => {
     core.ToolExecutionComponent.prototype.render,
     nativeRender,
     "last owner restores Pi rendering on shutdown",
+  );
+  assert.equal(
+    core.InteractiveMode.prototype.getRegisteredToolDefinition,
+    nativeLookup,
+    "last owner restores Pi's tool lookup on shutdown",
   );
   if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
   else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
@@ -180,6 +186,78 @@ async function fixture({ global = {}, project = {}, trusted = false, mode = "tui
   };
 }
 
+test("compatibility checks capabilities, not a version allowlist, and warns before native fallback", async (t) => {
+  const shim = join(root, "future-pi.mjs");
+  writeFileSync(
+    shim,
+    `export * from ${JSON.stringify(pathToFileURL(join(pkg, "dist/index.js")).href)}; export const VERSION = "999.0.0";`,
+  );
+  const future = createJiti(import.meta.url, {
+    moduleCache: false,
+    fsCache: false,
+    alias: {
+      "@earendil-works/pi-coding-agent": shim,
+      "@earendil-works/pi-tui": require.resolve("@earendil-works/pi-tui"),
+    },
+  });
+  const images = await future.import(join(extension, "native-images.ts"));
+  const padding = await future.import(join(extension, "native-padding.ts"));
+  const history = await future.import(join(extension, "../fullscreen-history/native.ts"));
+  t.mock.method(core.ToolExecutionComponent.prototype, "render", () => ["native fallback"]);
+  t.mock.method(core.InteractiveMode.prototype, "getRegisteredToolDefinition", function () {
+    return this.definition;
+  });
+  const notices = [],
+    releases = [];
+  try {
+    releases.push(images.installNativeImageSlot((error) => notices.push(error.message)));
+    releases.push(padding.installNativeOutputPadding((error) => notices.push(error.message)));
+    const adapter = history.installHistoryAdapter((error) => assert.fail(error.message));
+    releases.push(() => adapter.dispose());
+    const broken = {
+      toolDefinition: images.ownImageRendering({ renderShell: "self" }),
+      rendererState: {},
+    };
+    for (let i = 0; i < 2; i++)
+      assert.deepEqual(core.ToolExecutionComponent.prototype.render.call(broken, 30), [
+        "native fallback",
+      ]);
+    assert.equal(notices.length, 1, "one warning, not one per paint");
+    assert.match(notices[0], /Pi 999\.0\.0: image adapter API changed/);
+    const state = {};
+    const host = {
+      outputPad: 2,
+      definition: padding.ownOutputPadding({
+        renderCall() {
+          return {};
+        },
+      }),
+    };
+    core.InteractiveMode.prototype.getRegisteredToolDefinition
+      .call(host, "read")
+      .renderCall({}, {}, { state });
+    assert.equal(padding.outputPadding(state), 2, "nonnegative integer padding remains compatible");
+    delete host.outputPad;
+    assert.equal(padding.outputPadding(state), 0);
+    assert.equal(padding.outputPadding(state), 0);
+    assert.equal(notices.length, 2);
+    assert.match(notices[1], /Pi 999\.0\.0: output padding API changed/);
+  } finally {
+    for (const release of releases.reverse()) release();
+  }
+  assert.equal(
+    core.InteractiveMode.prototype[Symbol.for("pi-local.fullscreen-history.v1")],
+    undefined,
+  );
+  const imageRender = core.ToolExecutionComponent.prototype.render;
+  core.ToolExecutionComponent.prototype.render = undefined;
+  try {
+    assert.throws(() => images.installNativeImageSlot(), /renderer is unavailable/);
+  } finally {
+    core.ToolExecutionComponent.prototype.render = imageRender;
+  }
+});
+
 test("palette supplies RGB and indexed colours without losing diff word highlights", (t) => {
   // Pi's chalk styles are disabled when this test's stdout is a pipe.
   t.mock.method(themes.Theme.prototype, "inverse", (text) => `\x1b[7m${text}\x1b[27m`);
@@ -282,7 +360,7 @@ test("normalized renderer inputs tolerate invalid arguments without bypassing va
       );
       component.updateResult({ ...result("VALIDATION_ERROR"), isError: true });
       assert.doesNotThrow(() => component.render(100));
-      assert.match(plain(component), /✗/);
+      assert.match(plain(component), name === "bash" ? /\$ … ▸/ : /✗/);
       assert(!plain(component).includes("VALIDATION_ERROR"));
     }
   }
@@ -344,6 +422,80 @@ test("rendering is read-only and cached; file clicks use an acknowledged referen
   assert(!plain(a.view).includes("OPEN_OUTPUT"));
 });
 
+test("trailing carets survive truncation and toggle independently of filename links", async () => {
+  const f = await fixture();
+  const opened = [];
+  f.pi.events.on(OPEN_FILE_EVENT, (request) => {
+    request.accepted = true;
+    opened.push(request.path);
+  });
+  const path = "日本語 very long filename that must be truncated.txt";
+  const a = f.call("read", "trailing-a", { path });
+  a.result(result("DETAIL_A"));
+  assert.equal(plain(a.view), `✓ Read ${path} ▸`);
+  const b = f.call("read", "trailing-b", { path: "b.txt" });
+  b.result(result("DETAIL_B"));
+  assert.equal(plain(a.view), "✓ Explored 2 files ▸");
+  a.view.handleMouse(mouse(tui.visibleWidth(plain(a.view)) - 1));
+  assert.equal(plain(a.view), `✓ Explored 2 files ▾\n  ✓ Read ${path} ▸\n  ✓ Read b.txt ▸`);
+  for (const width of [0, 1, 2, 3, 4, 10, 24, 40, 160]) {
+    const lines = a.view.render(width);
+    for (const [i, line] of lines.entries()) {
+      assert(tui.visibleWidth(line) <= width);
+      if (width > 0) assert(tui.stripTerminalSequences(line).endsWith(i === 0 ? "▾" : "▸"));
+    }
+  }
+  const clipped = a.view.render(24)[1];
+  assert(!tui.stripTerminalSequences(clipped).includes(path));
+  a.view.invalidate(); // Hit targets still refer to the last painted frame.
+  a.view.handleMouse(mouse(tui.visibleWidth("  ✓ Read "), 1));
+  assert.deepEqual(opened, [path]);
+  a.view.handleMouse(mouse(tui.visibleWidth(clipped) - 1, 1));
+  assert.match(plain(a.view, 24), /DETAIL_A/);
+  assert.deepEqual(opened, [path], "the clipped filename link must not capture the caret");
+  const write = f.call("write", "trailing-write", { path: "new.ts", content: "new" });
+  write.result(result("written"));
+  assert.equal(plain(write.view), "✓ Wrote new.ts ▸");
+});
+
+test("command headers use a status-coloured dollar without ticks or crosses", async () => {
+  const f = await fixture();
+  const a = f.call("bash", "dollar-a", { command: "npm test" }, false);
+  const neutral = themes.theme.fg("muted", "$");
+  assert.equal(plain(a.view), "$ npm test ▸");
+  assert(a.view.render(160)[0].startsWith(`${neutral} npm test `));
+  a.result(result("streaming"), false, true);
+  assert(a.view.render(160)[0].startsWith(`${neutral} npm test `));
+  a.result(result("passed"));
+  assert(a.view.render(160)[0].startsWith(`${paint(themes.theme, "green", "$")} npm test `));
+  a.result(result("failed"), true);
+  assert.equal(plain(a.view), "$ npm test ▸");
+  assert(a.view.render(160)[0].startsWith(`${paint(themes.theme, "red", "$")} npm test `));
+  a.result(result("passed"));
+  const b = f.call("bash", "dollar-b", { command: "npm run lint" }, false);
+  assert.equal(plain(a.view), "$ Run 2 commands ▸");
+  assert(a.view.render(160)[0].startsWith(`${neutral} Run `));
+  b.result(result("streaming"), false, true);
+  assert.equal(plain(a.view), "$ Running 2 commands ▸");
+  assert(a.view.render(160)[0].startsWith(`${neutral} Running `));
+  b.result(result("passed"));
+  assert.equal(plain(a.view), "$ Ran 2 commands ▸");
+  assert(a.view.render(160)[0].startsWith(`${paint(themes.theme, "green", "$")} Ran `));
+  b.result(result("failed"), true);
+  assert.equal(plain(a.view), "$ Ran 2 commands (1 failed) ▸\n  $ npm run lint ▸");
+  assert(a.view.render(160)[0].startsWith(`${paint(themes.theme, "red", "$")} Ran `));
+  f.expand(true);
+  const headers = a.view
+    .render(160)
+    .filter((line) => tui.stripTerminalSequences(line).endsWith("▾"));
+  assert.equal(headers.length, 3);
+  for (const [i, tone] of ["red", "green", "red"].entries()) {
+    const prefix = `${i ? "  " : ""}${paint(themes.theme, tone, "$")} `;
+    assert(headers[i].startsWith(prefix));
+    assert(!/[✓✗]/.test(tui.stripTerminalSequences(headers[i])));
+  }
+});
+
 test("failed calls remain visible, but their error bodies obey row and global toggles", async () => {
   const f = await fixture();
   const a = f.call("bash", "a", { command: "printf hello" }, false);
@@ -354,7 +506,7 @@ test("failed calls remain visible, but their error bodies obey row and global to
   a.result(result("success"));
   b.result(result("ERROR_BODY\nSTACK_TRACE"), true);
   assert.match(plain(a.view), /Ran 2 commands \(1 failed\)/);
-  assert.match(plain(a.view), /✗ \$ exit 1/);
+  assert.match(plain(a.view), /^ {2}\$ exit 1 ▸$/m);
   assert(!plain(a.view).includes("ERROR_BODY"));
   a.view.handleMouse(mouse(0, 1));
   assert.match(plain(a.view), /ERROR_BODY\n\s*STACK_TRACE/);
@@ -363,7 +515,7 @@ test("failed calls remain visible, but their error bodies obey row and global to
   f.expand(true);
   assert.match(plain(a.view), /STACK_TRACE/);
   f.expand(false);
-  assert.match(plain(a.view), /✗ \$ exit 1/);
+  assert.match(plain(a.view), /^ {2}\$ exit 1 ▸$/m);
   assert(!plain(a.view).includes("STACK_TRACE"));
   const edit = f.call("edit", "e", { path: "edit.ts" });
   edit.result(result("success", { diff: "-1 before\n+1 after" }));
@@ -389,7 +541,126 @@ test("edit headers omit zero counts while retaining nonzero additions and remova
     ["", ""],
   ]) {
     edit.result(result("success", { diff }));
-    assert.equal(plain(edit.view), `▸ ✓ Edited edit.ts${suffix}`);
+    assert.equal(plain(edit.view), `✓ Edited edit.ts${suffix} ▸`);
+  }
+});
+
+test("output padding follows the live host for cached headers, bodies, clicks and images", async (t) => {
+  const f = await fixture();
+  const definitions = new Map(f.pi.tools);
+  const host = { outputPad: 0, session: { getToolDefinition: (name) => definitions.get(name) } };
+  const lookup = (name) =>
+    core.InteractiveMode.prototype.getRegisteredToolDefinition.call(host, name);
+  const component = (name, id, args) =>
+    new core.ToolExecutionComponent(
+      name,
+      id,
+      args,
+      {},
+      lookup(name),
+      { requestRender() {} },
+      f.dir,
+    );
+  const opened = [];
+  f.pi.events.on(OPEN_FILE_EVENT, (request) => {
+    request.accepted = true;
+    opened.push(request.path);
+  });
+  const path = "日本語-padding-long-filename.txt";
+  const read = component("read", "padded-read", { path });
+  read.updateResult({ ...result("READ_BODY"), isError: false });
+  const unpadded = tui.stripTerminalSequences(read.render(30)[1]);
+  assert(unpadded.startsWith("✓ Read ") && unpadded.endsWith(" ▸"));
+  // The view keeps the old hit targets until it is rendered with the new inset.
+  const view = read.rendererState.view;
+  host.outputPad = 1;
+  view.invalidate();
+  view.handleMouse(mouse(tui.visibleWidth("✓ Read ")));
+  assert.deepEqual(opened, [path]);
+  view.handleMouse(mouse(tui.visibleWidth(unpadded) - 1));
+  assert.match(plain(read, 30), /^ {3}READ_BODY/m);
+  const padded = tui.stripTerminalSequences(read.render(30)[1]);
+  assert(padded.startsWith(" ✓ Read ") && padded.endsWith(" ▾"));
+  read.handleMouse({ ...mouse(tui.visibleWidth(" ✓ Read "), 1), width: 30 });
+  assert.deepEqual(opened, [path, path]);
+
+  f.expand(true);
+  const components = [read];
+  for (const [name, args, output] of [
+    ["edit", { path: "edit.txt" }, result("edited", { diff: "-1 before\n+1 after" })],
+    ["write", { path: "write.txt", content: "WRITE_BODY" }, result("written")],
+    ["bash", { command: "echo BASH_BODY" }, result("BASH_BODY")],
+  ]) {
+    const row = component(name, `padded-${name}`, args);
+    row.updateResult({ ...output, isError: false });
+    components.push(row);
+  }
+  for (const padding of [1, 0, 1]) {
+    host.outputPad = padding; // No updateDisplay/invalidate: exercise the render-cache key.
+    for (const row of components) {
+      const lines = row.render(30).slice(1).map(tui.stripTerminalSequences);
+      assert.equal(lines[0].match(/^ */)[0].length, padding);
+      assert(lines[0].endsWith(" ▾"));
+      assert(lines.slice(1).some((line) => line.trim()));
+      for (const line of lines) {
+        assert(tui.visibleWidth(line) <= 30 - padding, "right padding reduces available width");
+        if (line.trim()) assert(line.startsWith(" ".repeat(padding)));
+      }
+      for (const width of [0, 1, 2, 3, 10])
+        for (const line of row.render(width)) assert(tui.visibleWidth(line) <= width);
+      row.render(30); // Leave the same width cached before changing only outputPad.
+    }
+  }
+
+  // Binding is host-local, scoped to our definitions, and never mutates the originals.
+  const otherHost = { ...host, outputPad: 0 };
+  const other = core.InteractiveMode.prototype.getRegisteredToolDefinition.call(otherHost, "write");
+  const otherRow = new core.ToolExecutionComponent(
+    "write",
+    "other-host",
+    { path: "other.txt", content: "OTHER" },
+    {},
+    other,
+    { requestRender() {} },
+    f.dir,
+  );
+  otherRow.updateResult({ ...result("written"), isError: false });
+  assert(tui.stripTerminalSequences(otherRow.render(30)[1]).startsWith("✓ Wrote "));
+  const original = definitions.get("write");
+  assert.notEqual(other.renderCall, original.renderCall);
+  assert.equal(f.pi.tools.get("write"), original);
+  const unmanaged = core.createReadToolDefinition(f.dir);
+  const plainHost = { outputPad: 1, session: { getToolDefinition: () => unmanaged } };
+  assert.equal(
+    core.InteractiveMode.prototype.getRegisteredToolDefinition.call(plainHost, "read").renderCall,
+    unmanaged.renderCall,
+  );
+
+  tui.setCapabilityOverrides({ images: "kitty" });
+  try {
+    const image = component("read", "padded-image", { path: "picture.png" });
+    const output = {
+      content: [{ type: "image", data: PIXEL_PNG, mimeType: "image/png" }],
+      isError: false,
+    };
+    const payload = JSON.stringify(output);
+    image.updateResult(output);
+    const widths = [];
+    const nativeImage = image.imageComponents[0];
+    const render = nativeImage.render.bind(nativeImage);
+    t.mock.method(nativeImage, "render", (width) => {
+      widths.push(width);
+      return render(width);
+    });
+    for (const padding of [0, 1]) {
+      host.outputPad = padding;
+      const lines = image.render(40);
+      assert.equal(widths.at(-1), 40 - padding * 2 - 2);
+      assert(lines.find(isImageLine).startsWith(" ".repeat(padding + 2)));
+      assert.equal(JSON.stringify(output), payload);
+    }
+  } finally {
+    tui.setCapabilityOverrides({ images: false });
   }
 });
 
@@ -675,6 +946,170 @@ test("reload/tree/compaction reconstruct persisted groups, failures, and image b
   assert(!plain(f.call("read", "new-branch", {}).view).includes("2 files"));
 });
 
+test("real Pi dialog preserves newer drafts on Vim success, failure and session replacement", async (t) => {
+  const oldVisual = process.env.VISUAL;
+  const stdout = process.stdout.write;
+  t.mock.method(process.stdout, "write", function (chunk, ...args) {
+    return chunk === "\x1b[2J\x1b[H" ? true : stdout.call(this, chunk, ...args);
+  });
+  try {
+    for (const scenario of [
+      "success",
+      "cleared-draft",
+      "multiline-draft",
+      "exit-error",
+      "signal",
+      "spawn-error",
+      "new",
+      "resume",
+      "fork",
+      "reload",
+      "quit",
+      "stubborn",
+    ]) {
+      await t.test(scenario, async () => {
+        const dir = mkdtempSync(join(root, "draft-"));
+        const path = join(dir, "literal.txt"),
+          ready = join(dir, "ready"),
+          gate = join(dir, "exit");
+        writeFileSync(path, "safe\n");
+        const editor = join(dir, "editor.mjs");
+        writeFileSync(
+          editor,
+          `#!${process.execPath}\nimport { existsSync, readFileSync, writeFileSync } from 'node:fs';
+process.on('SIGTERM', () => { ${scenario === "stubborn" ? "" : "setTimeout(() => process.exit(0), 80);"} });
+writeFileSync(${JSON.stringify(ready)}, String(process.pid));
+setInterval(() => { if (existsSync(${JSON.stringify(gate)})) {
+  const code = readFileSync(${JSON.stringify(gate)}, 'utf8');
+  if (code === 'signal') process.kill(process.pid, 'SIGKILL'); else process.exit(Number(code));
+} }, 5);\n`,
+          { mode: 0o700 },
+        );
+        process.env.VISUAL = scenario === "spawn-error" ? join(dir, "missing") : editor;
+        let alive = true,
+          finished = 0,
+          starts = 0,
+          stops = 0,
+          staleAccesses = 0;
+        const notices = [];
+        const latest =
+          scenario === "cleared-draft"
+            ? ""
+            : scenario === "multiline-draft"
+              ? "LATEST_DRAFT\n日本語\n"
+              : "LATEST_DRAFT";
+        const failed = ["spawn-error", "exit-error", "signal"].includes(scenario);
+        const makeEditor = (text) => ({
+          getText: () => text,
+          setText: (value) => {
+            text = value;
+          },
+          render: () => [],
+          invalidate() {},
+        });
+        const host = {
+          editor: makeEditor("ORIGINAL_DRAFT"),
+          editorContainer: new tui.Container(),
+          keybindings: {},
+          ui: {
+            stop() {
+              stops++;
+              host.editor.setText(latest);
+            },
+            start() {
+              assert(alive, "never restart an obsolete TUI");
+              starts++;
+            },
+            requestRender() {},
+            setFocus() {},
+          },
+        };
+        const ui = {
+          notify: (...args) => notices.push(args),
+          getEditorText: () => host.editor.getText(),
+          setEditorText: (text) => host.editor.setText(text),
+          custom: (factory) =>
+            core.InteractiveMode.prototype.showExtensionCustom.call(host, factory).finally(() => {
+              finished++;
+            }),
+        };
+        const ctx = {
+          mode: "tui",
+          get ui() {
+            if (!alive) {
+              staleAccesses++;
+              throw new Error("stale context");
+            }
+            return ui;
+          },
+        };
+        const pi = api();
+        installVim(pi);
+        let pid;
+        try {
+          await pi.event("session_start", {}, ctx);
+          pi.events.emit(OPEN_FILE_EVENT, { path, cwd: dir, tool: "read", accepted: false });
+          if (scenario !== "spawn-error") {
+            await waitFor(() => {
+              try {
+                pid = Number(readFileSync(ready, "utf8"));
+                return pid > 0;
+              } catch {
+                return false;
+              }
+            });
+          }
+          const replacement = ["new", "resume", "fork", "reload", "quit", "stubborn"].includes(
+            scenario,
+          );
+          if (replacement) {
+            let settled = false;
+            const shutdown = pi
+              .event("session_shutdown", { reason: scenario === "stubborn" ? "quit" : scenario })
+              .then(() => {
+                settled = true;
+              });
+            await delay(10);
+            assert(!settled, "shutdown waits for the editor and native dialog cleanup");
+            await shutdown;
+            assert.equal(finished, 1);
+            assert.equal(host.editor.getText(), latest);
+            assert.equal(starts, scenario === "quit" || scenario === "stubborn" ? 0 : 1);
+            // Only now does Pi invalidate the outgoing runtime and replace its editor.
+            alive = false;
+            host.editor = makeEditor("REPLACEMENT_SESSION_DRAFT");
+            await delay(100);
+            assert.equal(host.editor.getText(), "REPLACEMENT_SESSION_DRAFT");
+            assert.equal(staleAccesses, 0);
+            assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+          } else {
+            if (scenario !== "spawn-error")
+              writeFileSync(
+                gate,
+                scenario === "signal" ? "signal" : scenario === "exit-error" ? "7" : "0",
+              );
+            await waitFor(() => finished === 1 && (!failed || notices.length === 1));
+            assert.equal(host.editor.getText(), latest);
+            assert.equal(starts, 1);
+          }
+          assert.equal(stops, 1);
+          assert.equal(notices.length, failed ? 1 : 0);
+        } finally {
+          if (pid) {
+            try {
+              process.kill(pid, "SIGKILL");
+            } catch {}
+          }
+          await pi.event("session_shutdown", { reason: "quit" });
+        }
+      });
+    }
+  } finally {
+    if (oldVisual === undefined) delete process.env.VISUAL;
+    else process.env.VISUAL = oldVisual;
+  }
+});
+
 test("Vim works while busy, keeps literal filenames safe, and handles cancellation/errors/shutdown", async () => {
   const f = await fixture();
   const pi = api(),
@@ -691,7 +1126,10 @@ test("Vim works while busy, keeps literal filenames safe, and handles cancellati
     },
     ui: {
       notify: (...args) => notices.push(args),
+      getEditorText: () => "draft",
+      setEditorText() {},
       custom: async (factory) => {
+        let result;
         try {
           await factory(
             {
@@ -701,8 +1139,11 @@ test("Vim works while busy, keeps literal filenames safe, and handles cancellati
             },
             null,
             null,
-            () => {},
+            (value) => {
+              result = value;
+            },
           );
+          return result;
         } finally {
           finished++;
         }

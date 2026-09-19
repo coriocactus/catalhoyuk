@@ -31,6 +31,7 @@ type GroupState = Pick<ToolGroups, "epoch" | "expanded"> & { rows: ReadonlyMap<s
 interface ViewActions {
   toggle(target: ToggleTarget): void;
   openFile(file: FileReference): void;
+  outputPad(): number;
   renderImages(width: number): string[];
 }
 
@@ -73,6 +74,7 @@ export class ToolGroupView implements Component {
   private cache?: {
     group: ToolGroup;
     width: number;
+    padding: number;
     revision: number;
     epoch: number;
     lines: string[];
@@ -101,9 +103,12 @@ export class ToolGroupView implements Component {
   render(width: number): string[] {
     const group = this.row.group;
     if (this.model.rows.get(this.row.id) !== this.row || group.rows[0] !== this.row) return [];
+    const padding = Math.min(this.actions.outputPad(), Math.max(0, Math.floor((width - 1) / 2)));
+    const contentWidth = Math.max(0, width - padding * 2);
     if (
       this.cache?.group === group &&
       this.cache.width === width &&
+      this.cache.padding === padding &&
       this.cache.revision === group.revision &&
       this.cache.epoch === this.model.epoch
     )
@@ -114,8 +119,8 @@ export class ToolGroupView implements Component {
     this.files.clear();
     if (group.rows.length === 1) {
       const expanded = this.model.expanded(this.row);
-      this.header(this.rowLabel(this.row, expanded), this.row, width);
-      if (expanded) this.body(this.row, width);
+      this.header(this.rowLabel(this.row), this.row, contentWidth);
+      if (expanded) this.body(this.row, contentWidth);
     } else {
       const expanded = this.model.expanded(group);
       const completed = group.rows.every(isComplete);
@@ -142,23 +147,36 @@ export class ToolGroupView implements Component {
               : "Run";
       const noun = group.name === "read" ? "file" : "command";
       const failures = group.rows.filter((row) => row.status === "error").length;
-      const status = this.status(failures ? "error" : completed ? "success" : "pending");
+      const status = this.status(
+        failures ? "error" : completed ? "success" : "pending",
+        group.name === "bash",
+      );
       const error = failures ? paint(this.theme, "red", ` (${failures} failed)`) : "";
       this.header(
-        `${this.arrow(expanded)} ${status} ${verb} ${count} ${noun}${count === 1 ? "" : "s"}${error}`,
+        `${status} ${verb} ${count} ${noun}${count === 1 ? "" : "s"}${error}`,
         group,
-        width,
+        contentWidth,
       );
       for (const row of group.rows) {
         // Failed calls remain discoverable even when their parent group is closed.
         if (!expanded && row.status !== "error") continue;
         const detailExpanded = this.model.expanded(row);
-        this.header(`  ${this.rowLabel(row, detailExpanded)}`, row, width);
-        if (detailExpanded) this.body(row, width, 4);
+        this.header(`  ${this.rowLabel(row)}`, row, contentWidth);
+        if (detailExpanded) this.body(row, contentWidth, 4);
       }
     }
+    // Hit testing uses these padded lines, including after invalidation until
+    // the next render. Reserve the same inset on the right as Pi.
+    this.rawLines = this.rawLines.map((line) => " ".repeat(padding) + line);
     const lines = this.rawLines.map((line) => line.replace(FILE_LINK_OPEN, ""));
-    this.cache = { group, width, revision: group.revision, epoch: this.model.epoch, lines };
+    this.cache = {
+      group,
+      width,
+      padding,
+      revision: group.revision,
+      epoch: this.model.epoch,
+      lines,
+    };
     return lines;
   }
 
@@ -180,18 +198,18 @@ export class ToolGroupView implements Component {
     return this.theme.fg("dim", expanded ? "▾" : "▸");
   }
 
-  private status(status: ToolRow["status"]): string {
+  private status(status: ToolRow["status"], command = false): string {
     return status === "error"
-      ? paint(this.theme, "red", "✗")
+      ? paint(this.theme, "red", command ? "$" : "✗")
       : status === "success"
-        ? paint(this.theme, "green", "✓")
-        : this.theme.fg("muted", "…");
+        ? paint(this.theme, "green", command ? "$" : "✓")
+        : this.theme.fg("muted", command ? "$" : "…");
   }
 
-  private rowLabel(row: ToolRow, expanded: boolean): string {
+  private rowLabel(row: ToolRow): string {
     let label: string;
     if (row.name === "bash") {
-      label = `$ ${clean(text(row.args.command)).replace(/\s+/g, " ").trim() || "…"}`;
+      label = clean(text(row.args.command)).replace(/\s+/g, " ").trim() || "…";
     } else {
       let filename = "…";
       if (row.file) {
@@ -216,15 +234,20 @@ export class ToolGroupView implements Component {
         if (removed) label += ` ${paint(this.theme, "red", `−${removed}`)}`;
       }
     }
-    return `${this.arrow(expanded)} ${this.status(row.status)} ${label}`;
+    return `${this.status(row.status, row.name === "bash")} ${label}`;
   }
 
   private header(label: string, target: ToggleTarget, width: number): void {
     this.targets.set(this.rawLines.length, target);
-    this.rawLines.push(truncateToWidth(label, width));
+    const arrow = this.arrow(this.model.expanded(target));
+    // Keep the caret visible even when the filename or command is truncated.
+    this.rawLines.push(
+      width > 2 ? `${truncateToWidth(label, width - 2)} ${arrow}` : truncateToWidth(arrow, width),
+    );
   }
 
   private body(row: ToolRow, width: number, padding = 2): void {
+    if (width <= 0) return;
     const indent = Math.min(padding, Math.max(0, width - 1));
     const bodyWidth = Math.max(1, width - indent);
     const imageLines =

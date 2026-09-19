@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { pkg } from "./pi-package.mjs";
+import { pkg, version } from "./pi-package.mjs";
 
 const extension = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const temporary = mkdtempSync(join(tmpdir(), "pi-tool-display-types-"));
@@ -40,7 +40,7 @@ try {
     }),
   );
   execFileSync("tsc", ["-p", config], { stdio: "inherit" });
-  console.log("PASS: TypeScript");
+  console.log(`PASS: TypeScript (Pi ${version}, Node ${process.versions.node}; ${pkg})`);
 } finally {
   rmSync(temporary, { recursive: true, force: true });
 }

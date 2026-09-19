@@ -334,10 +334,6 @@ export function installHistoryAdapter(
 ): { synchronize(): void; reset(): void; dispose(): void } {
   if (!Number.isSafeInteger(size) || size < 1)
     throw new Error("History page size must be a positive integer.");
-  if (VERSION !== "0.85.1")
-    throw new Error(
-      `fullscreen-history supports Pi 0.85.1, not ${VERSION}. Revalidate native.ts before enabling it.`,
-    );
   const prototype = InteractiveMode.prototype as unknown as NativeHost & { [PATCH]?: Patch };
   let patch = prototype[PATCH];
   if (patch && prototype.renderSessionEntries !== patch.wrapped)
@@ -346,10 +342,11 @@ export function installHistoryAdapter(
     const original = prototype.renderSessionEntries;
     if (typeof original !== "function") throw new Error("Pi's transcript renderer is unavailable.");
     const owners = new Set<Owner>(),
-      controllers: Patch["controllers"] = new Map();
+      controllers: Patch["controllers"] = new Map(),
+      disabled = new WeakSet<NativeHost>();
     const wrapped: RenderEntries = function (entries, options) {
       const owner = [...owners].at(-1);
-      if (!owner) return original.call(this, entries, options);
+      if (!owner || disabled.has(this)) return original.call(this, entries, options);
       let selected = entries,
         visible = entries;
       let current = controllers.get(this);
@@ -358,7 +355,19 @@ export function installHistoryAdapter(
           if (
             !this.transcriptScrollView ||
             !(this.chatContainer instanceof Container) ||
-            !(this.documentContainer instanceof Container)
+            !(this.documentContainer instanceof Container) ||
+            !(this.pendingTools instanceof Map) ||
+            typeof this.ui?.requestRender !== "function" ||
+            !Number.isFinite(this.ui?.terminal?.columns) ||
+            typeof this.sessionManager?.buildContextEntries !== "function" ||
+            typeof this.sessionManager?.getEntry !== "function" ||
+            typeof this.sessionManager?.getSessionId !== "function" ||
+            typeof this.sessionManager?.getCwd !== "function" ||
+            typeof this.settingsManager?.getShowImages !== "function" ||
+            typeof this.settingsManager?.getImageWidthCells !== "function" ||
+            typeof this.getRegisteredToolDefinition !== "function" ||
+            typeof this.getUserMessageText !== "function" ||
+            typeof this.editor?.addToHistory !== "function"
           )
             throw new Error("Pi's transcript layout changed.");
           current = {
@@ -388,7 +397,15 @@ export function installHistoryAdapter(
       } catch (error) {
         selected = entries;
         visible = entries;
-        owner.report(error);
+        current?.controller.dispose();
+        controllers.delete(this);
+        current = undefined;
+        disabled.add(this);
+        owner.report(
+          new Error(
+            `Pi ${VERSION}: history paging disabled; using the native transcript. ${error instanceof Error ? error.message : String(error)} Run npm run verify in ~/.pi/agent/extensions.`,
+          ),
+        );
       }
       original.call(this, selected, options); // Native errors must still propagate.
       try {

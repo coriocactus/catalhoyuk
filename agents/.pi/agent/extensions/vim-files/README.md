@@ -1,7 +1,9 @@
 # Vim file clicks
 
 Plain-click a tool filename to open Vim in the same terminal. Exit with `:q`, or
-save and exit with `:wq`, to return to Pi with your draft preserved.
+save and exit with `:wq`, to return to Pi with the **latest** draft preserved,
+including background updates and editor failures. Session replacement waits for
+editor exit and dialog cleanup; an editor ignoring SIGTERM is killed after one second.
 
 Pi keeps working in the background. Avoid saving a file that Pi is also changing.
 
@@ -10,8 +12,8 @@ not a shell command. Opens existing regular files only, with asynchronous checks
 
 `tool-display` supplies fullscreen filename clicks through `file-tools-shared`.
 This extension owns only file resolution, the editor process, and terminal handoff.
-`paths.ts` isolates the dependency on Pi's installed path resolver (tested with
-Pi 0.85.1), including Unicode and macOS filename rules.
+`paths.ts` isolates the dependency on Pi's installed path resolver, including Unicode 
+and macOS filename rules.
 
 No Ghostty, macOS, or editor configuration is modified. Apply changes with `/reload`.
 

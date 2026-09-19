@@ -15,6 +15,7 @@ const { HistoryCursor, historyBoundary } = await jiti.import("../model.ts");
 const { attachTopPaging } = await jiti.import("../scroll.ts");
 const { renderHistoryPage, installHistoryAdapter } = await jiti.import("../native.ts");
 const { default: installDisplay } = await jiti.import("../../tool-display/index.ts");
+const { default: installHistory } = await jiti.import("../index.ts");
 const core = await import(join(pkg, "dist/index.js"));
 const tui = await import(require.resolve("@earendil-works/pi-tui"));
 core.initTheme("dark");
@@ -204,6 +205,173 @@ test("top-scroll hooks ignore paints, preserve anchors across resize/appends, an
   assert(!Object.hasOwn(scroll, "scrollBy"));
 });
 
+test("scroll input between prepend construction and layout is rebased, ordered and coalesced", () => {
+  for (const [name, inputs, expected] of [
+    ["wheel", (s) => assert.equal(s.scrollBy(-1), 0), 29],
+    [
+      "several wheels",
+      (s) => {
+        s.scrollBy(-1);
+        s.scrollBy(-2);
+        s.scrollBy(1);
+      },
+      28,
+    ],
+    [
+      "clamp each move",
+      (s) => {
+        s.scrollBy(-100);
+        s.scrollBy(2);
+      },
+      2,
+    ],
+    ["page up", (s) => s.scrollBy(-20), 10],
+    ["page down", (s) => s.scrollBy(20), 50],
+    [
+      "absolute old-layout position",
+      (s) => {
+        s.scrollTo(10);
+        s.scrollBy(-2);
+      },
+      38,
+    ],
+    [
+      "coalesced Home",
+      (s) => {
+        s.scrollToStart();
+        s.scrollToStart();
+      },
+      30,
+    ],
+    ["explicit End", (s) => s.scrollToEnd(), 110],
+  ]) {
+    const scroll = new tui.ScrollView(new tui.Container(), { follow: "end" });
+    scroll.updateLayout(100, 20, () => {});
+    let loads = 0,
+      settled = 0;
+    const hook = attachTopPaging(scroll, {
+      active: () => true,
+      width: () => 100,
+      load: () => loads++,
+      settled: () => settled++,
+      end() {},
+    });
+    try {
+      scroll.scrollToStart();
+      hook.anchor({ render: () => Array(30).fill("older"), invalidate() {} });
+      inputs(scroll);
+      scroll.updateLayout(130, 20, () => {});
+      assert.equal(scroll.scrollTop, expected, name);
+      scroll.updateLayout(130, 20, () => {});
+      assert.equal(scroll.scrollTop, expected, `${name}: no duplicate compensation`);
+      assert.equal(settled, 1);
+      assert.equal(loads, 1, `${name}: no second page during the first prepend`);
+    } finally {
+      hook.dispose();
+    }
+  }
+  const scroll = new tui.ScrollView(new tui.Container(), { follow: "end" });
+  scroll.updateLayout(100, 20, () => {});
+  let width = 100;
+  const hook = attachTopPaging(scroll, {
+    active: () => true,
+    width: () => width,
+    load() {},
+    settled() {},
+    end() {},
+  });
+  try {
+    scroll.scrollToStart();
+    hook.anchor({ render: () => Array(width === 100 ? 30 : 44).fill("older"), invalidate() {} });
+    scroll.scrollBy(-1);
+    width = 80;
+    scroll.updateLayout(900, 20, () => {}); // Resize AND streaming tail growth.
+    assert.equal(scroll.scrollTop, 43);
+    hook.anchor({ render: () => Array(30).fill("cancelled"), invalidate() {} });
+    scroll.scrollBy(-1);
+    hook.reset();
+    scroll.updateLayout(900, 20, () => {});
+    assert.equal(scroll.scrollTop, 43, "reset cancels deferred input as well as the anchor");
+  } finally {
+    hook.dispose();
+  }
+});
+
+test("an incompatible history API falls back to the full native transcript with one warning", () => {
+  const f = fixture(0),
+    notices = [];
+  f.host.sessionManager = core.SessionManager.inMemory(process.cwd());
+  for (let i = 0; i < 70; i++) f.host.sessionManager.appendMessage(assistant(`FALLBACK_${i}`));
+  const entries = f.host.sessionManager.buildContextEntries();
+  const before = JSON.stringify(entries);
+  f.scroll.getContentWidth = undefined;
+  const adapter = installHistoryAdapter((error) => notices.push(error.message), 5);
+  try {
+    for (let i = 0; i < 2; i++) {
+      f.chat.clear();
+      f.host.renderSessionEntries(entries);
+      assert.equal(text(f.chat).match(/FALLBACK_/g).length, 70);
+    }
+    assert.equal(notices.length, 1);
+    assert.match(
+      notices[0],
+      /history paging disabled; using the native transcript.*scroll API changed/,
+    );
+    assert.equal(JSON.stringify(f.host.sessionManager.buildContextEntries()), before);
+    assert(!Object.hasOwn(f.scroll, "scrollBy"), "failed capability checks leave no partial hooks");
+  } finally {
+    adapter.dispose();
+  }
+});
+
+test("every outgoing history runtime releases its owner, pending input and scroll hooks", async () => {
+  const key = Symbol.for("pi-local.fullscreen-history.v1");
+  for (const reason of ["new", "new", "resume", "fork", "reload", "quit"]) {
+    const handlers = new Map();
+    installHistory({
+      on: (name, fn) => handlers.set(name, fn),
+      events: core.createEventBus(),
+    });
+    const f = fixture(70),
+      originalScroll = f.scroll.scrollBy;
+    let onInput,
+      unsubscribed = 0;
+    const ctx = {
+      mode: "tui",
+      ui: {
+        notify: (message) => assert.fail(message),
+        onTerminalInput(fn) {
+          onInput = fn;
+          return () => unsubscribed++;
+        },
+      },
+    };
+    try {
+      // Reconstruction happens BEFORE the new runtime's session_start.
+      assert.equal(core.InteractiveMode.prototype[key].owners.size, 1);
+      f.host.renderSessionEntries(f.sm.buildContextEntries());
+      f.layout();
+      handlers.get("session_start")({}, ctx);
+      f.scroll.scrollToStart();
+      onInput();
+      handlers.get("session_shutdown")({ reason });
+      handlers.get("session_shutdown")({ reason }); // Idempotent disposal.
+      assert.equal(core.InteractiveMode.prototype[key], undefined);
+      assert.equal(core.InteractiveMode.prototype.renderSessionEntries, nativeRender);
+      assert.equal(f.scroll.scrollBy, originalScroll);
+      assert.equal(unsubscribed, 1);
+      await tick();
+      assert(!text(f.document).includes("OLD_"), "shutdown cancels queued page construction");
+    } finally {
+      handlers.get("session_shutdown")({ reason: "quit" });
+    }
+  }
+  // No replacement factory (extension disabled): nothing remains patched.
+  const disabled = fixture();
+  disabled.host.renderSessionEntries(disabled.sm.buildContextEntries());
+  assert.equal(core.InteractiveMode.prototype[key], undefined);
+});
+
 test("native adapter loads one page per trip to top, retains anchors and leaves context untouched", async () => {
   const errors = [],
     adapter = installHistoryAdapter((error) => errors.push(error), 10);
@@ -230,6 +398,7 @@ test("native adapter loads one page per trip to top, retains anchors and leaves 
     f.layout(); // An unrelated paint must not release the in-flight load guard.
     f.scroll.scrollToStart();
     await tick();
+    f.scroll.scrollBy(-1); // Page exists, but its prepend has not been laid out yet.
     f.layout();
     const lines = f.document.render(100).map(tui.stripTerminalSequences);
     assert.equal(lines.filter((line) => line.includes("OLD_")).length, 10);
@@ -237,8 +406,8 @@ test("native adapter loads one page per trip to top, retains anchors and leaves 
     const anchor = lines.findIndex((line) => line.includes("CURRENT_ANCHOR")) - f.scroll.scrollTop;
     assert.equal(
       anchor,
-      initialAnchor,
-      "short transcripts keep their blank space below the viewport anchor",
+      initialAnchor + 1,
+      "short transcripts preserve the anchor plus the intervening one-row scroll",
     );
     f.scroll.scrollToStart();
     await tick();
@@ -362,6 +531,14 @@ test("uncompacted sessions start bounded without clipping prompt history or grow
   }
 });
 
+function bindTools(host, tools) {
+  Object.defineProperty(host, "session", {
+    configurable: true,
+    value: { getToolDefinition: (name) => tools.get(name) },
+  });
+  delete host.getRegisteredToolDefinition; // Use Pi's actual lookup and our scoped adapters.
+}
+
 test("initial tool groups contain only displayed calls, while older pages keep independent leaders", async () => {
   const handlers = new Map(),
     tools = new Map(),
@@ -386,7 +563,7 @@ test("initial tool groups contain only displayed calls, while older pages keep i
   const f = fixture(0),
     sm = core.SessionManager.inMemory(process.cwd());
   f.host.sessionManager = sm;
-  f.host.getRegisteredToolDefinition = (name) => tools.get(name);
+  bindTools(f.host, tools);
   for (let i = 0; i < 30; i++) {
     const id = `read-${i}`;
     sm.appendMessage(
@@ -415,12 +592,28 @@ test("initial tool groups contain only displayed calls, while older pages keep i
     await tick();
     f.layout();
     assert.equal(text(f.document).match(/Explored 5 files/g).length, 2);
+    for (const padding of [1, 0, 1]) {
+      f.host.outputPad = padding;
+      const headers = text(f.document)
+        .split("\n")
+        .filter((line) => line.includes("Explored 5 files"));
+      assert.equal(headers.length, 2);
+      for (const header of headers) assert.equal(header.indexOf("✓"), padding);
+    }
     f.host.loadedResourcesContainer = new tui.Container();
     f.host.builtInHeader = new tui.Container();
     f.host.showStatus = () => {};
     f.host.setToolsExpanded(true);
     f.layout();
     assert(text(f.document).includes("BODY_29") && text(f.document).includes("BODY_24"));
+    for (const padding of [0, 1]) {
+      f.host.outputPad = padding;
+      const bodies = text(f.document)
+        .split("\n")
+        .filter((line) => line.includes("BODY_"));
+      assert.equal(bodies.length, 10);
+      for (const body of bodies) assert.equal(body.indexOf("BODY_"), padding + 4);
+    }
     assert.equal(executions, 0);
     assert.deepEqual(errors, []);
   } finally {
@@ -443,7 +636,7 @@ test("archived tool renderers keep separate groups and never execute or disturb 
   };
   installDisplay(pi);
   const f = fixture(0);
-  f.host.getRegisteredToolDefinition = (name) => tools.get(name);
+  bindTools(f.host, tools);
   const live = new core.ToolExecutionComponent(
     "read",
     "live-read",
