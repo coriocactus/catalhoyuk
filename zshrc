@@ -127,7 +127,6 @@ user_paths=(
   $HOME/.ghcup/bin(N-/)
   $HOME/.cargo/bin(N-/)
   $HOME/.amp/bin(N-/)
-  $HOME/.opencode/bin(N-/)
 )
 
 if (( $+commands[brew] )); then
