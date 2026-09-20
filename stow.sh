@@ -18,6 +18,7 @@ stow_mappings() {
     local xdg_config_home=(
         "ghostty/config"   "config/ghostty.config"
         "hunk/config.toml" "config/hunk.config"
+        "repo4/repo4.zsh"  "repo4/repo4.zsh"
     )
     if [ "$with_ssh" = 1 ]; then
         home+=(".vimrc-ssh" "config/vimrc-ssh")
@@ -181,11 +182,12 @@ stow_register() {
 }
 
 stow_main() {
-    local root profile=green with_ssh=0 dry_run=0 explicit_profile=0 i
+    local root profile=green with_ssh=0 with_repo4=0 dry_run=0 explicit_profile=0 i
     local sources=() destinations=() STOW_CHECK_ONLY=0 STOW_DRY_RUN=0
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --ssh) with_ssh=1; shift ;;
+            --repo4) with_repo4=1; shift ;;
             --dry-run) dry_run=1; shift ;;
             --tmux)
                 if [ "$#" -lt 2 ] || [ "$explicit_profile" = 1 ] || ! [[ "$2" =~ ^[a-zA-Z0-9_-]+$ ]]; then
@@ -193,8 +195,9 @@ stow_main() {
                 fi
                 profile=$2; explicit_profile=1; shift 2 ;;
             -h|--help)
-                printf '%s\n' 'Usage: ./stow.sh [--ssh] [--tmux PROFILE] [--dry-run]' \
-                    'Mappings: stow_mappings in stow.sh. Tmux defaults to green; --ssh is opt-in.'
+                printf '%s\n' 'Usage: ./stow.sh [--ssh] [--tmux PROFILE] [--repo4] [--dry-run]' \
+                    'Mappings: stow_mappings in stow.sh. Tmux defaults to green; --ssh is opt-in.' \
+                    '--repo4 also runs repo4 init to create private identity profiles if absent.'
                 return 0 ;;
             *) _stow_error "unknown argument: $1"; return 2 ;;
         esac
@@ -206,9 +209,22 @@ stow_main() {
     for ((i=0; i<${#sources[@]}; i++)); do
         STOW_CHECK_ONLY=1 stow_link "${sources[i]}" "${destinations[i]}" || return 1
     done
+    if [ "$with_repo4" = 1 ]; then
+        command -v zsh >/dev/null 2>&1 || { _stow_error '--repo4 requires zsh'; return 1; }
+        local repo4_init=(zsh -f -c 'source "$1" && repo4 init' repo4 "$root/repo4/repo4.zsh")
+        REPO4_CHECK_ONLY=1 "${repo4_init[@]}" || return 1
+    fi
     for ((i=0; i<${#sources[@]}; i++)); do
         STOW_DRY_RUN=$dry_run stow_link "${sources[i]}" "${destinations[i]}" || return 1
     done
+    if [ "$with_repo4" = 1 ]; then
+        if [ "$dry_run" = 1 ]; then
+            printf '%s\n' '[dry-run] repo4 init'
+        else
+            REPO4_CHECK_ONLY=0 "${repo4_init[@]}" || return 1
+        fi
+    fi
+    return 0
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then stow_main "$@"; fi

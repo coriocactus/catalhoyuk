@@ -151,7 +151,8 @@ alias ls='ls --color=auto'
 # apps
 export PLAYWRIGHT_MCP_BROWSER=chromium
 export OPENCODE_ENABLE_EXA=1
-export XDG_CONFIG_HOME="$HOME/.config"
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+[[ -r "$XDG_CONFIG_HOME/repo4/repo4.zsh" ]] && source "$XDG_CONFIG_HOME/repo4/repo4.zsh"
 [ -f "$HOME/.ripgreprc" ] && export RIPGREP_CONFIG_PATH="$HOME/.ripgreprc"
 [ -s "$HOME/.bun/_bun" ] && source "$HOME/.bun/_bun"
 
