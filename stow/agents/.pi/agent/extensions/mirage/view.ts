@@ -86,12 +86,15 @@ export class ToolGroupView implements Component {
     lines: string[];
   };
   private bodies = new Map<string, { revision: number; component: Text }>();
+  readonly row: ToolRow;
+  private readonly model: GroupState;
+  private readonly actions: ViewActions;
 
-  constructor(
-    readonly row: ToolRow,
-    private readonly model: GroupState,
-    private readonly actions: ViewActions,
-  ) {}
+  constructor(row: ToolRow, model: GroupState, actions: ViewActions) {
+    this.row = row;
+    this.model = model;
+    this.actions = actions;
+  }
 
   configure(theme: Theme, showImages: boolean): void {
     if (theme !== this.theme || showImages !== this.showImages) this.invalidate();

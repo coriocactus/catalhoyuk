@@ -7,15 +7,16 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { colours } from "../colours.ts";
-import { HeadlessTerminal } from "./headless-terminal.mjs";
-import { cli, version } from "./pi-package.mjs";
+import { colours } from "../../mirage/colours.ts";
+import { HeadlessTerminal } from "../headless-terminal.ts";
+import { cli, version } from "../pi-package.ts";
 
-const extension = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const here = dirname(fileURLToPath(import.meta.url));
+const extensions = resolve(here, "../..");
 const root = mkdtempSync(join(tmpdir(), "pi-xterm-terminal-"));
 const config = join(root, "config");
 mkdirSync(config);
-const executable = (name, source) => {
+const executable = (name: string, source: string) => {
   const path = join(root, name);
   writeFileSync(path, `#!/bin/sh\n${source}\n`, { mode: 0o700 });
   return path;
@@ -66,22 +67,32 @@ const usage = {
   totalTokens: 0,
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 };
-const archive = Array.from({ length: 126 }, (_, i) => ({
-  type: "message",
-  id: `archive-${i}`,
-  parentId: i ? `archive-${i - 1}` : null,
-  timestamp,
-  message: {
-    role: "assistant",
-    content: [{ type: "text", text: `ARCHIVE_${String(i).padStart(3, "0")}` }],
-    api: "openai-responses",
-    provider: "openai",
-    model: "gpt-4o",
-    usage,
-    stopReason: "stop",
-    timestamp: Date.now(),
-  },
-}));
+interface Entry {
+  type: string;
+  id: string;
+  parentId: string | null;
+  timestamp: string;
+  message: Record<string, unknown>;
+}
+const archive = Array.from(
+  { length: 126 },
+  (_, i): Entry => ({
+    type: "message",
+    id: `archive-${i}`,
+    parentId: i ? `archive-${i - 1}` : null,
+    timestamp,
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: `ARCHIVE_${String(i).padStart(3, "0")}` }],
+      api: "openai-responses",
+      provider: "openai",
+      model: "gpt-4o",
+      usage,
+      stopReason: "stop",
+      timestamp: Date.now(),
+    },
+  }),
+);
 archive[80].message.content = [
   { type: "toolCall", id: "archive-read-a", name: "read", arguments: { path: "archived.txt" } },
   { type: "toolCall", id: "archive-read-b", name: "read", arguments: { path: "b.txt" } },
@@ -89,7 +100,7 @@ archive[80].message.content = [
 for (const [i, id] of [
   [81, "archive-read-a"],
   [82, "archive-read-b"],
-])
+] as const)
   archive[i].message = {
     role: "toolResult",
     toolCallId: id,
@@ -129,7 +140,7 @@ writeFileSync(
     {
       type: "message",
       id: "00000001",
-      parentId: archive.at(-1).id,
+      parentId: archive.at(-1)?.id,
       timestamp,
       message: {
         role: "assistant",
@@ -163,7 +174,7 @@ writeFileSync(
   `
 import { existsSync } from "node:fs";
 import { InteractiveMode } from "@earendil-works/pi-coding-agent";
-import history from ${JSON.stringify(join(extension, "../rearview/index.ts"))};
+import history from ${JSON.stringify(join(extensions, "rearview/index.ts"))};
 export default function (pi) {
   const prototype = InteractiveMode.prototype;
   const key = Symbol.for("fixture.original-history");
@@ -180,15 +191,15 @@ const args = [
   "--no-extensions",
   // Match the directories' discovery order: inspector, interupt, mirage, rearview.
   "-e",
-  join(extension, "../inspector/index.ts"),
+  join(extensions, "inspector/index.ts"),
   "-e",
-  join(extension, "../interupt/index.ts"),
+  join(extensions, "interupt/index.ts"),
   "-e",
-  join(extension, "index.ts"),
+  join(extensions, "mirage/index.ts"),
   "-e",
   historyWrapper,
   "-e",
-  join(extension, "tests/offline-provider.ts"),
+  join(here, "offline-provider.ts"),
   "--provider",
   "display-fixture",
   "--model",
@@ -198,7 +209,7 @@ const args = [
   "--no-prompt-templates",
   "--no-themes",
 ];
-const env = {
+const env: Record<string, string | undefined> = {
   ...process.env,
   PI_CODING_AGENT_DIR: config,
   PI_OFFLINE: "1",
@@ -213,21 +224,23 @@ const env = {
 delete env.TMUX;
 delete env.TMUX_PANE;
 
-function cpuSeconds(pid) {
+function cpuSeconds(pid: number): number {
   return execFileSync("ps", ["-o", "time=", "-p", String(pid)], { encoding: "utf8" })
     .trim()
     .split(":")
     .reduce((sum, part) => sum * 60 + Number(part), 0);
 }
 
-let terminal;
-function assertCommandHeader(needle, tone, caret = "▸") {
+// The current PTY session. `running` tracks the one that still needs cleanup.
+let terminal!: HeadlessTerminal;
+let running: HeadlessTerminal | undefined;
+function assertCommandHeader(needle: string, tone: keyof typeof colours, caret = "▸") {
   const header = terminal.locate(needle).row.text.trim();
   assert(header.startsWith("$ ") && header.endsWith(` ${caret}`), header);
   assert(!/[✓✗]/.test(header), "command headers use only $ for status");
   terminal.assertColour(header, colours[tone]);
 }
-function assertOutputPadding(padding) {
+function assertOutputPadding(padding: number) {
   assert.equal(terminal.locate("✓ Explored 2 files").x, padding);
   assert.equal(terminal.locate("✓ Edited ").x, padding);
   const command = terminal.screen.includes("$ Running 2 commands")
@@ -242,7 +255,7 @@ async function expandEditGroup() {
     "expand edit group into file rows",
   );
 }
-async function setOutputPadding(padding) {
+async function setOutputPadding(padding: number) {
   terminal.send("/settings\r");
   await terminal.waitFor((s) => s.includes("Enter/Space to change"), "open settings");
   terminal.send("output padding");
@@ -259,12 +272,12 @@ async function setOutputPadding(padding) {
   );
   assertOutputPadding(padding);
 }
-async function owners(label, count = 1) {
+async function owners(label: string, count = 1) {
   terminal.send(`\x15/fixture-owners ${label}\r`);
   const marker = `OWNERS_${label}_H${count}_I1_P1_R${count === 0 ? 1 : 0}`;
   await terminal.waitFor((s) => s.includes(marker), marker);
 }
-async function replace(command, reason) {
+async function replace(command: string, reason: string) {
   const ready = join(root, "runtime-ready.json");
   const previous = readFileSync(ready, "utf8"),
     mark = terminal.mark();
@@ -275,7 +288,7 @@ async function replace(command, reason) {
   }, command);
 }
 try {
-  terminal = await HeadlessTerminal.start(process.execPath, args, {
+  terminal = running = await HeadlessTerminal.start(process.execPath, args, {
     cwd: root,
     env,
     artifacts: root,
@@ -304,7 +317,7 @@ try {
   for (const label of ["Explored 2 files", "Edited 2 files", "picture.png", "Running 2 commands"]) {
     const row = terminal.locate(label).row;
     assert(row.text.trimEnd().endsWith(" ▸"), "tool carets trail the header text");
-    assert(!row.cells.findLast((cell) => cell.text === "▸").style.underline);
+    assert(!row.cells.findLast((cell) => cell.text === "▸")?.style.underline);
   }
   assert(
     !terminal.rawSince().includes("mirage:file:"),
@@ -483,10 +496,10 @@ try {
   assert(cpu < 0.6, `Excess Pi idle CPU: ${cpu}s/2s`);
   terminal.save();
   await terminal.close();
-  terminal = undefined;
+  running = undefined;
   writeFileSync(join(root, "history-rendered"), "");
 
-  terminal = await HeadlessTerminal.start(process.execPath, args, {
+  terminal = running = await HeadlessTerminal.start(process.execPath, args, {
     cwd: root,
     env,
     artifacts: root,
@@ -640,10 +653,10 @@ try {
     `PASS: xterm.js VT + real Pi/Vim; groups, output padding, Unicode clicks, colours/underlines, interrupt hint without layout shifts, gated background work, newer/replacement drafts, saves, images, errors, Ctrl+O, resize, new/resume/fork/reload ownership and disable cleanup, bounded top paging/anchors, archived Vim/images, unchanged context. Pi idle CPU ${cpu.toFixed(2)}s/2s. Artifacts: ${root}`,
   );
 } catch (error) {
-  terminal?.save();
+  running?.save();
   console.error(`Terminal test failed. Artifacts: ${root}`);
   throw error;
 } finally {
   writeFileSync(gate, "release");
-  await terminal?.close();
+  await running?.close();
 }

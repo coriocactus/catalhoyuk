@@ -5,10 +5,17 @@
   "scripts": {
     "check": "biome check . --error-on-warnings",
     "format": "biome format --write .",
-    "typecheck": "node mirage/tests/typecheck.mjs",
-    "test": "node mirage/tests/run.mjs && node rearview/tests/run.mjs && node interupt/tests/run.mjs",
-    "test:terminal": "node mirage/tests/terminal.mjs",
+    "typecheck": "node test/typecheck.ts",
+    "test": "node --test \"*/tests/*.test.ts\" \"test/*.test.ts\"",
+    "test:terminal": "node test/e2e/terminal.ts",
     "verify": "npm run check && npm run typecheck && npm test && npm run test:terminal"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": ">=22.19.0",
+      "onFail": "error"
+    }
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.14",

@@ -27,9 +27,10 @@ Also try a filename click and scrolling in your actual terminal after upgrading.
 One package manifest and lockfile here own all development dependencies. No
 per-test packages or runtime dependency installation.
 
-Requires Node 22.18+, Pi on `PATH` (or `PI_PACKAGE_DIR`), `/usr/bin/vim`, and native
-build tools (Xcode Command Line Tools on macOS). Build `node-pty` from source to
-avoid its 1.1.0 macOS prebuilt-helper permissions defect; no permission patches:
+Requires Node 22.19+ (Pi's own minimum; `devEngines` makes npm enforce it), Pi on
+`PATH` (or `PI_PACKAGE_DIR`), `/usr/bin/vim`, and native build tools (Xcode Command
+Line Tools on macOS). Build `node-pty` from source to avoid its 1.1.0 macOS
+prebuilt-helper permissions defect; no permission patches:
 
 ```sh
 cd ~/.pi/agent/extensions
@@ -41,6 +42,24 @@ npm run verify
 `verify` runs Biome, strict TypeScript, unit/integration tests, and the terminal
 suite. Individual commands: `npm run check`, `npm run typecheck`, `npm test`,
 `npm run test:terminal`.
+
+Tests are TypeScript run directly by Node (type stripping, no build step):
+
+- `<extension>/tests/*.test.ts`: that extension alone. They import only their own
+  extension, `shared/`, and `test/`, so deleting an extension never breaks another
+  extension's tests (only the cross-extension files in `test/` need updating).
+- `test/*.test.ts`: `shared/` contracts, mirage × rearview integration, and a guard
+  that Pi autoloads exactly the four extensions (never `test/` or `shared/`, which
+  must not contain an `index.ts`).
+- `test/e2e/`: the terminal suite and its offline provider.
+- `test/pi.ts`, `test/fake-pi.ts`, `test/transcript.ts`, `test/headless-terminal.ts`:
+  support code. Extension source loads through jiti against the installed Pi, as Pi
+  loads it. Fakes are typed against Pi's declarations, so an API rename fails
+  `npm run typecheck` at the fake.
+
+Typecheck covers every entry point, test, and support file with
+`erasableSyntaxOnly` and `verbatimModuleSyntax`: no enums, namespaces, or parameter
+properties, and type-only imports use `import type`.
 
 The terminal suite launches Pi's package-declared CLI with
 **xterm.js (`@xterm/headless`) + Microsoft's `node-pty`**.

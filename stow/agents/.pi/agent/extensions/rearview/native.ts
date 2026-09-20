@@ -92,8 +92,11 @@ function expand(component: Component, value: boolean): void {
 }
 
 class HistoryPages extends Container {
-  constructor(private readonly host: NativeHost) {
+  private readonly host: NativeHost;
+
+  constructor(host: NativeHost) {
     super();
+    this.host = host;
   }
   override render(width: number): string[] {
     return this.host.ui.mode === "fullscreen" ? super.render(width) : [];
@@ -120,13 +123,21 @@ export class HistoryController {
   private failed = false;
   private presentation = "";
   private contextEntries: SessionEntry[] = [];
+  private readonly host: NativeHost;
+  private readonly render: RenderEntries;
+  private readonly report: (error: unknown) => void;
+  private readonly size: number;
 
   constructor(
-    private readonly host: NativeHost,
-    private readonly render: RenderEntries,
-    private readonly report: (error: unknown) => void,
-    private readonly size = PAGE_SIZE,
+    host: NativeHost,
+    render: RenderEntries,
+    report: (error: unknown) => void,
+    size = PAGE_SIZE,
   ) {
+    this.host = host;
+    this.render = render;
+    this.report = report;
+    this.size = size;
     this.pages = new HistoryPages(host);
     this.filler = {
       render: () => (host.ui.mode === "fullscreen" ? Array(this.padding).fill("") : []),

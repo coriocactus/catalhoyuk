@@ -1,45 +1,50 @@
 import assert from "node:assert/strict";
-import { join } from "node:path";
-import { test } from "node:test";
-import { pkg, require } from "../../mirage/tests/pi-package.mjs";
+import { type TestContext, test } from "node:test";
+import type { CustomEditor, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { TUI } from "@earendil-works/pi-tui";
+import { type Fake, fake, fakePi } from "../../test/fake-pi.ts";
+import { load, piModule, themes, tui } from "../../test/pi.ts";
 
-const { createJiti } = require("jiti");
-const jiti = createJiti(import.meta.url, {
-  alias: {
-    "@earendil-works/pi-coding-agent": join(pkg, "dist/index.js"),
-    "@earendil-works/pi-tui": require.resolve("@earendil-works/pi-tui"),
-  },
-});
-const { default: install } = await jiti.import("../index.ts");
-const { KeybindingsManager } = await import(join(pkg, "dist/core/keybindings.js"));
-const { WorkingStatusIndicator } = await import(
-  join(pkg, "dist/modes/interactive/components/status-indicator.js")
-);
-const { stripTerminalSequences, visibleWidth } = await import(
-  require.resolve("@earendil-works/pi-tui")
-);
-const { initTheme, getEditorTheme } = await import(
-  join(pkg, "dist/modes/interactive/theme/theme.js")
-);
-initTheme("dark");
+type Keybindings = typeof import("@earendil-works/pi-coding-agent/dist/core/keybindings.js");
+type Indicators =
+  typeof import("@earendil-works/pi-coding-agent/dist/modes/interactive/components/status-indicator.js");
 
-function fixture(t, { mode = "tui", bindings = {} } = {}) {
+const { default: install } = await load<typeof import("../index.ts")>(
+  "../index.ts",
+  import.meta.url,
+);
+const { KeybindingsManager } = await piModule<Keybindings>("dist/core/keybindings.js");
+const { WorkingStatusIndicator } = await piModule<Indicators>(
+  "dist/modes/interactive/components/status-indicator.js",
+);
+const { stripTerminalSequences, visibleWidth } = tui;
+
+function fixture(
+  t: TestContext,
+  {
+    mode = "tui",
+    bindings = {},
+  }: {
+    mode?: ExtensionContext["mode"];
+    bindings?: ConstructorParameters<Keybindings["KeybindingsManager"]>[0];
+  } = {},
+) {
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  const handlers = new Map();
-  let editor,
+  const pi = fakePi();
+  let editor: CustomEditor | undefined,
     renders = 0,
     idle = false,
     escapes = 0;
-  install({ on: (name, handler) => handlers.set(name, handler) });
-  const tui = {
-    terminal: { rows: 40 },
+  install(pi.api);
+  const host = fake<TUI>({
+    terminal: { rows: 40 } as Fake<TUI["terminal"]>,
     requestRender() {
       renders++;
     },
-  };
-  const indicator = new WorkingStatusIndicator(tui, "Working", { frames: ["⠋"] });
+  });
+  const indicator = new WorkingStatusIndicator(host, "Working", { frames: ["⠋"] });
   t.after(() => indicator.dispose());
-  const ctx = {
+  const ctx = fake<ExtensionContext>({
     mode,
     isIdle: () => idle,
     ui: {
@@ -53,23 +58,32 @@ function fixture(t, { mode = "tui", bindings = {} } = {}) {
         indicator.setMessage(message ?? "Working");
       },
       setEditorComponent(factory) {
-        editor = factory(tui, getEditorTheme(), new KeybindingsManager(bindings));
-        editor.setWorkingStatusIndicator(indicator);
+        const created = factory?.(
+          host,
+          themes.getEditorTheme(),
+          new KeybindingsManager(bindings),
+        ) as CustomEditor;
+        created.setWorkingStatusIndicator(indicator);
         // Pi wires the default editor's dynamic interrupt handler this way.
-        editor.onEscape = () => escapes++;
+        created.onEscape = () => escapes++;
+        editor = created;
       },
     },
-  };
-  const emit = (name) => handlers.get(name)({}, ctx);
+  });
+  const emit = (name: string) => pi.emit(name, {}, ctx);
   emit("session_start");
   t.after(() => emit("session_shutdown"));
   return {
     emit,
     get editor() {
+      assert(editor, "terminal editor installed");
       return editor;
     },
+    get installed() {
+      return editor !== undefined;
+    },
     get status() {
-      const border = stripTerminalSequences(editor.render(100)[0]);
+      const border = stripTerminalSequences(this.editor.render(100)[0]);
       return border.match(/Press Esc again to stop/)?.[0];
     },
     get renders() {
@@ -78,7 +92,7 @@ function fixture(t, { mode = "tui", bindings = {} } = {}) {
     get escapes() {
       return escapes;
     },
-    set idle(value) {
+    set idle(value: boolean) {
       idle = value;
     },
   };
@@ -91,7 +105,7 @@ for (const key of ["\x1b", "\x1b[27u"]) {
     assert.equal(f.editor.embedWorkingStatus, true);
     f.editor.handleInput(key);
     assert.equal(f.escapes, 0);
-    assert.match(f.status, /Press Esc again/);
+    assert.match(f.status ?? "", /Press Esc again/);
     t.mock.timers.tick(1499);
     f.editor.handleInput(key);
     assert.equal(f.escapes, 1);
@@ -109,7 +123,7 @@ test("1.5 seconds expires the confirmation and the next Escape only arms again",
   assert.equal(f.status, undefined);
   f.editor.handleInput("\x1b");
   assert.equal(f.escapes, 0);
-  assert.match(f.status, /Press Esc again/);
+  assert.match(f.status ?? "", /Press Esc again/);
 });
 
 test("the hint replaces Working beside the spinner without changing the layout", (t) => {
@@ -159,7 +173,7 @@ test("idle Escape passes straight through, preserving idle double-Escape navigat
 test("autocomplete dismisses on one Escape without arming or aborting", async (t) => {
   const f = fixture(t);
   f.editor.setAutocompleteProvider({
-    getSuggestions: () => ({
+    getSuggestions: async () => ({
       prefix: "/fi",
       items: [
         { value: "/first", label: "/first" },
@@ -177,7 +191,7 @@ test("autocomplete dismisses on one Escape without arming or aborting", async (t
   assert.equal(f.status, undefined);
   assert.equal(f.escapes, 0);
   f.editor.handleInput("\x1b");
-  assert.match(f.status, /Press Esc again/);
+  assert.match(f.status ?? "", /Press Esc again/);
   assert.equal(f.escapes, 0);
 });
 
@@ -192,7 +206,7 @@ for (const event of ["agent_start", "agent_end", "session_shutdown", "session_st
     if (event !== "session_shutdown") {
       f.editor.handleInput("\x1b");
       assert.equal(f.escapes, 0);
-      assert.match(f.status, /Press Esc again/);
+      assert.match(f.status ?? "", /Press Esc again/);
     }
   });
 }
@@ -206,10 +220,10 @@ test("remapped interrupts are untouched; plain Escape does not arm", (t) => {
   assert.equal(f.escapes, 1);
 });
 
-for (const mode of ["rpc", "print", "json"]) {
+for (const mode of ["rpc", "print", "json"] as const) {
   test(`${mode} does not install a terminal editor`, (t) => {
     const f = fixture(t, { mode });
-    assert.equal(f.editor, undefined);
+    assert.equal(f.installed, false);
     f.emit("agent_start");
     f.emit("agent_end");
   });
