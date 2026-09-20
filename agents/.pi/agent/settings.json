@@ -22,6 +22,7 @@
   "packages": [
     "npm:pi-web-access",
     "npm:@plannotator/pi-extension",
-    "npm:@narumitw/pi-btw"
+    "npm:@narumitw/pi-btw",
+    "npm:@upstash/context7-pi"
   ]
 }
