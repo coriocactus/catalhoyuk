@@ -178,9 +178,11 @@ const args = [
   "--session",
   fixture,
   "--no-extensions",
-  // Match the renamed directories' discovery order: inspector, mirage, rearview.
+  // Match the directories' discovery order: inspector, interupt, mirage, rearview.
   "-e",
   join(extension, "../inspector/index.ts"),
+  "-e",
+  join(extension, "../interupt/index.ts"),
   "-e",
   join(extension, "index.ts"),
   "-e",
@@ -308,6 +310,23 @@ try {
     !terminal.rawSince().includes("mirage:file:"),
     "private filename links must not reach the terminal",
   );
+
+  terminal.send("ESC_LAYOUT_DRAFT");
+  await terminal.waitFor((s) => s.includes("ESC_LAYOUT_DRAFT"), "draft before interrupt hint");
+  const hintAnchor = {
+    draft: terminal.locate("ESC_LAYOUT_DRAFT").y,
+    transcript: terminal.locate("Explored 2 files").y,
+  };
+  terminal.send("\x1b");
+  await terminal.waitFor((s) => s.includes("Press Esc again"), "interrupt hint in editor border");
+  assert.equal(terminal.locate("Press Esc again").y, hintAnchor.draft - 1);
+  assert.equal(terminal.locate("ESC_LAYOUT_DRAFT").y, hintAnchor.draft);
+  assert.equal(terminal.locate("Explored 2 files").y, hintAnchor.transcript);
+  await terminal.waitFor((s) => !s.includes("Press Esc again"), "interrupt hint expires in place");
+  assert.equal(terminal.locate("ESC_LAYOUT_DRAFT").y, hintAnchor.draft);
+  assert.equal(terminal.locate("Explored 2 files").y, hintAnchor.transcript);
+  terminal.send("\x15");
+  await terminal.waitFor((s) => !s.includes("ESC_LAYOUT_DRAFT"), "clear layout test draft");
 
   assertOutputPadding(1);
   await setOutputPadding(0);
@@ -618,7 +637,7 @@ try {
   await owners("DISABLED", 0);
   terminal.save();
   console.log(
-    `PASS: xterm.js VT + real Pi/Vim; groups, output padding, Unicode clicks, colours/underlines, gated background work, newer/replacement drafts, saves, images, errors, Ctrl+O, resize, new/resume/fork/reload ownership and disable cleanup, bounded top paging/anchors, archived Vim/images, unchanged context. Pi idle CPU ${cpu.toFixed(2)}s/2s. Artifacts: ${root}`,
+    `PASS: xterm.js VT + real Pi/Vim; groups, output padding, Unicode clicks, colours/underlines, interrupt hint without layout shifts, gated background work, newer/replacement drafts, saves, images, errors, Ctrl+O, resize, new/resume/fork/reload ownership and disable cleanup, bounded top paging/anchors, archived Vim/images, unchanged context. Pi idle CPU ${cpu.toFixed(2)}s/2s. Artifacts: ${root}`,
   );
 } catch (error) {
   terminal?.save();

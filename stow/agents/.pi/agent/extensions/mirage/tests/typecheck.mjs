@@ -36,6 +36,7 @@ try {
         join(extension, "tests/offline-provider.ts"),
         join(extension, "../inspector/index.ts"),
         join(extension, "../rearview/index.ts"),
+        join(extension, "../interupt/index.ts"),
       ],
     }),
   );
