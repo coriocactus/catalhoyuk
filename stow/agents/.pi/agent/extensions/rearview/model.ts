@@ -66,11 +66,15 @@ export function historyGap(
 /** Walk only the requested ancestors. No full-tree scan, mutation, or model-context changes. */
 export class HistoryCursor {
   private consumed = new Set<string>();
-  constructor(
-    public next: string | null,
-    private readonly lookup: EntryLookup,
-    private readonly visible: ReadonlySet<string>,
-  ) {}
+  next: string | null;
+  private readonly lookup: EntryLookup;
+  private readonly visible: ReadonlySet<string>;
+
+  constructor(next: string | null, lookup: EntryLookup, visible: ReadonlySet<string>) {
+    this.next = next;
+    this.lookup = lookup;
+    this.visible = visible;
+  }
 
   prepare(size = PAGE_SIZE): HistoryBatch | undefined {
     if (!Number.isSafeInteger(size) || size < 1)

@@ -1,43 +1,52 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join } from "node:path";
 import { after, test } from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import type {
+  AgentToolResult,
+  ExtensionContext,
+  SessionEntry,
+  Theme,
+} from "@earendil-works/pi-coding-agent";
+import type { Component, TUI, TuiMouseEvent, TuiMouseEventType } from "@earendil-works/pi-tui";
+import { OPEN_FILE_EVENT, type OpenFileRequest } from "../../shared/protocol.ts";
+import { type FakePi, fake, fakePi, type Tool } from "../../test/fake-pi.ts";
+import { core, load, loadFuture, themes, tui } from "../../test/pi.ts";
+import { colours } from "../colours.ts";
+import type { ToolGroupView } from "../view.ts";
 
-import { pkg, require } from "./pi-package.mjs";
+const { default: installDisplay } = await load<typeof import("../index.ts")>(
+  "../index.ts",
+  import.meta.url,
+);
+const { ToolGroups } = await load<typeof import("../model.ts")>("../model.ts", import.meta.url);
+const { diffCounts } = await load<typeof import("../view.ts")>("../view.ts", import.meta.url);
+const { paint, colouredDiff } = await load<typeof import("../style.ts")>(
+  "../style.ts",
+  import.meta.url,
+);
 
-const { createJiti } = require("jiti");
-const jiti = createJiti(import.meta.url, {
-  alias: {
-    "@earendil-works/pi-coding-agent": join(pkg, "dist/index.js"),
-    "@earendil-works/pi-tui": require.resolve("@earendil-works/pi-tui"),
-    typebox: require.resolve("typebox"),
-  },
-});
-const extension = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const { default: installDisplay } = await jiti.import(join(extension, "index.ts"));
-const { default: installVim } = await jiti.import(join(extension, "../inspector/index.ts"));
-const { OPEN_FILE_EVENT } = await jiti.import(join(extension, "../shared/protocol.ts"));
-const { TRANSCRIPT_VIEW } = await jiti.import(join(extension, "../shared/transcript.ts"));
-const { HISTORY_PAGE } = await jiti.import(join(extension, "../shared/history.ts"));
-const { resolveToolFile } = await jiti.import(join(extension, "../inspector/paths.ts"));
-const { ToolGroups } = await jiti.import(join(extension, "model.ts"));
-const { diffCounts } = await jiti.import(join(extension, "view.ts"));
-const { colours } = await jiti.import(join(extension, "colours.ts"));
-const { paint, colouredDiff } = await jiti.import(join(extension, "style.ts"));
-const core = await import(join(pkg, "dist/index.js"));
-const themes = await import(join(pkg, "dist/modes/interactive/theme/theme.js"));
-const tui = await import(require.resolve("@earendil-works/pi-tui"));
-core.initTheme("dark");
+type Result = AgentToolResult<unknown>;
+type Message = Parameters<InstanceType<typeof ToolGroups>["observe"]>[0];
+type RenderContext = Parameters<NonNullable<Tool["renderCall"]>>[2];
+type DisplayState = { view?: ToolGroupView };
+type Notice = Parameters<ExtensionContext["ui"]["notify"]>;
+/** Private InteractiveMode lookup that binds tool renderers to their host. */
+interface ToolLookup {
+  getRegisteredToolDefinition(this: object, name: string): Tool | undefined;
+}
+
+const interactive = core.InteractiveMode.prototype as unknown as ToolLookup;
 const nativeRender = core.ToolExecutionComponent.prototype.render;
-const nativeLookup = core.InteractiveMode.prototype.getRegisteredToolDefinition;
+const nativeLookup = interactive.getRegisteredToolDefinition;
+const ui = fake<TUI>({ requestRender() {} });
+const assistantStart = { role: "assistant", content: [] } as unknown as Message;
 const PIXEL_PNG =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII=";
 const root = mkdtempSync(join(tmpdir(), "pi-mirage-"));
 const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
-const sessions = [];
+const sessions: FakePi[] = [];
 after(async () => {
   for (const pi of sessions) await pi.event("session_shutdown");
   assert.equal(
@@ -46,7 +55,7 @@ after(async () => {
     "last owner restores Pi rendering on shutdown",
   );
   assert.equal(
-    core.InteractiveMode.prototype.getRegisteredToolDefinition,
+    interactive.getRegisteredToolDefinition,
     nativeLookup,
     "last owner restores Pi's tool lookup on shutdown",
   );
@@ -55,24 +64,7 @@ after(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-function api() {
-  const handlers = new Map(),
-    tools = new Map();
-  return {
-    tools,
-    events: core.createEventBus(),
-    on(name, callback) {
-      handlers.set(name, [...(handlers.get(name) ?? []), callback]);
-    },
-    async event(name, value, ctx) {
-      for (const handler of handlers.get(name) ?? []) await handler(value, ctx);
-    },
-    registerTool(tool) {
-      tools.set(tool.name, tool);
-    },
-  };
-}
-const mouse = (x, y = 0, type = "click") => ({
+const mouse = (x: number, y = 0, type: TuiMouseEventType = "click"): TuiMouseEvent => ({
   type,
   button: "left",
   x,
@@ -85,22 +77,52 @@ const mouse = (x, y = 0, type = "click") => ({
   alt: false,
   ctrl: false,
 });
-const plain = (component, width = 160) =>
+const plain = (component: Component, width = 160) =>
   component
     .render(width)
     .map((line) => tui.stripTerminalSequences(line).trimEnd())
     .join("\n");
-const isImageLine = (line) => line.includes("\x1b_G") || line.includes("\x1b]1337;File=");
-const result = (value, details = {}) => ({ content: [{ type: "text", text: value }], details });
-const waitFor = async (predicate) => {
-  for (let i = 0; i < 400; i++) {
-    if (predicate()) return;
-    await delay(5);
-  }
-  throw new Error("Timed out waiting for editor lifecycle");
+const isImageLine = (line: string) => line.includes("\x1b_G") || line.includes("\x1b]1337;File=");
+const result = (value: string, details: unknown = {}): Result => ({
+  content: [{ type: "text", text: value }],
+  details,
+});
+const firstText = (output: Result) => {
+  const part = output.content[0];
+  assert(part?.type === "text", "text result");
+  return part.text;
 };
+/** Private ToolExecutionComponent state. */
+const internals = (component: object) =>
+  component as { rendererState: DisplayState; imageComponents: Component[] };
+const component = (
+  name: string,
+  id: string,
+  args: unknown,
+  definition: Tool | undefined,
+  cwd: string,
+  options: { showImages?: boolean } = {},
+) => new core.ToolExecutionComponent(name, id, args, options, definition, ui, cwd);
 
-async function fixture({ global = {}, project = {}, trusted = false, mode = "tui" } = {}) {
+interface Slot {
+  definition: Tool;
+  context: RenderContext;
+  view: ToolGroupView;
+  redraw(): void;
+  result(output: Result, failed?: boolean, partial?: boolean): void;
+}
+
+async function fixture({
+  global = {},
+  project = {},
+  trusted = false,
+  mode = "tui",
+}: {
+  global?: object;
+  project?: object;
+  trusted?: boolean;
+  mode?: ExtensionContext["mode"];
+} = {}) {
   const dir = mkdtempSync(join(root, "case-"));
   const config = join(dir, "config");
   mkdirSync(config);
@@ -108,13 +130,13 @@ async function fixture({ global = {}, project = {}, trusted = false, mode = "tui
   writeFileSync(join(config, "settings.json"), JSON.stringify(global));
   writeFileSync(join(dir, ".pi/settings.json"), JSON.stringify(project));
   process.env.PI_CODING_AGENT_DIR = config;
-  const pi = api(),
-    slots = [],
-    notices = [];
+  const pi = fakePi(),
+    slots: Slot[] = [],
+    notices: Notice[] = [];
   let allExpanded = false,
-    entries = [],
+    entries: SessionEntry[] = [],
     invalidations = 0;
-  const ctx = {
+  const ctx = fake<ExtensionContext>({
     mode,
     cwd: dir,
     isProjectTrusted: () => trusted,
@@ -127,13 +149,18 @@ async function fixture({ global = {}, project = {}, trusted = false, mode = "tui
       getSessionId: () => "test",
       getSessionFile: () => undefined,
     },
-  };
-  installDisplay(pi);
+  });
+  installDisplay(pi.api);
   sessions.push(pi);
   await pi.event("session_start", {}, ctx);
-  function call(name, id, args, started = true) {
+  const tool = (name: string): Tool => {
     const definition = pi.tools.get(name);
-    const context = {
+    assert(definition, `${name} is registered`);
+    return definition;
+  };
+  function call(name: string, id: string, args: unknown, started = true): Slot {
+    const definition = tool(name);
+    const context = fake<RenderContext>({
       args,
       toolCallId: id,
       state: {},
@@ -147,16 +174,19 @@ async function fixture({ global = {}, project = {}, trusted = false, mode = "tui
       invalidate() {
         invalidations++;
       },
-    };
-    const slot = {
+    });
+    const render = () =>
+      definition.renderCall?.(context.args, themes.theme, context) as ToolGroupView;
+    const slot: Slot = {
       definition,
       context,
+      view: render(),
       redraw() {
-        slot.view = definition.renderCall(context.args, themes.theme, context);
+        slot.view = render();
       },
       result(output, failed = false, partial = false) {
         context.isError = failed;
-        definition.renderResult(
+        definition.renderResult?.(
           output,
           { expanded: allExpanded, isPartial: partial },
           themes.theme,
@@ -164,7 +194,6 @@ async function fixture({ global = {}, project = {}, trusted = false, mode = "tui
         );
       },
     };
-    slot.redraw();
     slots.push(slot);
     return slot;
   }
@@ -172,56 +201,41 @@ async function fixture({ global = {}, project = {}, trusted = false, mode = "tui
     pi,
     ctx,
     dir,
+    tool,
     call,
     notices,
     get invalidations() {
       return invalidations;
     },
-    expand(value) {
+    expand(value: boolean) {
       allExpanded = value;
       for (const slot of slots) slot.redraw();
     },
-    async rebuild(event, values = []) {
-      entries = values;
+    async rebuild(event: string, values: unknown[] = []) {
+      entries = values as SessionEntry[];
       await pi.event(event, {}, ctx);
     },
   };
 }
 
-test("shared presentation identifiers use the renamed extension namespaces", () => {
-  assert.equal(OPEN_FILE_EVENT, "inspector:open");
-  assert.equal(TRANSCRIPT_VIEW, "rearview:transcript-view");
-  assert.equal(Symbol.keyFor(HISTORY_PAGE), "rearview.history-page.v1");
-});
-
 test("compatibility checks capabilities, not a version allowlist, and warns before native fallback", async (t) => {
-  const shim = join(root, "future-pi.mjs");
-  writeFileSync(
-    shim,
-    `export * from ${JSON.stringify(pathToFileURL(join(pkg, "dist/index.js")).href)}; export const VERSION = "999.0.0";`,
+  const images = await loadFuture<typeof import("../native-images.ts")>(
+    "../native-images.ts",
+    import.meta.url,
   );
-  const future = createJiti(import.meta.url, {
-    moduleCache: false,
-    fsCache: false,
-    alias: {
-      "@earendil-works/pi-coding-agent": shim,
-      "@earendil-works/pi-tui": require.resolve("@earendil-works/pi-tui"),
-    },
-  });
-  const images = await future.import(join(extension, "native-images.ts"));
-  const padding = await future.import(join(extension, "native-padding.ts"));
-  const history = await future.import(join(extension, "../rearview/native.ts"));
+  const padding = await loadFuture<typeof import("../native-padding.ts")>(
+    "../native-padding.ts",
+    import.meta.url,
+  );
   t.mock.method(core.ToolExecutionComponent.prototype, "render", () => ["native fallback"]);
-  t.mock.method(core.InteractiveMode.prototype, "getRegisteredToolDefinition", function () {
+  t.mock.method(interactive, "getRegisteredToolDefinition", function (this: { definition?: Tool }) {
     return this.definition;
   });
-  const notices = [],
-    releases = [];
+  const notices: string[] = [],
+    releases: (() => void)[] = [];
   try {
     releases.push(images.installNativeImageSlot((error) => notices.push(error.message)));
     releases.push(padding.installNativeOutputPadding((error) => notices.push(error.message)));
-    const adapter = history.installHistoryAdapter((error) => assert.fail(error.message));
-    releases.push(() => adapter.dispose());
     const broken = {
       toolDefinition: images.ownImageRendering({ renderShell: "self" }),
       rendererState: {},
@@ -233,17 +247,19 @@ test("compatibility checks capabilities, not a version allowlist, and warns befo
     assert.equal(notices.length, 1, "one warning, not one per paint");
     assert.match(notices[0], /Pi 999\.0\.0: image adapter API changed/);
     const state = {};
-    const host = {
+    const host: { outputPad?: number; definition: Tool } = {
       outputPad: 2,
-      definition: padding.ownOutputPadding({
-        renderCall() {
-          return {};
-        },
-      }),
+      definition: padding.ownOutputPadding(
+        fake<Tool>({
+          renderCall() {
+            return fake<Component>({});
+          },
+        }),
+      ),
     };
-    core.InteractiveMode.prototype.getRegisteredToolDefinition
+    interactive.getRegisteredToolDefinition
       .call(host, "read")
-      .renderCall({}, {}, { state });
+      ?.renderCall?.({}, themes.theme, fake<RenderContext>({ state }));
     assert.equal(padding.outputPadding(state), 2, "nonnegative integer padding remains compatible");
     delete host.outputPad;
     assert.equal(padding.outputPadding(state), 0);
@@ -253,26 +269,23 @@ test("compatibility checks capabilities, not a version allowlist, and warns befo
   } finally {
     for (const release of releases.reverse()) release();
   }
-  assert.equal(core.InteractiveMode.prototype[Symbol.for("rearview.patch.v1")], undefined);
-  const imageRender = core.ToolExecutionComponent.prototype.render;
-  core.ToolExecutionComponent.prototype.render = undefined;
+  const prototype = core.ToolExecutionComponent.prototype as { render?: unknown };
+  const imageRender = prototype.render;
+  prototype.render = undefined;
   try {
     assert.throws(() => images.installNativeImageSlot(), /renderer is unavailable/);
   } finally {
-    core.ToolExecutionComponent.prototype.render = imageRender;
+    prototype.render = imageRender;
   }
 });
 
 test("palette supplies RGB and indexed colours without losing diff word highlights", (t) => {
   // Pi's chalk styles are disabled when this test's stdout is a pipe.
-  t.mock.method(themes.Theme.prototype, "inverse", (text) => `\x1b[7m${text}\x1b[27m`);
-  const rgb = { getColorMode: () => "truecolor" };
-  const indexed = { getColorMode: () => "256color" };
-  for (const [tone, hex] of Object.entries(colours)) {
-    const channels = hex
-      .slice(1)
-      .match(/../g)
-      .map((value) => Number.parseInt(value, 16));
+  t.mock.method(themes.Theme.prototype, "inverse", (text: string) => `\x1b[7m${text}\x1b[27m`);
+  const rgb = fake<Theme>({ getColorMode: () => "truecolor" });
+  const indexed = fake<Theme>({ getColorMode: () => "256color" });
+  for (const [tone, hex] of Object.entries(colours) as [keyof typeof colours, string][]) {
+    const channels = (hex.slice(1).match(/../g) ?? []).map((value) => Number.parseInt(value, 16));
     assert.equal(paint(rgb, tone, "text"), `\x1b[38;2;${channels.join(";")}mtext\x1b[39m`);
     const escaped = paint(indexed, tone, "text");
     assert(escaped.startsWith("\x1b[38;5;") && escaped.endsWith("mtext\x1b[39m"));
@@ -286,7 +299,7 @@ test("palette supplies RGB and indexed colours without losing diff word highligh
   for (const [line, tone] of [
     [lines[0], "red"],
     [lines[1], "green"],
-  ]) {
+  ] as const) {
     assert(line.startsWith(paint(rgb, tone, "").split("\x1b[39m")[0]));
     assert(line.includes("\x1b[7m") && line.includes("\x1b[27m"), "word changes remain inverse");
   }
@@ -295,9 +308,14 @@ test("palette supplies RGB and indexed colours without losing diff word highligh
 
 test("group boundaries, streaming snapshots, and expansion survive growth and merges", () => {
   const model = new ToolGroups();
-  const a = model.addCall("a", "read", { path: "a" }, root);
+  const add = (id: string, name: string, args: unknown) => {
+    const row = model.addCall(id, name, args, root);
+    assert(row, `${id} row`);
+    return row;
+  };
+  const a = add("a", "read", { path: "a" });
   model.toggle(a);
-  const b = model.addCall("b", "read", { path: "b" }, root);
+  const b = add("b", "read", { path: "b" });
   assert.equal(a.group, b.group);
   assert(
     model.expanded(a) && model.expanded(a.group),
@@ -305,29 +323,25 @@ test("group boundaries, streaming snapshots, and expansion survive growth and me
   );
   assert(!model.expanded(b));
   assert.equal(model.addCall("a", "read", { path: "updated" }, root), a);
-  assert.equal(a.file.path, "updated", "streamed arguments update the snapshot");
+  assert.equal(a.file?.path, "updated", "streamed arguments update the snapshot");
   model.addCall("foreign", "grep", {}, root);
-  assert.notEqual(model.addCall("c", "read", {}, root).group, a.group);
-  assert.equal(
-    model.addCall("edit1", "edit", {}, root).group,
-    model.addCall("edit2", "edit", {}, root).group,
-  );
-  assert.notEqual(
-    model.addCall("write1", "write", {}, root).group,
-    model.addCall("write2", "write", {}, root).group,
-  );
+  assert.notEqual(add("c", "read", {}).group, a.group);
+  assert.equal(add("edit1", "edit", {}).group, add("edit2", "edit", {}).group);
+  assert.notEqual(add("write1", "write", {}).group, add("write2", "write", {}).group);
   model.reset();
-  function batch(id, blocks = []) {
+  const batch = (id: string, blocks: object[] = []) => {
     const message = {
       role: "assistant",
       content: [...blocks, { type: "toolCall", id, name: "read", arguments: { path: id } }],
       stopReason: "toolUse",
-    };
-    model.startMessage({ role: "assistant", content: [] }, root);
+    } as unknown as Message;
+    model.startMessage(assistantStart, root);
     model.observe(message, root);
     model.finishMessage(message, root);
-    return model.rows.get(id);
-  }
+    const row = model.rows.get(id);
+    assert(row, `${id} row`);
+    return row;
+  };
   const first = batch("first");
   model.toggle(first);
   const second = batch("second");
@@ -339,13 +353,14 @@ test("group boundaries, streaming snapshots, and expansion survive growth and me
   assert.notEqual(thinking.group, commentary.group);
   const late = {
     role: "assistant",
-    content: [{ type: "toolCall", id: "late", name: "read", arguments: {} }],
+    content: [{ type: "toolCall", id: "late", name: "read", arguments: {} }] as object[],
   };
-  model.startMessage({ role: "assistant", content: [] }, root);
-  model.observe(late, root);
+  const lateMessage = late as unknown as Message;
+  model.startMessage(assistantStart, root);
+  model.observe(lateMessage, root);
   late.content.push({ type: "text", text: "Late commentary" });
-  model.finishMessage(late, root);
-  assert.notEqual(model.rows.get("late").group, thinking.group);
+  model.finishMessage(lateMessage, root);
+  assert.notEqual(model.rows.get("late")?.group, thinking.group);
   model.setAllExpanded(true);
   model.toggle(first);
   model.setAllExpanded(false);
@@ -355,24 +370,34 @@ test("group boundaries, streaming snapshots, and expansion survive growth and me
 
 test("edit groups merge across tool-only turns without crossing message or tool boundaries", () => {
   const model = new ToolGroups();
-  function batch(id, blocks = []) {
+  const row = (id: string) => {
+    const value = model.rows.get(id);
+    assert(value, `${id} row`);
+    return value;
+  };
+  const add = (id: string, name: string) => {
+    const value = model.addCall(id, name, {}, root);
+    assert(value, `${id} row`);
+    return value;
+  };
+  function batch(id: string, blocks: object[] = []) {
     const message = {
       role: "assistant",
       content: [...blocks, { type: "toolCall", id, name: "edit", arguments: { path: id } }],
       stopReason: "toolUse",
     };
-    model.startMessage({ role: "assistant", content: [] }, root);
-    model.observe(message, root);
+    model.startMessage(assistantStart, root);
+    model.observe(message as unknown as Message, root);
     return message;
   }
   const first = batch("first");
-  model.finishMessage(first, root);
-  const a = model.rows.get("first");
+  model.finishMessage(first as unknown as Message, root);
+  const a = row("first");
   model.toggle(a);
   const second = batch("second");
-  const b = model.rows.get("second");
+  const b = row("second");
   assert.notEqual(a.group, b.group, "wait for late commentary before merging");
-  model.finishMessage(second, root);
+  model.finishMessage(second as unknown as Message, root);
   assert.equal(a.group, b.group);
   assert(model.expanded(a) && model.expanded(a.group), "merging preserves open diffs");
 
@@ -380,22 +405,22 @@ test("edit groups merge across tool-only turns without crossing message or tool 
     { type: "text", text: "Commentary" },
     { type: "thinking", thinking: "Reasoning" },
   ]) {
-    const previous = model.rows.get(second.content[0].id);
+    const previous = row("second");
     const next = batch(block.type);
     next.content.push(block);
-    model.finishMessage(next, root);
-    assert.notEqual(model.rows.get(block.type).group, previous.group);
+    model.finishMessage(next as unknown as Message, root);
+    assert.notEqual(row(block.type).group, previous.group);
   }
   for (const name of ["read", "bash", "write", "grep"]) {
-    const before = model.addCall(`before-${name}`, "edit", {}, root);
+    const before = add(`before-${name}`, "edit");
     model.addCall(`boundary-${name}`, name, {}, root);
-    const after = model.addCall(`after-${name}`, "edit", {}, root);
+    const after = add(`after-${name}`, "edit");
     assert.notEqual(before.group, after.group, name);
   }
   for (const role of ["user", "custom", "bashExecution"]) {
-    const before = model.addCall(`before-${role}`, "edit", {}, root);
-    model.startMessage({ role, content: "Boundary" }, root);
-    assert.notEqual(model.addCall(`after-${role}`, "edit", {}, root).group, before.group);
+    const before = add(`before-${role}`, "edit");
+    model.startMessage({ role, content: "Boundary" } as unknown as Message, root);
+    assert.notEqual(add(`after-${role}`, "edit").group, before.group);
   }
 });
 
@@ -404,19 +429,13 @@ test("normalized renderer inputs tolerate invalid arguments without bypassing va
   for (const name of ["read", "bash", "edit", "write"]) {
     for (const [i, args] of [null, undefined, [], 17, "invalid", {}, { path: 3 }].entries()) {
       await f.pi.event("message_start", { message: { role: "user", content: "boundary" } }, f.ctx);
-      const component = new core.ToolExecutionComponent(
-        name,
-        `${name}-${i}`,
-        args,
-        { showImages: false },
-        f.pi.tools.get(name),
-        { requestRender() {} },
-        f.dir,
-      );
-      component.updateResult({ ...result("VALIDATION_ERROR"), isError: true });
-      assert.doesNotThrow(() => component.render(100));
-      assert.match(plain(component), name === "bash" ? /\$ … ▸/ : /✗/);
-      assert(!plain(component).includes("VALIDATION_ERROR"));
+      const row = component(name, `${name}-${i}`, args, f.tool(name), f.dir, {
+        showImages: false,
+      });
+      row.updateResult({ ...result("VALIDATION_ERROR"), isError: true });
+      assert.doesNotThrow(() => row.render(100));
+      assert.match(plain(row), name === "bash" ? /\$ … ▸/ : /✗/);
+      assert(!plain(row).includes("VALIDATION_ERROR"));
     }
   }
   const invalid = f.call("edit", "invalid-expanded", null);
@@ -428,8 +447,9 @@ test("normalized renderer inputs tolerate invalid arguments without bypassing va
 
 test("rendering is read-only and cached; file clicks use an acknowledged reference", async () => {
   const f = await fixture();
-  let opened;
-  f.pi.events.on(OPEN_FILE_EVENT, (request) => {
+  let opened: OpenFileRequest | undefined;
+  f.pi.events.on(OPEN_FILE_EVENT, (data) => {
+    const request = data as OpenFileRequest;
     request.accepted = true;
     opened = request;
   });
@@ -450,7 +470,12 @@ test("rendering is read-only and cached; file clicks use an acknowledged referen
   assert.equal(tui.getOsc8LinkAtColumn(lines[y], x), undefined);
   a.view.invalidate(); // A click can arrive before the next repaint.
   a.view.handleMouse(mouse(x, y));
-  assert.deepEqual(opened, { path: a.context.args.path, cwd: f.dir, tool: "read", accepted: true });
+  assert.deepEqual(opened, {
+    path: (a.context.args as { path: string }).path,
+    cwd: f.dir,
+    tool: "read",
+    accepted: true,
+  });
   const snapshot = JSON.stringify(
     [...a.view.row.group.rows].map((row) => ({ ...row, group: undefined })),
   );
@@ -479,8 +504,9 @@ test("rendering is read-only and cached; file clicks use an acknowledged referen
 
 test("trailing carets survive truncation and toggle independently of filename links", async () => {
   const f = await fixture();
-  const opened = [];
-  f.pi.events.on(OPEN_FILE_EVENT, (request) => {
+  const opened: string[] = [];
+  f.pi.events.on(OPEN_FILE_EVENT, (data) => {
+    const request = data as OpenFileRequest;
     request.accepted = true;
     opened.push(request.path);
   });
@@ -544,7 +570,7 @@ test("command headers use a status-coloured dollar without ticks or crosses", as
     .render(160)
     .filter((line) => tui.stripTerminalSequences(line).endsWith("▾"));
   assert.equal(headers.length, 3);
-  for (const [i, tone] of ["red", "green", "red"].entries()) {
+  for (const [i, tone] of (["red", "green", "red"] as const).entries()) {
     const prefix = `${i ? "  " : ""}${paint(themes.theme, tone, "$")} `;
     assert(headers[i].startsWith(prefix));
     assert(!/[✓✗]/.test(tui.stripTerminalSequences(headers[i])));
@@ -641,8 +667,9 @@ test("edit groups count distinct files and sum only completed diff snapshots", a
 
 test("edit groups expand into clickable files with independent diffs and global toggles", async () => {
   const f = await fixture();
-  let opened;
-  f.pi.events.on(OPEN_FILE_EVENT, (request) => {
+  let opened: OpenFileRequest | undefined;
+  f.pi.events.on(OPEN_FILE_EVENT, (data) => {
+    const request = data as OpenFileRequest;
     request.accepted = true;
     opened = request;
   });
@@ -704,31 +731,27 @@ test("failed edits stay visible in collapsed groups and do not contribute diff t
 test("output padding follows the live host for cached headers, bodies, clicks and images", async (t) => {
   const f = await fixture();
   const definitions = new Map(f.pi.tools);
-  const host = { outputPad: 0, session: { getToolDefinition: (name) => definitions.get(name) } };
-  const lookup = (name) =>
-    core.InteractiveMode.prototype.getRegisteredToolDefinition.call(host, name);
-  const component = (name, id, args) =>
-    new core.ToolExecutionComponent(
-      name,
-      id,
-      args,
-      {},
-      lookup(name),
-      { requestRender() {} },
-      f.dir,
-    );
-  const opened = [];
-  f.pi.events.on(OPEN_FILE_EVENT, (request) => {
+  const host = {
+    outputPad: 0,
+    session: { getToolDefinition: (name: string) => definitions.get(name) },
+  };
+  const lookup = (name: string) => interactive.getRegisteredToolDefinition.call(host, name);
+  const row = (name: string, id: string, args: unknown) =>
+    component(name, id, args, lookup(name), f.dir, {});
+  const opened: string[] = [];
+  f.pi.events.on(OPEN_FILE_EVENT, (data) => {
+    const request = data as OpenFileRequest;
     request.accepted = true;
     opened.push(request.path);
   });
   const path = "日本語-padding-long-filename.txt";
-  const read = component("read", "padded-read", { path });
+  const read = row("read", "padded-read", { path });
   read.updateResult({ ...result("READ_BODY"), isError: false });
   const unpadded = tui.stripTerminalSequences(read.render(30)[1]);
   assert(unpadded.startsWith("✓ Read ") && unpadded.endsWith(" ▸"));
   // The view keeps the old hit targets until it is rendered with the new inset.
-  const view = read.rendererState.view;
+  const view = internals(read).rendererState.view;
+  assert(view, "mirage view");
   host.outputPad = 1;
   view.invalidate();
   view.handleMouse(mouse(tui.visibleWidth("✓ Read ")));
@@ -746,16 +769,16 @@ test("output padding follows the live host for cached headers, bodies, clicks an
     ["edit", { path: "edit.txt" }, result("edited", { diff: "-1 before\n+1 after" })],
     ["write", { path: "write.txt", content: "WRITE_BODY" }, result("written")],
     ["bash", { command: "echo BASH_BODY" }, result("BASH_BODY")],
-  ]) {
-    const row = component(name, `padded-${name}`, args);
-    row.updateResult({ ...output, isError: false });
-    components.push(row);
+  ] as const) {
+    const next = row(name, `padded-${name}`, args);
+    next.updateResult({ ...output, isError: false });
+    components.push(next);
   }
   for (const padding of [1, 0, 1]) {
     host.outputPad = padding; // No updateDisplay/invalidate: exercise the render-cache key.
-    for (const row of components) {
-      const lines = row.render(30).slice(1).map(tui.stripTerminalSequences);
-      assert.equal(lines[0].match(/^ */)[0].length, padding);
+    for (const item of components) {
+      const lines = item.render(30).slice(1).map(tui.stripTerminalSequences);
+      assert.equal(lines[0].match(/^ */)?.[0].length, padding);
       assert(lines[0].endsWith(" ▾"));
       assert(lines.slice(1).some((line) => line.trim()));
       for (const line of lines) {
@@ -763,48 +786,47 @@ test("output padding follows the live host for cached headers, bodies, clicks an
         if (line.trim()) assert(line.startsWith(" ".repeat(padding)));
       }
       for (const width of [0, 1, 2, 3, 10])
-        for (const line of row.render(width)) assert(tui.visibleWidth(line) <= width);
-      row.render(30); // Leave the same width cached before changing only outputPad.
+        for (const line of item.render(width)) assert(tui.visibleWidth(line) <= width);
+      item.render(30); // Leave the same width cached before changing only outputPad.
     }
   }
 
   // Binding is host-local, scoped to our definitions, and never mutates the originals.
   const otherHost = { ...host, outputPad: 0 };
-  const other = core.InteractiveMode.prototype.getRegisteredToolDefinition.call(otherHost, "write");
-  const otherRow = new core.ToolExecutionComponent(
+  const other = interactive.getRegisteredToolDefinition.call(otherHost, "write");
+  const otherRow = component(
     "write",
     "other-host",
     { path: "other.txt", content: "OTHER" },
-    {},
     other,
-    { requestRender() {} },
     f.dir,
+    {},
   );
   otherRow.updateResult({ ...result("written"), isError: false });
   assert(tui.stripTerminalSequences(otherRow.render(30)[1]).startsWith("✓ Wrote "));
   const original = definitions.get("write");
-  assert.notEqual(other.renderCall, original.renderCall);
+  assert.notEqual(other?.renderCall, original?.renderCall);
   assert.equal(f.pi.tools.get("write"), original);
   const unmanaged = core.createReadToolDefinition(f.dir);
   const plainHost = { outputPad: 1, session: { getToolDefinition: () => unmanaged } };
   assert.equal(
-    core.InteractiveMode.prototype.getRegisteredToolDefinition.call(plainHost, "read").renderCall,
+    interactive.getRegisteredToolDefinition.call(plainHost, "read")?.renderCall,
     unmanaged.renderCall,
   );
 
   tui.setCapabilityOverrides({ images: "kitty" });
   try {
-    const image = component("read", "padded-image", { path: "picture.png" });
+    const image = row("read", "padded-image", { path: "picture.png" });
     const output = {
       content: [{ type: "image", data: PIXEL_PNG, mimeType: "image/png" }],
       isError: false,
     };
     const payload = JSON.stringify(output);
     image.updateResult(output);
-    const widths = [];
-    const nativeImage = image.imageComponents[0];
+    const widths: number[] = [];
+    const nativeImage = internals(image).imageComponents[0];
     const render = nativeImage.render.bind(nativeImage);
-    t.mock.method(nativeImage, "render", (width) => {
+    t.mock.method(nativeImage, "render", (width: number) => {
       widths.push(width);
       return render(width);
     });
@@ -812,11 +834,11 @@ test("output padding follows the live host for cached headers, bodies, clicks an
       host.outputPad = padding;
       const lines = image.render(40);
       assert.equal(widths.at(-1), 40 - padding * 2 - 2);
-      assert(lines.find(isImageLine).startsWith(" ".repeat(padding + 2)));
+      assert(lines.find(isImageLine)?.startsWith(" ".repeat(padding + 2)));
       assert.equal(JSON.stringify(output), payload);
     }
   } finally {
-    tui.setCapabilityOverrides({ images: false });
+    tui.setCapabilityOverrides({ images: null });
   }
 });
 
@@ -825,17 +847,8 @@ test("native previews default hidden, obey local/global toggles, and leave paylo
   const png = PIXEL_PNG;
   tui.setCapabilityOverrides({ images: "kitty" });
   try {
-    const components = ["before", "picture", "after"].map(
-      (id) =>
-        new core.ToolExecutionComponent(
-          "read",
-          id,
-          { path: `${id}.png` },
-          { showImages: true },
-          f.pi.tools.get("read"),
-          { requestRender() {} },
-          f.dir,
-        ),
+    const components = ["before", "picture", "after"].map((id) =>
+      component("read", id, { path: `${id}.png` }, f.tool("read"), f.dir, { showImages: true }),
     );
     components[0].updateResult({ ...result("before"), isError: false });
     const output = {
@@ -857,14 +870,13 @@ test("native previews default hidden, obey local/global toggles, and leave paylo
     components[1].handleMouse(mouse(0, 1));
     const expanded = components[1].render(160);
     assert(expanded.some(isImageLine), "expanded row contains real native image protocol");
-    const unmanaged = new core.ToolExecutionComponent(
+    const unmanaged = component(
       "read",
       "unmanaged",
       { path: "picture.png" },
-      { showImages: true },
       core.createReadToolDefinition(f.dir),
-      { requestRender() {} },
       f.dir,
+      { showImages: true },
     );
     unmanaged.updateResult(output);
     const nativeImageLines = unmanaged.render(160).filter(isImageLine).length;
@@ -874,7 +886,7 @@ test("native previews default hidden, obey local/global toggles, and leave paylo
     assert.equal(components[1].render(160).length, 2);
     for (const value of [true, false]) {
       f.expand(value);
-      for (const component of components) component.setExpanded(value);
+      for (const item of components) item.setExpanded(value);
       assert.equal(
         components[1].render(160).some(isImageLine),
         value,
@@ -899,14 +911,13 @@ test("native previews default hidden, obey local/global toggles, and leave paylo
     assert.equal(JSON.stringify(output), payload, "model/session image data stays unchanged");
     await f.pi.event("session_shutdown");
     await f.pi.event("session_start", {}, f.ctx);
-    const resumed = new core.ToolExecutionComponent(
+    const resumed = component(
       "read",
       "resumed-image",
       { path: "picture.png" },
-      { showImages: true },
-      f.pi.tools.get("read"),
-      { requestRender() {} },
+      f.tool("read"),
       f.dir,
+      { showImages: true },
     );
     resumed.updateResult(output);
     assert.equal(resumed.render(160).length, 2);
@@ -916,7 +927,7 @@ test("native previews default hidden, obey local/global toggles, and leave paylo
       "image control reattaches after a shutdown/start cycle",
     );
   } finally {
-    tui.setCapabilityOverrides({ images: false });
+    tui.setCapabilityOverrides({ images: null });
   }
 });
 
@@ -932,8 +943,8 @@ test("configured executors preserve shell options, image sizing, and project tru
       global: { shellPath: shell, shellCommandPrefix: "export PREFIX=global" },
       project: { shellCommandPrefix: "export PREFIX=project" },
     });
-    const output = await f.pi.tools
-      .get("bash")
+    const output = await f
+      .tool("bash")
       .execute(
         "bash",
         { command: 'printf "%s/%s" "$PREFIX" "$SHELL_SELECTED"' },
@@ -941,7 +952,7 @@ test("configured executors preserve shell options, image sizing, and project tru
         undefined,
         f.ctx,
       );
-    assert.equal(output.content[0].text, `${trusted ? "project" : "global"}/yes`);
+    assert.equal(firstText(output), `${trusted ? "project" : "global"}/yes`);
   }
   const f = await fixture({ global: { images: { autoResize: false } } });
   // A valid 2100x1 RGBA PNG: larger than Pi's default 2000px resize limit.
@@ -949,15 +960,16 @@ test("configured executors preserve shell options, image sizing, and project tru
     "iVBORw0KGgoAAAANSUhEUgAACDQAAAABCAYAAAArDGywAAAAH0lEQVR4nO3BIQEAAAACIP+f1hsGIAUAAAAAAAAAODMSH7ERSSRpYgAAAABJRU5ErkJggg==";
   const imagePath = join(f.dir, "wide.png");
   writeFileSync(imagePath, Buffer.from(widePng, "base64"));
-  const image = await f.pi.tools
-    .get("read")
+  const image = await f
+    .tool("read")
     .execute("image", { path: imagePath }, undefined, undefined, f.ctx);
   const block = image.content.find((part) => part.type === "image");
-  assert.equal(tui.getImageDimensions(block.data, block.mimeType).widthPx, 2100);
+  assert(block?.type === "image", "image result");
+  assert.equal(tui.getImageDimensions(block.data, block.mimeType)?.widthPx, 2100);
   const path = join(f.dir, "file.txt");
   writeFileSync(path, "before\n");
-  await f.pi.tools
-    .get("edit")
+  await f
+    .tool("edit")
     .execute(
       "edit",
       { path: "file.txt", edits: [{ oldText: "before", newText: "after" }] },
@@ -966,8 +978,8 @@ test("configured executors preserve shell options, image sizing, and project tru
       f.ctx,
     );
   assert.equal(readFileSync(path, "utf8"), "after\n");
-  await f.pi.tools
-    .get("write")
+  await f
+    .tool("write")
     .execute("write", { path: "file.txt", content: "final\n" }, undefined, undefined, f.ctx);
   assert.equal(readFileSync(path, "utf8"), "final\n");
   for (const [name, factory] of Object.entries({
@@ -982,24 +994,24 @@ test("configured executors preserve shell options, image sizing, and project tru
       "promptGuidelines",
       "promptSnippet",
       "executionMode",
-    ])
-      assert.deepEqual(f.pi.tools.get(name)[key], factory(f.dir)[key]);
+    ] as const)
+      assert.deepEqual(f.tool(name)[key], factory(f.dir)[key]);
   }
   const headless = await fixture({
     mode: "rpc",
     global: { shellCommandPrefix: "export PREFIX=rpc" },
   });
-  const reply = await headless.pi.tools
-    .get("bash")
+  const reply = await headless
+    .tool("bash")
     .execute("rpc", { command: 'printf "%s" "$PREFIX"' }, undefined, undefined, headless.ctx);
-  assert.equal(reply.content[0].text, "rpc", "execution configuration also applies without a TUI");
+  assert.equal(firstText(reply), "rpc", "execution configuration also applies without a TUI");
   writeFileSync(
     join(headless.dir, "config/settings.json"),
     JSON.stringify({ shellCommandPrefix: "export PREFIX=reloaded" }),
   );
   await headless.pi.event("session_start", { reason: "reload" }, headless.ctx);
-  const reloaded = await headless.pi.tools
-    .get("bash")
+  const reloaded = await headless
+    .tool("bash")
     .execute(
       "rpc-after-reload",
       { command: 'printf "%s" "$PREFIX"' },
@@ -1007,44 +1019,27 @@ test("configured executors preserve shell options, image sizing, and project tru
       undefined,
       headless.ctx,
     );
-  assert.equal(reloaded.content[0].text, "reloaded", "reload discards cached execution settings");
+  assert.equal(firstText(reloaded), "reloaded", "reload discards cached execution settings");
 });
 
-test("filename resolution matches Pi, including Unicode spaces, URLs, and macOS fallbacks", async () => {
+test("filename clicks without inspector warn instead of opening", async () => {
   const f = await fixture();
-  writeFileSync(join(f.dir, "a b.txt"), "ASCII");
-  writeFileSync(join(f.dir, "a\u00a0b.txt"), "NBSP");
   const args = { path: "a\u00a0b.txt" };
-  assert.equal(
-    (await f.pi.tools.get("read").execute("read", args, undefined, undefined, f.ctx)).content[0]
-      .text,
-    "ASCII",
-  );
-  for (const tool of ["read", "edit", "write"]) {
-    const target = await resolveToolFile({ ...args, cwd: f.dir, tool });
-    assert.equal(readFileSync(target, "utf8"), "ASCII");
-    assert.equal(await resolveToolFile({ path: "@a b.txt", cwd: f.dir, tool }), target);
-    assert.equal(
-      await resolveToolFile({ path: pathToFileURL(target).href, cwd: f.dir, tool }),
-      target,
-    );
-  }
-  const screenshot = join(f.dir, "Screenshot 1.00\u202fPM.png");
-  writeFileSync(screenshot, "screenshot");
-  assert.equal(
-    await resolveToolFile({ path: "Screenshot 1.00 PM.png", cwd: f.dir, tool: "read" }),
-    screenshot,
-  );
   const row = f.call("read", "missing-opener", args);
   const label = plain(row.view);
   row.view.handleMouse(mouse(label.indexOf(args.path) + 1));
-  assert.match(f.notices.at(-1)[0], /requires inspector/);
+  assert.match(f.notices.at(-1)?.[0] ?? "", /requires inspector/);
 });
 
 test("reload/tree/compaction reconstruct persisted groups, failures, and image boundaries", async () => {
   const f = await fixture();
-  const assistant = (content) => ({ role: "assistant", content });
-  const call = (id, path) => ({ type: "toolCall", id, name: "read", arguments: { path } });
+  const assistant = (content: object[]) => ({ role: "assistant", content });
+  const call = (id: string, path: string) => ({
+    type: "toolCall",
+    id,
+    name: "read",
+    arguments: { path },
+  });
   const entries = [
     {
       type: "message",
@@ -1138,275 +1133,4 @@ test("reload/tree/compaction reconstruct edit groups and reset local expansion",
     assert.equal(plain(f.call("edit", "b", { path: "b.txt" }).view), "");
   }
   assert.equal(JSON.stringify(entries), before, "grouping is presentation-only");
-});
-
-test("real Pi dialog preserves newer drafts on Vim success, failure and session replacement", async (t) => {
-  const oldVisual = process.env.VISUAL;
-  const stdout = process.stdout.write;
-  t.mock.method(process.stdout, "write", function (chunk, ...args) {
-    return chunk === "\x1b[2J\x1b[H" ? true : stdout.call(this, chunk, ...args);
-  });
-  try {
-    for (const scenario of [
-      "success",
-      "cleared-draft",
-      "multiline-draft",
-      "exit-error",
-      "signal",
-      "spawn-error",
-      "new",
-      "resume",
-      "fork",
-      "reload",
-      "quit",
-      "stubborn",
-    ]) {
-      await t.test(scenario, async () => {
-        const dir = mkdtempSync(join(root, "draft-"));
-        const path = join(dir, "literal.txt"),
-          ready = join(dir, "ready"),
-          gate = join(dir, "exit");
-        writeFileSync(path, "safe\n");
-        const editor = join(dir, "editor.mjs");
-        writeFileSync(
-          editor,
-          `#!${process.execPath}\nimport { existsSync, readFileSync, writeFileSync } from 'node:fs';
-process.on('SIGTERM', () => { ${scenario === "stubborn" ? "" : "setTimeout(() => process.exit(0), 80);"} });
-writeFileSync(${JSON.stringify(ready)}, String(process.pid));
-setInterval(() => { if (existsSync(${JSON.stringify(gate)})) {
-  const code = readFileSync(${JSON.stringify(gate)}, 'utf8');
-  if (code === 'signal') process.kill(process.pid, 'SIGKILL'); else process.exit(Number(code));
-} }, 5);\n`,
-          { mode: 0o700 },
-        );
-        process.env.VISUAL = scenario === "spawn-error" ? join(dir, "missing") : editor;
-        let alive = true,
-          finished = 0,
-          starts = 0,
-          stops = 0,
-          staleAccesses = 0;
-        const notices = [];
-        const latest =
-          scenario === "cleared-draft"
-            ? ""
-            : scenario === "multiline-draft"
-              ? "LATEST_DRAFT\n日本語\n"
-              : "LATEST_DRAFT";
-        const failed = ["spawn-error", "exit-error", "signal"].includes(scenario);
-        const makeEditor = (text) => ({
-          getText: () => text,
-          setText: (value) => {
-            text = value;
-          },
-          render: () => [],
-          invalidate() {},
-        });
-        const host = {
-          editor: makeEditor("ORIGINAL_DRAFT"),
-          editorContainer: new tui.Container(),
-          keybindings: {},
-          ui: {
-            stop() {
-              stops++;
-              host.editor.setText(latest);
-            },
-            start() {
-              assert(alive, "never restart an obsolete TUI");
-              starts++;
-            },
-            requestRender() {},
-            setFocus() {},
-          },
-        };
-        const ui = {
-          notify: (...args) => notices.push(args),
-          getEditorText: () => host.editor.getText(),
-          setEditorText: (text) => host.editor.setText(text),
-          custom: (factory) =>
-            core.InteractiveMode.prototype.showExtensionCustom.call(host, factory).finally(() => {
-              finished++;
-            }),
-        };
-        const ctx = {
-          mode: "tui",
-          get ui() {
-            if (!alive) {
-              staleAccesses++;
-              throw new Error("stale context");
-            }
-            return ui;
-          },
-        };
-        const pi = api();
-        installVim(pi);
-        let pid;
-        try {
-          await pi.event("session_start", {}, ctx);
-          pi.events.emit(OPEN_FILE_EVENT, { path, cwd: dir, tool: "read", accepted: false });
-          if (scenario !== "spawn-error") {
-            await waitFor(() => {
-              try {
-                pid = Number(readFileSync(ready, "utf8"));
-                return pid > 0;
-              } catch {
-                return false;
-              }
-            });
-          }
-          const replacement = ["new", "resume", "fork", "reload", "quit", "stubborn"].includes(
-            scenario,
-          );
-          if (replacement) {
-            let settled = false;
-            const shutdown = pi
-              .event("session_shutdown", { reason: scenario === "stubborn" ? "quit" : scenario })
-              .then(() => {
-                settled = true;
-              });
-            await delay(10);
-            assert(!settled, "shutdown waits for the editor and native dialog cleanup");
-            await shutdown;
-            assert.equal(finished, 1);
-            assert.equal(host.editor.getText(), latest);
-            assert.equal(starts, scenario === "quit" || scenario === "stubborn" ? 0 : 1);
-            // Only now does Pi invalidate the outgoing runtime and replace its editor.
-            alive = false;
-            host.editor = makeEditor("REPLACEMENT_SESSION_DRAFT");
-            await delay(100);
-            assert.equal(host.editor.getText(), "REPLACEMENT_SESSION_DRAFT");
-            assert.equal(staleAccesses, 0);
-            assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
-          } else {
-            if (scenario !== "spawn-error")
-              writeFileSync(
-                gate,
-                scenario === "signal" ? "signal" : scenario === "exit-error" ? "7" : "0",
-              );
-            await waitFor(() => finished === 1 && (!failed || notices.length === 1));
-            assert.equal(host.editor.getText(), latest);
-            assert.equal(starts, 1);
-          }
-          assert.equal(stops, 1);
-          assert.equal(notices.length, failed ? 1 : 0);
-        } finally {
-          if (pid) {
-            try {
-              process.kill(pid, "SIGKILL");
-            } catch {}
-          }
-          await pi.event("session_shutdown", { reason: "quit" });
-        }
-      });
-    }
-  } finally {
-    if (oldVisual === undefined) delete process.env.VISUAL;
-    else process.env.VISUAL = oldVisual;
-  }
-});
-
-test("Vim works while busy, keeps literal filenames safe, and handles cancellation/errors/shutdown", async () => {
-  const f = await fixture();
-  const pi = api(),
-    terminal = [],
-    notices = [];
-  let finished = 0;
-  installVim(pi);
-  assert.equal(pi.tools.size, 0);
-  const ctx = {
-    mode: "tui",
-    cwd: f.dir,
-    isIdle() {
-      throw new Error("must not require idle");
-    },
-    ui: {
-      notify: (...args) => notices.push(args),
-      getEditorText: () => "draft",
-      setEditorText() {},
-      custom: async (factory) => {
-        let result;
-        try {
-          await factory(
-            {
-              stop: () => terminal.push("stop"),
-              start: () => terminal.push("start"),
-              requestRender: () => terminal.push("render"),
-            },
-            null,
-            null,
-            (value) => {
-              result = value;
-            },
-          );
-          return result;
-        } finally {
-          finished++;
-        }
-      },
-    },
-  };
-  const path = join(f.dir, "-file space 日本語;$(echo unsafe).txt");
-  writeFileSync(path, "safe\n");
-  const editor = join(f.dir, "fake-editor"),
-    log = join(f.dir, "editor.log");
-  writeFileSync(editor, '#!/bin/sh\nprintf "%s\\n" "$PWD" "$@" > "$VIM_TEST_LOG"\n', {
-    mode: 0o700,
-  });
-  const oldVisual = process.env.VISUAL,
-    oldLog = process.env.VIM_TEST_LOG,
-    oldWrite = process.stdout.write;
-  const open = () => {
-    const request = { path, cwd: f.dir, tool: "read", accepted: false };
-    pi.events.emit(OPEN_FILE_EVENT, request);
-    return request;
-  };
-  process.env.VISUAL = editor;
-  process.env.VIM_TEST_LOG = log;
-  process.stdout.write = function (chunk, ...args) {
-    return chunk === "\x1b[2J\x1b[H" ? true : oldWrite.call(this, chunk, ...args);
-  };
-  try {
-    await pi.event("session_start", {}, ctx);
-    assert(open().accepted);
-    await waitFor(() => finished === 1);
-    assert.deepEqual(terminal, ["stop", "start", "render"]);
-    assert.equal(readFileSync(log, "utf8"), [realpathSync(f.dir), "--", path, ""].join("\n"));
-    assert.equal(notices.length, 0);
-    process.env.VISUAL = join(f.dir, "missing-editor");
-    open();
-    await waitFor(() => notices.length === 1);
-    assert.deepEqual(terminal.slice(-3), ["stop", "start", "render"]);
-    assert.equal(notices[0][1], "error");
-    pi.events.emit(OPEN_FILE_EVENT, { path: f.dir, cwd: f.dir, tool: "read", accepted: false });
-    await waitFor(() => notices.length === 2);
-    assert.match(notices[1][0], /regular files/);
-    writeFileSync(editor, "#!/bin/sh\nexec sleep 30\n", { mode: 0o700 });
-    process.env.VISUAL = editor;
-    terminal.length = 0;
-    const before = finished;
-    open();
-    open();
-    await waitFor(() => terminal.length > 0);
-    let ticks = 0;
-    const timer = setInterval(() => ticks++, 10);
-    await delay(100);
-    clearInterval(timer);
-    assert(ticks >= 3);
-    await pi.event("session_shutdown");
-    await waitFor(() => finished > before);
-    assert.deepEqual(terminal, ["stop"]);
-    assert(!open().accepted);
-    await pi.event("session_start", {}, ctx);
-    terminal.length = 0;
-    open();
-    await pi.event("session_shutdown");
-    await delay(20);
-    assert.deepEqual(terminal, [], "a stale request cannot take terminal ownership");
-  } finally {
-    await pi.event("session_shutdown");
-    process.stdout.write = oldWrite;
-    if (oldVisual === undefined) delete process.env.VISUAL;
-    else process.env.VISUAL = oldVisual;
-    if (oldLog === undefined) delete process.env.VIM_TEST_LOG;
-    else process.env.VIM_TEST_LOG = oldLog;
-  }
 });

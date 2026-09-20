@@ -3,10 +3,40 @@ import { EventEmitter } from "node:events";
 import { appendFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import xterm from "@xterm/headless";
-import pty from "node-pty";
+import xterm, { type IBufferCell, type IDisposable, type Terminal } from "@xterm/headless";
+import pty, { type IPty } from "node-pty";
 
-function foreground(cell) {
+export type Foreground =
+  | { kind: "rgb"; red: number; green: number; blue: number }
+  | { kind: "palette"; index: number }
+  | null;
+export interface Cell {
+  x: number;
+  width: number;
+  text: string;
+  style: { foreground: Foreground; inverse: boolean; underline: boolean };
+}
+export interface Row {
+  text: string;
+  cells: Cell[];
+}
+export interface Snapshot {
+  cols: number;
+  rows: Row[];
+  cursor: { x: number; y: number };
+  synchronizedOutputActive: boolean;
+}
+interface StartOptions {
+  cwd: string;
+  env: Record<string, string | undefined>;
+  artifacts: string;
+  name?: string;
+  cols?: number;
+  rows?: number;
+}
+type Exit = { exitCode: number; signal?: number };
+
+function foreground(cell: IBufferCell): Foreground {
   const value = cell.getFgColor();
   if (cell.isFgRGB())
     return { kind: "rgb", red: value >>> 16, green: (value >>> 8) & 255, blue: value & 255 };
@@ -16,19 +46,22 @@ function foreground(cell) {
 
 /** Real PTY transport and xterm.js VT state; no DOM or handwritten ANSI parser. */
 export class HeadlessTerminal {
+  readonly terminal: Terminal;
+  readonly child: IPty;
+  readonly artifactPrefix: string;
   #changed = new EventEmitter();
-  #snapshot;
+  #snapshot: Snapshot | undefined;
   #raw = "";
   #parsed = 0;
-  #exit;
-  #output;
-  #input;
+  #exit: Exit | undefined;
+  #output: IDisposable;
+  #input: IDisposable;
 
   static async start(
-    command,
-    args,
-    { cwd, env, artifacts, name = "terminal", cols = 150, rows = 72 },
-  ) {
+    command: string,
+    args: string[],
+    { cwd, env, artifacts, name = "terminal", cols = 150, rows = 72 }: StartOptions,
+  ): Promise<HeadlessTerminal> {
     const terminal = new xterm.Terminal({ cols, rows, scrollback: 200, allowProposedApi: true });
     try {
       const child = pty.spawn(command, args, {
@@ -46,12 +79,14 @@ export class HeadlessTerminal {
     }
   }
 
-  constructor(terminal, child, artifactPrefix) {
+  constructor(terminal: Terminal, child: IPty, artifactPrefix: string) {
     this.terminal = terminal;
     this.child = child;
     this.artifactPrefix = artifactPrefix;
     this.#input = terminal.onData((bytes) => child.write(bytes));
-    this.#output = child.onData((bytes) => {
+    // With `encoding: null`, node-pty delivers Buffers despite its string typing.
+    this.#output = child.onData((data: string | Buffer) => {
+      const bytes = Buffer.isBuffer(data) ? data : Buffer.from(data);
       appendFileSync(`${artifactPrefix}.raw`, bytes);
       // Protocol offsets count bytes. xterm, not this harness, decodes UTF-8.
       this.#raw += bytes.toString("latin1");
@@ -69,13 +104,13 @@ export class HeadlessTerminal {
     });
   }
 
-  get snapshot() {
+  get snapshot(): Snapshot {
     if (this.#snapshot) return this.#snapshot;
     const { terminal } = this,
       buffer = terminal.buffer.active;
-    const rows = Array.from({ length: terminal.rows }, (_, y) => {
+    const rows = Array.from({ length: terminal.rows }, (_, y): Row => {
       const line = buffer.getLine(buffer.baseY + y),
-        cells = [];
+        cells: Cell[] = [];
       for (let x = 0; x < terminal.cols; x++) {
         const cell = line?.getCell(x);
         if (!cell?.getWidth()) continue; // Skip the continuation of a wide cell.
@@ -100,23 +135,27 @@ export class HeadlessTerminal {
     };
     return this.#snapshot;
   }
-  get screen() {
+  get screen(): string {
     return this.snapshot.rows.map((row) => row.text).join("\n");
   }
-  get pid() {
+  get pid(): number {
     return this.child.pid;
   }
-  mark() {
+  mark(): number {
     return this.#parsed;
   }
-  rawSince(offset = 0) {
+  rawSince(offset = 0): string {
     return this.#raw.slice(offset, this.#parsed);
   }
-  send(bytes) {
+  send(bytes: string): void {
     this.child.write(bytes);
   }
 
-  async waitFor(predicate, label, timeout = 20000) {
+  async waitFor(
+    predicate: (screen: string, snapshot: Snapshot) => boolean,
+    label: string,
+    timeout = 20000,
+  ): Promise<string> {
     return new Promise((resolve, reject) => {
       const cleanup = () => {
         clearTimeout(timer);
@@ -143,7 +182,7 @@ export class HeadlessTerminal {
     });
   }
 
-  locate(needle) {
+  locate(needle: string): { x: number; y: number; cell: Cell; row: Row } {
     for (const [y, row] of this.snapshot.rows.entries()) {
       const offset = row.text.indexOf(needle);
       if (offset < 0) continue;
@@ -157,7 +196,7 @@ export class HeadlessTerminal {
     throw new Error(`Not visible: ${needle}\n${this.screen}`);
   }
 
-  click(needle, filename = false) {
+  click(needle: string, filename = false): void {
     const target = this.locate(needle);
     const cell = filename
       ? target.cell
@@ -168,7 +207,7 @@ export class HeadlessTerminal {
     this.send(`\x1b[<0;${x};${y}M\x1b[<0;${x};${y}m`);
   }
 
-  assertColour(needle, hex) {
+  assertColour(needle: string, hex: string): void {
     assert.deepEqual(
       this.locate(needle).cell.style.foreground,
       {
@@ -181,24 +220,24 @@ export class HeadlessTerminal {
     );
   }
 
-  resize(cols, rows) {
+  resize(cols: number, rows: number): void {
     this.terminal.resize(cols, rows);
     this.child.resize(cols, rows);
     this.#snapshot = undefined;
   }
 
-  save() {
+  save(): void {
     writeFileSync(`${this.artifactPrefix}.screen.txt`, this.screen);
     writeFileSync(`${this.artifactPrefix}.snapshot.json`, JSON.stringify(this.snapshot, null, 2));
   }
 
-  async close() {
-    const kill = (signal) => {
+  async close(): Promise<void> {
+    const kill = (signal: NodeJS.Signals) => {
       if (this.#exit) return;
       try {
         process.kill(-this.pid, signal);
       } catch (error) {
-        if (error.code !== "ESRCH") throw error;
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
       }
     };
     try {
@@ -210,7 +249,7 @@ export class HeadlessTerminal {
     } finally {
       this.#output.dispose();
       this.#input.dispose();
-      await new Promise((resolve) => this.terminal.write("", resolve));
+      await new Promise<void>((resolve) => this.terminal.write("", resolve));
       this.terminal.dispose();
     }
   }
