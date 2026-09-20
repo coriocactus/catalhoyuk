@@ -1,5 +1,5 @@
 {
-  "lastChangelogVersion": "0.87.0",
+  "lastChangelogVersion": "0.87.1",
   "theme": "dark",
   "tuiMode": "fullscreen",
   "fullscreenScrollbar": "auto",
@@ -14,10 +14,12 @@
   "defaultModel": "gpt-6-astra",
   "defaultThinkingLevel": "xhigh",
   "enabledModels": [
-    "gpt-6-astra"
+    "gpt-6-astra",
+    "gpt-6-sol"
   ],
   "modelThinkingLevels": {
-    "gpt-6-astra": "xhigh"
+    "gpt-6-astra": "xhigh",
+    "gpt-6-sol": "xhigh"
   },
   "packages": [
     "npm:pi-web-access",
