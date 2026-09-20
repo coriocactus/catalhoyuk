@@ -1,6 +1,5 @@
 theme = Darkside
 
-# title = " "
 macos-titlebar-style = tabs
 macos-titlebar-proxy-icon = hidden
 shell-integration-features = no-cursor, no-title

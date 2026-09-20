@@ -79,7 +79,7 @@ brew "expert"
 
 cask "rectangle"
 cask "orbstack"
-cask "ghostty"
+cask "ghostty@tip"
 cask "brave-browser"
 cask "firefox"
 cask "proton-drive"
