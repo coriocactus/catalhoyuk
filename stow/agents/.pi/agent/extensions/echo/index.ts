@@ -15,41 +15,63 @@ export default function (pi: ExtensionAPI) {
       .map((entry) => entry.name.slice(0, -3))
       .sort();
 
-  pi.registerCommand("echo", {
-    description: "Load a Markdown snippet into the editor without sending it",
-    getArgumentCompletions(prefix) {
-      try {
-        const matches = names()
-          .filter((name) => name.startsWith(prefix))
-          .map((name) => ({ value: name, label: name }));
-        return matches.length ? matches : null;
-      } catch {
-        // Completion stays quiet; invoking the command reports filesystem errors.
-        return null;
-      }
-    },
-    handler: async (args, ctx) => {
-      if (!ctx.hasUI) return;
-      const name = args.trim();
-      if (!name) {
-        ctx.ui.notify(`Usage: /echo <name> — snippets live in ${directory}/*.md`, "info");
-        return;
-      }
-      try {
-        // Only direct directory entries are accepted, never arbitrary paths.
-        if (!names().includes(name)) {
-          ctx.ui.notify(`Echo snippet not found: ${name}`, "warning");
-          return;
+  const completions = (prefix: string) => {
+    try {
+      const matches = names()
+        .filter((name) => name.startsWith(prefix))
+        .map((name) => ({ value: name, label: name }));
+      return matches.length ? matches : null;
+    } catch {
+      // Completion stays quiet; loading a snippet reports filesystem errors.
+      return null;
+    }
+  };
+  const tokenAt = (lines: string[], line: number, col: number) =>
+    lines[line].slice(0, col).match(/(?:^|[ \t])(@@[^@]*)$/)?.[1];
+
+  pi.on("session_start", (_event, ctx) => {
+    if (ctx.mode !== "tui") return;
+    ctx.ui.addAutocompleteProvider((current) => ({
+      triggerCharacters: [...(current.triggerCharacters ?? []), "@"],
+      async getSuggestions(lines, cursorLine, cursorCol, options) {
+        const prefix = tokenAt(lines, cursorLine, cursorCol);
+        if (prefix === undefined)
+          return current.getSuggestions(lines, cursorLine, cursorCol, options);
+        if (options.signal.aborted) return null;
+        const items = completions(prefix.slice(2));
+        return items ? { items, prefix } : null;
+      },
+      applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
+        if (!prefix.startsWith("@@"))
+          return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+        try {
+          if (!names().includes(item.value))
+            throw new Error(`Echo snippet not found: ${item.value}`);
+          const content = readFileSync(join(directory, `${item.value}.md`), "utf8");
+          const line = lines[cursorLine];
+          const inserted = (line.slice(0, cursorCol - prefix.length) + content).split("\n");
+          const last = inserted.length - 1;
+          const end = inserted[last].length;
+          inserted[last] += line.slice(cursorCol);
+          return {
+            lines: [...lines.slice(0, cursorLine), ...inserted, ...lines.slice(cursorLine + 1)],
+            cursorLine: cursorLine + last,
+            cursorCol: end,
+          };
+        } catch (error) {
+          ctx.ui.notify(
+            `Could not load echo snippet: ${error instanceof Error ? error.message : String(error)}`,
+            "error",
+          );
+          return { lines, cursorLine, cursorCol };
         }
-        ctx.ui.setEditorText(readFileSync(join(directory, `${name}.md`), "utf8"));
-        // Notification also redraws hosts where setEditorText alone does not.
-        ctx.ui.notify(`Loaded echo: ${name}`, "info");
-      } catch (error) {
-        ctx.ui.notify(
-          `Could not load echo snippet: ${error instanceof Error ? error.message : String(error)}`,
-          "error",
+      },
+      shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
+        return (
+          tokenAt(lines, cursorLine, cursorCol) !== undefined ||
+          (current.shouldTriggerFileCompletion?.(lines, cursorLine, cursorCol) ?? true)
         );
-      }
-    },
+      },
+    }));
   });
 }
