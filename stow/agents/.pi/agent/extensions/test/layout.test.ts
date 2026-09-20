@@ -16,6 +16,7 @@ test("Pi autoloads only the intended extensions; test and shared code never load
       .map((name) => `${entry.name}/${name}`);
   });
   assert.deepEqual(loaded.sort(), [
+    "echo/index.ts",
     "inspector/index.ts",
     "interupt/index.ts",
     "mirage/index.ts",
