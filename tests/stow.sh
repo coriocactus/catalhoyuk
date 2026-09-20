@@ -46,7 +46,7 @@ fixture_mappings() {
 
 run_stow() (
     trap - ERR
-    source "$fixture/stow.sh"
+    source "$fixture/bin/stow"
     stow_mappings() { fixture_mappings "$@"; }
     stow_main "$@"
 ) > "$output" 2>&1
@@ -65,8 +65,8 @@ setup() {
     fixture="$case_dir/checkout with spaces"
     output="$case_dir/output"
     export HOME="$case_dir/home with spaces" XDG_CONFIG_HOME= XDG_STATE_HOME="$case_dir/state with spaces"
-    mkdir -p "$HOME" "$fixture/files" "$fixture/profiles" "$fixture/plugins"
-    cp "$repo_root/stow.sh" "$fixture/stow.sh"
+    mkdir -p "$HOME" "$fixture/bin" "$fixture/files" "$fixture/profiles" "$fixture/plugins"
+    cp "$repo_root/bin/stow" "$fixture/bin/stow"
     local file
     for file in files/app.conf files/editor.conf files/remote.conf \
         profiles/green.conf profiles/red.conf profiles/blue.conf plugins/local; do
@@ -374,7 +374,7 @@ empty_groups() {
 }
 
 registration() {
-    source "$fixture/stow.sh"
+    source "$fixture/bin/stow"
     local root=$fixture sources=() destinations=()
     stow_register "$HOME" .one files/app.conf .two files/editor.conf
     [ "${#sources[@]}" = 2 ] || fail 'wrong registration count'
@@ -400,7 +400,7 @@ bad_state() {
 }
 
 helper() {
-    source "$fixture/stow.sh"
+    source "$fixture/bin/stow"
     untouched
     STOW_CHECK_ONLY=1 stow_link "$fixture/files/app.conf" "$HOME/.custom" > "$output"
     STOW_DRY_RUN=1 stow_link "$fixture/files/app.conf" "$HOME/.custom" > "$output"
@@ -415,11 +415,88 @@ helper() {
     if stow_link > "$output" 2>&1; then fail 'missing arguments accepted'; fi
 }
 
+lock_refusal() {
+    source "$fixture/bin/stow"
+    local lock="$(registry).lock"
+    mkdir -p "$lock"
+    if stow_link "$fixture/files/app.conf" "$HOME/.custom" > "$output" 2>&1; then fail 'active lock accepted'; fi
+    contains 'installer lock unavailable'
+    absent "$HOME/.custom"
+    absent "$(registry)"
+    [ -d "$lock" ] || fail 'another process lock was removed'
+    STOW_CHECK_ONLY=1 stow_link "$fixture/files/app.conf" "$HOME/.custom"
+    STOW_DRY_RUN=1 stow_link "$fixture/files/app.conf" "$HOME/.custom" > "$output"
+    absent "$HOME/.custom"
+    rmdir "$lock"
+    stow_link "$fixture/files/app.conf" "$HOME/.custom" > "$output"
+    absent "$lock"
+}
+
+lock_cleanup() {
+    source "$fixture/bin/stow"
+    if ( ln() { return 1; }; stow_link "$fixture/files/app.conf" "$HOME/.custom" ) > "$output" 2>&1; then
+        fail 'simulated link failure succeeded'
+    fi
+    absent "$(registry).lock"
+    absent "$(registry)"
+    stow_link "$fixture/files/app.conf" "$HOME/.custom" > "$output"
+    absent "$(registry).lock"
+}
+
+lock_overlap() {
+    source "$fixture/bin/stow"
+    local destination
+    for destination in "$(registry).lock" "$(registry).lock/child" "$(registry)/child"; do
+        if stow_link "$fixture/files/app.conf" "$destination" > "$output" 2>&1; then fail 'state overlap accepted'; fi
+        contains 'overlaps state'
+    done
+    untouched
+}
+
+concurrent_helpers() {
+    source "$fixture/bin/stow"
+    # Pause one registry commit while the other helper attempts to acquire the lock.
+    (
+        mv() {
+            local i
+            : > "$case_dir/ready"
+            for ((i=0; i<500; i++)); do
+                [ ! -e "$case_dir/release" ] || break
+                sleep 0.02
+            done
+            [ -e "$case_dir/release" ] || return 1
+            command mv "$@"
+        }
+        stow_link "$fixture/files/app.conf" "$HOME/.one"
+    ) > "$case_dir/worker-output" 2>&1 &
+    local worker=$! i
+    trap 'touch "$case_dir/release"; wait "$worker" || :' EXIT
+    for ((i=0; i<500; i++)); do
+        [ ! -e "$case_dir/ready" ] || break
+        sleep 0.02
+    done
+    [ -e "$case_dir/ready" ] || fail 'worker did not reach the registry commit'
+    if stow_link "$fixture/files/editor.conf" "$HOME/.two" > "$output" 2>&1; then fail 'concurrent helper succeeded'; fi
+    contains 'installer lock unavailable'
+    absent "$HOME/.two"
+    : > "$case_dir/release"
+    wait "$worker"
+    trap - EXIT
+    stow_link "$fixture/files/editor.conf" "$HOME/.two" > "$output"
+    [ "$(wc -l < "$(registry)" | tr -d ' ')" -eq 2 ] || fail 'ownership records were lost'
+    mv "$fixture/files" "$fixture/moved"
+    stow_link "$fixture/moved/app.conf" "$HOME/.one" > "$output"
+    stow_link "$fixture/moved/editor.conf" "$HOME/.two" > "$output"
+    link "$HOME/.one" "$fixture/moved/app.conf"
+    link "$HOME/.two" "$fixture/moved/editor.conf"
+    absent "$(registry).lock"
+}
+
 command_resolution() {
     mkdir "$case_dir/bin"
     ln -s "$(type -P echo)" "$case_dir/bin/stow"
     local PATH="$case_dir/bin:$PATH"
-    source "$fixture/stow.sh"
+    source "$fixture/bin/stow"
     [ "$(type -t stow)" = file ] || fail 'sourcing shadows the stow executable'
     [ "$(stow external-stow)" = external-stow ] || fail 'stow no longer invokes the external command'
     declare -F stow_link >/dev/null || fail 'stow_link helper is missing'
@@ -428,12 +505,12 @@ command_resolution() {
 
 production_mapping() {
     # Follow the production arrays, not a duplicated file list.
-    source "$repo_root/stow.sh"
+    source "$repo_root/bin/stow"
     local root=$repo_root sources=() destinations=() i
     stow_mappings green 0
-    "$BASH" "$repo_root/stow.sh" > "$output" 2>&1
+    "$BASH" "$repo_root/bin/stow" > "$output" 2>&1
     for ((i=0; i<${#sources[@]}; i++)); do link "${destinations[i]}" "${sources[i]}"; done
-    "$BASH" "$repo_root/stow.sh" > "$output" 2>&1
+    "$BASH" "$repo_root/bin/stow" > "$output" 2>&1
     if grep -v '^\[skip\]' "$output"; then fail 'production mapping is not idempotent'; fi
 }
 
@@ -477,6 +554,10 @@ for kind in malformed directory symlink parent; do
     run_test "invalid state $kind prevents installation" bad_state "$kind"
 done
 run_test 'sourceable helper tracks moves independently of mappings' helper
+run_test 'active or stale locks fail closed; checks and dry runs remain read-only' lock_refusal
+run_test 'failed link operations release their lock' lock_cleanup
+run_test 'destinations cannot overlap registry or lock internals' lock_overlap
+run_test 'concurrent helpers cannot lose ownership; retries preserve retargeting' concurrent_helpers
 run_test 'sourcing preserves external stow command resolution' command_resolution
 run_test 'production mappings install and are idempotent' production_mapping
 printf '\nAll %s tests passed (%s).\n' "$test_count" "$BASH_VERSION"

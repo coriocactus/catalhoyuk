@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# One entry point; --shell omits the separately provisioned Pi development tools.
+set -eu
+case "${1:-}" in
+    '') [ "$#" -eq 0 ] || exit 2 ;;
+    --shell) [ "$#" -eq 1 ] || exit 2 ;;
+    *) printf '%s\n' 'Usage: ./bin/check [--shell]' >&2; exit 2 ;;
+esac
+root=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+for tool in zsh git jj vim tmux; do
+    command -v "$tool" >/dev/null 2>&1 || { printf 'Missing test dependency: %s\n' "$tool" >&2; exit 1; }
+done
+"$BASH" "$root/tests/stow.sh"
+zsh -f "$root/tests/repo4.zsh"
+"$BASH" "$root/tests/config.sh"
+if [ "${1:-}" != --shell ]; then
+    npm --prefix "$root/agents/.pi/agent/extensions" run verify
+fi

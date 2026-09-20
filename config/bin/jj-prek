@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Check working-copy files changed in @-; leave fixes in @ for manual squash.
+set -euo pipefail
+cd -- "${JJ_WORKSPACE_ROOT:-$(jj --no-pager root)}"
+
+# Spool first: a failed diff must never run hooks on a partial list.
+list=$(mktemp "${TMPDIR:-/tmp}/jj-prek.XXXXXX")
+trap 'rm -f -- "$list"' EXIT
+jj --no-pager --color=never diff -r @- --template \
+    'if(status != "removed", "./" ++ path ++ "\0")' > "$list"
+files=()
+while IFS= read -r -d '' file; do
+    if [ -e "$file" ] || [ -L "$file" ]; then files+=("$file"); fi
+done < "$list"
+if [ "${#files[@]}" -eq 0 ]; then
+    printf '%s\n' 'No changed files to check.'
+    exit 0
+fi
+prek run "$@" --files "${files[@]}"
