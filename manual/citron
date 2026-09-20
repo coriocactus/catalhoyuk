@@ -3,4 +3,5 @@
 
 # tasks
 10 7 * * * /usr/bin/find $HOME/.cronlogs -type f -name "*.log" -mtime +7 -print -delete >>"$HOME/.cronlogs/cronlogs_$(/bin/date +\%Y\%m\%d).log" 2>&1
-15 7 * * * { /opt/homebrew/bin/brew update && /opt/homebrew/bin/brew upgrade && /opt/homebrew/bin/brew cleanup; } >> "$HOME/.cronlogs/brew_$(/bin/date +\%Y\%m\%d).log" 2>&1
+# Expand $HOME in the job's shell so Homebrew shares the interactive trust store.
+15 7 * * * { export XDG_CONFIG_HOME="$HOME/.config"; /opt/homebrew/bin/brew update && /opt/homebrew/bin/brew upgrade && /opt/homebrew/bin/brew cleanup; } >> "$HOME/.cronlogs/brew_$(/bin/date +\%Y\%m\%d).log" 2>&1
