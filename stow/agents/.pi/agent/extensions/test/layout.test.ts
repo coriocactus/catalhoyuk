@@ -6,7 +6,6 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 
-test("Pi autoloads exactly the four extensions; test and shared code never load", () => {
 test("Pi autoloads only the intended extensions; test and shared code never load", () => {
   // Pi loads top-level script files and subdirectories with an index entry point.
   const loaded = readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
