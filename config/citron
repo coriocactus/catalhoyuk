@@ -1,0 +1,6 @@
+# tests
+# * * * * * /bin/mkdir -p $HOME/.cronlogs && /bin/echo "$(/bin/date +\%H\%M\%S) cron test" >> $HOME/.cronlogs/test_$(/bin/date +\%Y\%m\%d).log 2>&1
+
+# tasks
+10 7 * * * /usr/bin/find $HOME/.cronlogs -type f -name "*.log" -mtime +7 -print -delete >>"$HOME/.cronlogs/cronlogs_$(/bin/date +\%Y\%m\%d).log" 2>&1
+15 7 * * * { /opt/homebrew/bin/brew update && /opt/homebrew/bin/brew upgrade && /opt/homebrew/bin/brew cleanup; } >> "$HOME/.cronlogs/brew_$(/bin/date +\%Y\%m\%d).log" 2>&1
