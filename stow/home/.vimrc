@@ -243,6 +243,7 @@ let g:ale_linters = {
       \ 'elixir': ['expert'],
       \ 'rust': ['analyzer', 'cargo'],
       \ 'haskell': ['hls'],
+      \ 'zig': ['zls'],
       \ 'javascript': ['biome', 'tsserver', 'eslint'],
       \ 'javascriptreact': ['biome', 'tsserver', 'eslint'],
       \ 'typescript': ['biome', 'tsserver', 'eslint'],
@@ -296,6 +297,10 @@ augroup ale_typescript
     autocmd FileType typescript,typescriptreact call ConfigureTypeScriptAle()
   endif
 augroup END
+
+if executable('zig')
+  let g:zig_std_dir = matchstr(system('zig env'), 'std_dir"\?\s*[:=]\s*"\zs[^"]*')
+endif
 
 " =================================================================================================
 "               ░██    ░██░██
