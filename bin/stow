@@ -14,11 +14,14 @@ stow_mappings() {
         ".pi/agent/keybindings.json" "agents/.pi/agent/keybindings.json"
         ".pi/agent/extensions"       "agents/.pi/agent/extensions"
         ".tmux.conf"                 "config/tmux-$profile.conf"
+        ".local/bin/jj-prek"         "config/bin/jj-prek"
     )
     local xdg_config_home=(
         "ghostty/config"   "config/ghostty.config"
         "hunk/config.toml" "config/hunk.config"
         "repo4/repo4.zsh"  "repo4/repo4.zsh"
+        "tmux/common.conf" "config/tmux/common.conf"
+        "tmux/brew-zsh.sh" "config/tmux/brew-zsh.sh"
     )
     if [ "$with_ssh" = 1 ]; then
         home+=(".vimrc-ssh" "config/vimrc-ssh")
@@ -101,9 +104,9 @@ _stow_record() (
 
 # Sourceable API. Both paths are absolute; no mapping or repository knowledge here.
 # STOW_CHECK_ONLY=1 validates; STOW_DRY_RUN=1 previews. Neither writes state.
-stow_link() {
+stow_link() (
     [ "$#" = 2 ] || { _stow_error 'usage: stow_link SOURCE DESTINATION'; return 2; }
-    local source=$1 destination=$2 state previous current= action=link label parent
+    local source=$1 destination=$2 state lock previous current= action=link label parent mask
     _stow_path "${XDG_STATE_HOME:-${HOME:-}}" || return 1
     state=${XDG_STATE_HOME:-${HOME:-}/.local/state}/catalhoyuk/stow.tsv
     _stow_path "$source" && _stow_path "$destination" && _stow_path "$state" || return 1
@@ -113,8 +116,28 @@ stow_link() {
     case "$state" in
         "$destination"|"$destination"/*) _stow_error "destination overlaps state: $destination"; return 1 ;;
     esac
+    lock=$state.lock
+    case "$destination/" in
+        "$state/"*|"$lock/"*) _stow_error "destination overlaps state: $destination"; return 1 ;;
+    esac
     [ -e "$source" ] || { _stow_error "missing source: $source"; return 1; }
     _stow_parent "$destination" && _stow_parent "$state" || return 1
+
+    # Serialize classification, link changes, and registry updates. mkdir is portable
+    # and atomic; never steal a lock, even one left behind by an interrupted process.
+    if [ "${STOW_CHECK_ONLY:-0}" != 1 ] && [ "${STOW_DRY_RUN:-0}" != 1 ]; then
+        mask=$(umask)
+        umask 077
+        mkdir -p -- "${state%/*}" || return 1
+        if ! mkdir -- "$lock" 2>/dev/null; then
+            _stow_error "installer lock unavailable: $lock; remove with rmdir only after confirming no installer is running"
+            return 1
+        fi
+        trap 'rmdir -- "$lock"' EXIT
+        umask "$mask"
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
+    fi
     previous=$(_stow_previous "$state" "$destination") || return 1
 
     if [ -L "$destination" ]; then
@@ -145,7 +168,7 @@ stow_link() {
     fi
     [ "$current" != "$previous" ] || return 0
     _stow_record "$state" "$destination" "$current"
-}
+)
 
 _stow_relative() {
     case "/$1/" in
@@ -195,8 +218,8 @@ stow_main() {
                 fi
                 profile=$2; explicit_profile=1; shift 2 ;;
             -h|--help)
-                printf '%s\n' 'Usage: ./stow.sh [--ssh] [--tmux PROFILE] [--repo4] [--dry-run]' \
-                    'Mappings: stow_mappings in stow.sh. Tmux defaults to green; --ssh is opt-in.' \
+                printf '%s\n' 'Usage: ./bin/stow [--ssh] [--tmux PROFILE] [--repo4] [--dry-run]' \
+                    'Mappings: stow_mappings in bin/stow. Tmux defaults to green; --ssh is opt-in.' \
                     '--repo4 also runs repo4 init to create private identity profiles if absent.'
                 return 0 ;;
             *) _stow_error "unknown argument: $1"; return 2 ;;
@@ -204,7 +227,7 @@ stow_main() {
     done
     _stow_path "${HOME:-}" && _stow_path "${XDG_CONFIG_HOME:-$HOME/.config}" && \
         _stow_path "${XDG_STATE_HOME:-$HOME/.local/state}" || return 2
-    root=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || return 1
+    root=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P) || return 1
     stow_mappings "$profile" "$with_ssh" || return 1
     for ((i=0; i<${#sources[@]}; i++)); do
         STOW_CHECK_ONLY=1 stow_link "${sources[i]}" "${destinations[i]}" || return 1

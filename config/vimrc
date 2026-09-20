@@ -35,9 +35,9 @@ if !isdirectory(VIM_DIR) | call mkdir(VIM_DIR, '', 0770) | endif
 if !isdirectory(SWAP_DIR) | call mkdir(SWAP_DIR, '', 0700) | endif
 if !isdirectory(UNDO_DIR) | call mkdir(UNDO_DIR, '', 0700) | endif
 if !isdirectory(BACKUP_DIR) | call mkdir(BACKUP_DIR, '', 0700) | endif
-execute 'set directory=' . SWAP_DIR . '//'
-execute 'set undodir=' . UNDO_DIR . '//'
-execute 'set backupdir=' . BACKUP_DIR . '//'
+let &directory = escape(SWAP_DIR, ',') . '//'
+let &undodir = escape(UNDO_DIR, ',') . '//'
+let &backupdir = escape(BACKUP_DIR, ',') . '//'
 set swapfile
 set undofile
 set backup
@@ -70,11 +70,15 @@ set redrawtime=2000
 
 let g:netrw_liststyle = 3
 let g:netrw_hide = 1
-autocmd VimEnter * let g:netrw_list_hide = join(uniq(sort(split(netrw_gitignore#Hide() .. ',\(^\|\s\s\)\zs\.\S\+,.*\.swp$,.DS_Store,*/tmp/*,*.so,*.zip,^\.git/$,^\.\.\=/\=$', ','))), ',')
+augroup netrw_startup
+  autocmd!
+  autocmd VimEnter * let g:netrw_list_hide = join(uniq(sort(split(netrw_gitignore#Hide() .. ',\(^\|\s\s\)\zs\.\S\+,.*\.swp$,.DS_Store,*/tmp/*,*.so,*.zip,^\.git/$,^\.\.\=/\=$', ','))), ',')
+  autocmd VimEnter * if argc() == 0 | Explore | endif
+augroup END
 
 augroup remember_folds
   autocmd!
-  autocmd BufWinLeave * mkview
+  autocmd BufWinLeave * if &buftype == '' && !empty(expand('%')) | mkview | endif
   autocmd BufWinEnter * silent! loadview
 augroup END
 
@@ -118,9 +122,17 @@ endif
 " ░██        ░██    ░██    ░██    ░██        ░██       ░██      ░██ ░██        ░██   ░██    ░██░██   ░██
 "  ░███████  ░██    ░██     ░████  ░███████  ░██      ░██       ░██  ░███████   ░█████░██    ░███     ░███████
 
-autocmd VimEnter * if argc() == 0 | Explore | endif
-autocmd BufReadPost,FileReadPost,BufNewFile,BufEnter,FocusGained * call system('tmux rename-window ' . expand('%:t'))
-autocmd VimLeave * silent call system("tmux rename-window " . "$(echo $SHELL | awk -F '/' '{print $NF}')")
+function! s:TmuxTitle(name) abort
+  if !empty($TMUX) && executable('tmux')
+    call system('tmux rename-window -- ' . shellescape(a:name))
+  endif
+endfunction
+
+augroup tmux_title
+  autocmd!
+  autocmd BufReadPost,FileReadPost,BufNewFile,BufEnter,FocusGained * call <SID>TmuxTitle(expand('%:t'))
+  autocmd VimLeave * call <SID>TmuxTitle(fnamemodify($SHELL, ':t'))
+augroup END
 
 " =================================================================================================
 "            ░██                       ░██
@@ -133,24 +145,46 @@ autocmd VimLeave * silent call system("tmux rename-window " . "$(echo $SHELL | a
 " ░██                              ░██
 " ░██                        ░███████
 
-if empty(glob(VIM_DIR . '/autoload/plug.vim'))
-  silent execute '!curl -fLo ' . VIM_DIR . '/autoload/plug.vim --create-dirs ' . 'https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim'
+function! s:Plugins() abort
+  call plug#begin()
+    Plug 'mbbill/undotree'
+    Plug 'markonm/traces.vim'
+    Plug 'yggdroot/indentline'
+    Plug 'tpope/vim-fugitive'
+    Plug 'junegunn/fzf', { 'do': { -> fzf#install() } }
+    Plug 'junegunn/fzf.vim'
+    Plug 'ojroques/vim-oscyank', {'branch': 'main'}
+    Plug 'sheerun/vim-polyglot'
+    Plug 'dense-analysis/ale'
+  call plug#end()
+endfunction
+
+" Installation is explicit. Normal startup never downloads or installs plugins.
+function! s:BootstrapPlugins() abort
+  let l:plug = g:VIM_DIR . '/autoload/plug.vim'
+  if !filereadable(l:plug)
+    call mkdir(fnamemodify(l:plug, ':h'), 'p', 0700)
+    let l:temporary = trim(system('mktemp ' . shellescape(l:plug . '.XXXXXX')))
+    if v:shell_error | throw 'Cannot create vim-plug download file' | endif
+    try
+      let l:output = system('curl --fail --location --silent --show-error --output '
+            \ . shellescape(l:temporary)
+            \ . ' https://raw.githubusercontent.com/junegunn/vim-plug/0.14.0/plug.vim')
+      if v:shell_error | throw 'vim-plug download failed: ' . l:output | endif
+      if rename(l:temporary, l:plug) != 0 | throw 'Cannot install vim-plug' | endif
+    finally
+      call delete(l:temporary)
+    endtry
+  endif
+  call s:Plugins()
+  PlugInstall --sync
+  echom 'Plugin installation finished; check the results and restart Vim.'
+endfunction
+command! BootstrapPlugins call s:BootstrapPlugins()
+
+if filereadable(VIM_DIR . '/autoload/plug.vim')
+  call s:Plugins()
 endif
-
-call plug#begin()
-  Plug 'mbbill/undotree'
-  Plug 'markonm/traces.vim'
-  Plug 'yggdroot/indentline'
-  Plug 'tpope/vim-fugitive'
-  Plug 'junegunn/fzf', { 'do': { -> fzf#install() } }
-  Plug 'junegunn/fzf.vim'
-  Plug 'ojroques/vim-oscyank', {'branch': 'main'}
-
-  Plug 'sheerun/vim-polyglot'
-  Plug 'dense-analysis/ale'
-call plug#end()
-
-autocmd VimEnter * if len(filter(values(g:plugs), '!isdirectory(v:val.dir)')) | PlugInstall --sync | source $MYVIMRC | endif
 
 let g:python_recommended_style = 0
 let g:undotree_SetFocusWhenToggle = 1
@@ -177,30 +211,32 @@ let g:ale_python_pylsp_config = {'pylsp': {
       \ },
 \}}
 
-call ale#Set('typescript_tsgo_executable', 'tsc')
-call ale#Set('typescript_tsgo_use_global', 0)
-call ale#linter#Define('typescript', {
-      \ 'name': 'tsgo',
-      \ 'lsp': 'stdio',
-      \ 'executable': {buffer -> ale#path#FindExecutable(
-      \   buffer,
-      \   'typescript_tsgo',
-      \   ['node_modules/.bin/tsc'],
-      \ )},
-      \ 'command': '%e --lsp --stdio',
-      \ 'project_root': function('ale#handlers#tsserver#GetProjectRoot'),
-\})
+let s:has_ale = !empty(globpath(&runtimepath, 'autoload/ale.vim'))
+if s:has_ale
+  call ale#Set('typescript_tsgo_executable', 'tsc')
+  call ale#Set('typescript_tsgo_use_global', 0)
+  call ale#linter#Define('typescript', {
+        \ 'name': 'tsgo',
+        \ 'lsp': 'stdio',
+        \ 'executable': {buffer -> ale#path#FindExecutable(
+        \   buffer,
+        \   'typescript_tsgo',
+        \   ['node_modules/.bin/tsc'],
+        \ )},
+        \ 'command': '%e --lsp --stdio',
+        \ 'project_root': function('ale#handlers#tsserver#GetProjectRoot'),
+  \})
 
-set omnifunc=ale#completion#OmniFunc
+  set omnifunc=ale#completion#OmniFunc
+  nnoremap <leader>a <cmd>ALEToggleBuffer<CR>
+  nnoremap <silent> K <cmd>ALEHover<CR>
+  nnoremap <silent> [g <cmd>ALENext<CR>
+  nnoremap <silent> ]g <cmd>ALEPrevious<CR>
+  nnoremap <silent> gd <cmd>ALEGoToDefinition<CR>
+  nnoremap <silent> gr <cmd>ALEFindReferences<CR>
+  nnoremap <silent> ca <cmd>ALECodeAction<CR>
+endif
 set completeopt=menu,noselect
-
-nnoremap <leader>a <cmd>ALEToggleBuffer<CR>
-nnoremap <silent> K <cmd>ALEHover<CR>
-nnoremap <silent> [g <cmd>ALENext<CR>
-nnoremap <silent> ]g <cmd>ALEPrevious<CR>
-nnoremap <silent> gd <cmd>ALEGoToDefinition<CR>
-nnoremap <silent> gr <cmd>ALEFindReferences<CR>
-nnoremap <silent> ca <cmd>ALECodeAction<CR>
 
 let g:ale_linters = {
       \ 'python': ['pylsp', 'ruff'],
@@ -256,8 +292,9 @@ endfunction
 
 augroup ale_typescript
   autocmd!
-  autocmd FileType typescript,typescriptreact
-        \ call ConfigureTypeScriptAle()
+  if s:has_ale
+    autocmd FileType typescript,typescriptreact call ConfigureTypeScriptAle()
+  endif
 augroup END
 
 " =================================================================================================
@@ -379,6 +416,6 @@ nnoremap <leader>= <cmd>set wrap<CR><cmd>set colorcolumn=<CR>
 nnoremap <leader>0 <cmd>set nowrap<CR><cmd>set colorcolumn=80<CR>
 
 let s:ssh_config = expand('~/.vimrc-ssh')
-if filereadable(s:ssh_config) | execute 'source ' . s:ssh_config | endif
+if filereadable(s:ssh_config) | execute 'source ' . fnameescape(s:ssh_config) | endif
 
 " =================================================================================================

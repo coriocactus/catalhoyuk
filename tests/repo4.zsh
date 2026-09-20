@@ -402,30 +402,30 @@ retargeted_helper() {
 }
 
 stow_integration() {
-    bash "$repo_root/stow.sh" > "$output" 2>&1
+    bash "$repo_root/bin/stow" > "$output" 2>&1
     [[ $(readlink "$XDG_CONFIG_HOME/repo4/repo4.zsh") == "$repo_root/repo4/repo4.zsh" ]] || fail 'helper not stowed from repo4/'
     [[ ! -e $profiles ]] || fail 'stow without --repo4 created a live profile'
     [[ ! -e $XDG_CONFIG_HOME/repo4/identities.example && ! -L $XDG_CONFIG_HOME/repo4/identities.example ]] || fail 'template was stowed'
-    bash "$repo_root/stow.sh" --repo4 > "$output" 2>&1
+    bash "$repo_root/bin/stow" --repo4 > "$output" 2>&1
     [[ -f $profiles && ! -L $profiles ]] || fail '--repo4 did not create a private copy'
     [[ $(LC_ALL=C ls -l "$profiles") == -rw-------* ]] || fail '--repo4 did not use mode 600'
     source "$XDG_CONFIG_HOME/repo4/repo4.zsh"
     check init
     git config --file "$profiles" profile.work.name 'Private Work Name'
     local before=$(cksum "$profiles"; ls -di "$profiles")
-    bash "$repo_root/stow.sh" --repo4 > "$output" 2>&1
+    bash "$repo_root/bin/stow" --repo4 > "$output" 2>&1
     [[ $(cksum "$profiles"; ls -di "$profiles") == $before ]] || fail 'stow modified private profiles'
 }
 
 stow_init_dry_run() {
-    bash "$repo_root/stow.sh" --repo4 --ssh --tmux blue --dry-run > "$output" 2>&1
+    bash "$repo_root/bin/stow" --repo4 --ssh --tmux blue --dry-run > "$output" 2>&1
     contains '[dry-run] repo4 init'
     [[ ! -e $XDG_CONFIG_HOME && ! -e $XDG_STATE_HOME && ! -e $HOME/.vimrc ]] || fail 'dry run created files'
-    bash "$repo_root/stow.sh" --repo4 --ssh --tmux blue > "$output" 2>&1
+    bash "$repo_root/bin/stow" --repo4 --ssh --tmux blue > "$output" 2>&1
     [[ -f $profiles && -L $HOME/.vimrc-ssh ]] || fail '--repo4 did not compose with --ssh'
     [[ $(readlink "$HOME/.tmux.conf") == "$repo_root/config/tmux-blue.conf" ]] || fail '--repo4 ignored tmux selection'
     local before=$(cksum "$profiles"; ls -di "$profiles")
-    bash "$repo_root/stow.sh" --repo4 --dry-run > "$output" 2>&1
+    bash "$repo_root/bin/stow" --repo4 --dry-run > "$output" 2>&1
     [[ $(cksum "$profiles"; ls -di "$profiles") == $before ]] || fail 'dry run changed existing profiles'
 }
 
@@ -434,7 +434,7 @@ stow_init_conflict() {
     if [[ $1 == directory ]]; then mkdir "$profiles"; else ln -s "$source_dir/identities.example" "$profiles"; fi
     local before=$(ls -di "$profiles") flag
     for flag in '' --dry-run; do
-        if bash "$repo_root/stow.sh" --repo4 ${flag:+'--dry-run'} > "$output" 2>&1; then fail 'stow accepted a private-file conflict'; fi
+        if bash "$repo_root/bin/stow" --repo4 ${flag:+'--dry-run'} > "$output" 2>&1; then fail 'stow accepted a private-file conflict'; fi
         contains 'regular, private file'
         [[ ! -e $HOME/.vimrc && ! -e $XDG_CONFIG_HOME/repo4/repo4.zsh && ! -e $XDG_STATE_HOME ]] || fail 'init conflict was not preflighted'
         [[ $(ls -di "$profiles") == $before ]] || fail 'init conflict was overwritten'
@@ -442,10 +442,11 @@ stow_init_conflict() {
 }
 
 stow_missing_template() {
-    cp "$repo_root/stow.sh" "${source_dir:h}/stow.sh"
+    mkdir -p "${source_dir:h}/bin"
+    cp "$repo_root/bin/stow" "${source_dir:h}/bin/stow"
     rm "$source_dir/identities.example"
     if bash -c 'source "$1"; stow_mappings() { stow_register "$HOME" .sample repo4/repo4.zsh; }; stow_main --repo4' \
-        stow "${source_dir:h}/stow.sh" > "$output" 2>&1; then fail 'stow accepted a missing init template'; fi
+        stow "${source_dir:h}/bin/stow" > "$output" 2>&1; then fail 'stow accepted a missing init template'; fi
     contains 'template missing'
     [[ ! -e $HOME/.sample && ! -e $profiles && ! -e $XDG_STATE_HOME ]] || fail 'missing template was not preflighted'
 }
@@ -454,7 +455,7 @@ stow_missing_zsh() {
     local bash_binary=$commands[bash]
     mkdir "$case_dir/bin"
     ln -s "$commands[dirname]" "$case_dir/bin/dirname"
-    if PATH="$case_dir/bin" "$bash_binary" "$repo_root/stow.sh" --repo4 > "$output" 2>&1; then fail 'stow accepted missing zsh'; fi
+    if PATH="$case_dir/bin" "$bash_binary" "$repo_root/bin/stow" --repo4 > "$output" 2>&1; then fail 'stow accepted missing zsh'; fi
     contains '--repo4 requires zsh'
     [[ ! -e $HOME/.vimrc && ! -e $XDG_CONFIG_HOME && ! -e $XDG_STATE_HOME ]] || fail 'missing zsh was not preflighted'
 }
