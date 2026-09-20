@@ -68,11 +68,16 @@ set scrolloff=0
 set regexpengine=0  
 set redrawtime=2000
 
-let g:netrw_liststyle = 3
+" newer vim packages netrw separately (older versions already have it on runtimepath)
+silent! packadd! netrw
+
+" run git before terminal queries: system() in VimEnter can echo their replies.
+let g:netrw_list_hide = join(uniq(sort(split(netrw_gitignore#Hide() .. ',\(^\|\s\s\)\zs\.\S\+,.*\.swp$,.DS_Store,*/tmp/*,*.so,*.zip,^\.git/$,^\.\.\=/\=$', ','))), ',')
 let g:netrw_hide = 1
+let g:netrw_liststyle = 3
+
 augroup netrw_startup
   autocmd!
-  autocmd VimEnter * let g:netrw_list_hide = join(uniq(sort(split(netrw_gitignore#Hide() .. ',\(^\|\s\s\)\zs\.\S\+,.*\.swp$,.DS_Store,*/tmp/*,*.so,*.zip,^\.git/$,^\.\.\=/\=$', ','))), ',')
   autocmd VimEnter * if argc() == 0 | Explore | endif
 augroup END
 
