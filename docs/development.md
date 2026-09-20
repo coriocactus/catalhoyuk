@@ -13,30 +13,31 @@ Individual suites:
 bash tests/stow.sh
 zsh -f tests/repo4.zsh
 bash tests/config.sh
-npm --prefix agents/.pi/agent/extensions run verify
+npm --prefix stow/agents/.pi/agent/extensions run verify
 ```
 
-- Shell suites need Bash 3.2+, Zsh, Git, JJ, Vim, tmux: `brew install zsh git jj vim tmux`.
+- Shell suites need Bash 3.2+, Stow, Zsh, Git, JJ, Vim, tmux: `brew install stow zsh git jj vim tmux`.
 - Tests isolate `HOME`, config, repositories, and tmux sockets. They do not install plugins or touch live profiles.
-- `tests/config.sh` runs `bin/stow` into the isolated `HOME` and tests the resulting symlinks.
-- Pi extension setup: [extension README](../agents/.pi/agent/extensions/README.md#development). `bin/check` does not install dependencies.
+- `tests/stow.sh` and `tests/config.sh` run `bin/stow` into the isolated `HOME` and test the result.
+- Pi extension setup: [extension README](../stow/agents/.pi/agent/extensions/README.md#development). `bin/check` does not install dependencies.
 
-## Installer API
+## Installer
 
-Source `bin/stow` to use its functions directly:
+`bin/stow` runs `stow -d stow -t TARGET` per package, always with `-v`, and `-n` for `--dry-run`.
 
-```sh
-. ./bin/stow
-stow_link /absolute/source /absolute/destination
-```
+- `home` and `xdg` use `--no-folding`: real directories, one link per file.
+- `agents` folds: `~/.agents` and `~/.pi/agent/extensions` become directory links. `~/.pi/agent` is created first so Pi's own state stays out of the checkout. A real `~/.pi/agent/extensions` directory is refused.
+- Unselected `tmux-*` and `vim-ssh` packages are unstowed on every run.
+- `--ignore` keeps `skills-lock.json` and `identities.example` out of the targets.
+- `--repo4` preflights `repo4 init` before linking and runs it after.
 
-Selection is validated before any change. Filesystem failures are not rolled back.
+Each `stow` invocation checks all its conflicts before changing anything, but the run as a whole is not a transaction.
 
-## Installer lock
+### Renaming and removing files
 
-Each mutating `stow_link` holds `stow.tsv.lock` (a directory beside `stow.tsv`) from validation through registry replacement. Contention fails immediately; checks and dry runs take no lock.
+Rerun `./bin/stow`. Stow removes dangling links it owns in directories the package still contains.
 
-A killed process can leave the lock behind. Confirm no installer is running, then `rmdir` the lock directory and rerun. Never delete `stow.tsv`.
+It does not visit directories the package no longer has, and it refuses links into a moved checkout as "not owned by stow". Either run `./bin/stow --delete` before restructuring or moving, or remove the dangling links afterwards with the `find` command in the [README](../README.md#layout). `--delete` leaves empty directories behind.
 
 ## Configuration notes
 

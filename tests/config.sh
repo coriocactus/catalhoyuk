@@ -8,6 +8,7 @@ trap 'rm -rf -- "$scratch"' EXIT
 test_count=0
 vim_binary=$(type -P vim)
 tmux_binary=$(type -P tmux)
+stow_binary=$(type -P stow)
 zsh_binary=$(type -P zsh)
 jj_binary=$(type -P jj)
 
@@ -32,7 +33,7 @@ setup() {
     export CALLS="$case_dir/calls" INSTALL_LOG="$case_dir/install-log" BREW_PREFIX="$case_dir/brew prefix"
     mkdir -p "$HOME" "$TMPDIR" "$case_dir/bin" "$BREW_PREFIX/bin" "$TMUX_TMPDIR"
     printf '[user]\nname = Test\nemail = test@example.invalid\n' > "$GIT_CONFIG_GLOBAL"
-    cp "$repo_root/config/jj.config" "$JJ_CONFIG"
+    cp "$repo_root/stow/home/.jjconfig.toml" "$JJ_CONFIG"
     printf '\n[user]\nname = "Test"\nemail = "test@example.invalid"\n' >> "$JJ_CONFIG"
     export PATH="$case_dir/bin:$HOME/.local/bin:$PATH"
     "$BASH" "$repo_root/bin/stow" > "$output" 2>&1
@@ -263,6 +264,7 @@ tmux_profile() (
             fi
             rm "$case_dir/bin/brew"
             ln -s "$tmux_binary" "$case_dir/bin/tmux"
+            ln -s "$stow_binary" "$case_dir/bin/stow"
             export PATH="$case_dir/bin:/usr/bin:/bin" ;;
     esac
     "$BASH" "$repo_root/bin/stow" --tmux "$colour" > "$output" 2>&1

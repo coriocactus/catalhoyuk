@@ -5,7 +5,7 @@ setopt ERR_EXIT NO_UNSET PIPE_FAIL
 repo_root=${0:A:h:h}
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/repo4-tests.XXXXXX")
 trap 'rm -rf -- "$scratch"' EXIT
-source "$repo_root/repo4/repo4.zsh"
+source "$repo_root/stow/xdg/repo4/repo4.zsh"
 test_count=0
 
 fail() {
@@ -35,9 +35,9 @@ setup() {
     export HOME="$case_dir/home with spaces" XDG_CONFIG_HOME="$case_dir/config with spaces"
     export XDG_STATE_HOME="$case_dir/state" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$case_dir/global.gitconfig"
     export JJ_CONFIG="$case_dir/jj.toml" GIT_TERMINAL_PROMPT=0
-    source_dir="$case_dir/checkout with spaces/repo4"
+    source_dir="$case_dir/checkout with spaces/stow/xdg/repo4"
     mkdir -p "$HOME" "$source_dir"
-    cp "$repo_root/repo4/repo4.zsh" "$repo_root/repo4/identities.example" "$source_dir/"
+    cp "$repo_root/stow/xdg/repo4/repo4.zsh" "$repo_root/stow/xdg/repo4/identities.example" "$source_dir/"
     source "$source_dir/repo4.zsh"
     printf '[user]\nuseConfigOnly = true\n' > "$GIT_CONFIG_GLOBAL"
     printf '[user]\nname = "Initial User"\nemail = "initial@example.invalid"\n' > "$JJ_CONFIG"
@@ -204,7 +204,7 @@ anonymous_clone() {
 }
 
 global_identity_guard() {
-    cp "$repo_root/config/git.config" "$GIT_CONFIG_GLOBAL"
+    cp "$repo_root/stow/home/.gitconfig" "$GIT_CONFIG_GLOBAL"
     new_git
     if g commit --quiet --allow-empty -m blocked > "$output" 2>&1; then fail 'Git guessed a global identity'; fi
     [[ $(g config --bool user.useConfigOnly) == true ]] || fail 'useConfigOnly is not enabled'
@@ -382,7 +382,7 @@ source_resolution() {
         ( cd "${source_dir:h}"; source repo4/repo4.zsh; cd /; repo4 init ) > "$output" 2>&1
     else
         mkdir -p "$XDG_CONFIG_HOME/repo4" "$case_dir/links"
-        ln -s '../checkout with spaces/repo4/repo4.zsh' "$case_dir/links/helper.zsh"
+        ln -s '../checkout with spaces/stow/xdg/repo4/repo4.zsh' "$case_dir/links/helper.zsh"
         ln -s "$case_dir/links/helper.zsh" "$XDG_CONFIG_HOME/repo4/repo4.zsh"
         ( cd "$XDG_CONFIG_HOME"; source repo4/repo4.zsh; cd /; repo4 init ) > "$output" 2>&1
     fi
@@ -403,7 +403,7 @@ retargeted_helper() {
 
 stow_integration() {
     bash "$repo_root/bin/stow" > "$output" 2>&1
-    [[ $(readlink "$XDG_CONFIG_HOME/repo4/repo4.zsh") == "$repo_root/repo4/repo4.zsh" ]] || fail 'helper not stowed from repo4/'
+    [[ $XDG_CONFIG_HOME/repo4/repo4.zsh -ef $repo_root/stow/xdg/repo4/repo4.zsh ]] || fail 'helper not stowed'
     [[ ! -e $profiles ]] || fail 'stow without --repo4 created a live profile'
     [[ ! -e $XDG_CONFIG_HOME/repo4/identities.example && ! -L $XDG_CONFIG_HOME/repo4/identities.example ]] || fail 'template was stowed'
     bash "$repo_root/bin/stow" --repo4 > "$output" 2>&1
@@ -423,7 +423,7 @@ stow_init_dry_run() {
     [[ ! -e $XDG_CONFIG_HOME && ! -e $XDG_STATE_HOME && ! -e $HOME/.vimrc ]] || fail 'dry run created files'
     bash "$repo_root/bin/stow" --repo4 --ssh --tmux blue > "$output" 2>&1
     [[ -f $profiles && -L $HOME/.vimrc-ssh ]] || fail '--repo4 did not compose with --ssh'
-    [[ $(readlink "$HOME/.tmux.conf") == "$repo_root/config/tmux-blue.conf" ]] || fail '--repo4 ignored tmux selection'
+    [[ $HOME/.tmux.conf -ef $repo_root/stow/tmux-blue/.tmux.conf ]] || fail '--repo4 ignored tmux selection'
     local before=$(cksum "$profiles"; ls -di "$profiles")
     bash "$repo_root/bin/stow" --repo4 --dry-run > "$output" 2>&1
     [[ $(cksum "$profiles"; ls -di "$profiles") == $before ]] || fail 'dry run changed existing profiles'
@@ -442,19 +442,20 @@ stow_init_conflict() {
 }
 
 stow_missing_template() {
-    mkdir -p "${source_dir:h}/bin"
-    cp "$repo_root/bin/stow" "${source_dir:h}/bin/stow"
+    local checkout=${source_dir:h:h:h}
+    mkdir -p "$checkout/bin" "$checkout/stow/home" "$checkout/stow/agents" "$checkout/stow/tmux-green"
+    cp "$repo_root/bin/stow" "$checkout/bin/stow"
     rm "$source_dir/identities.example"
-    if bash -c 'source "$1"; stow_mappings() { stow_register "$HOME" .sample repo4/repo4.zsh; }; stow_main --repo4' \
-        stow "${source_dir:h}/bin/stow" > "$output" 2>&1; then fail 'stow accepted a missing init template'; fi
+    if bash "$checkout/bin/stow" --repo4 > "$output" 2>&1; then fail 'stow accepted a missing init template'; fi
     contains 'template missing'
-    [[ ! -e $HOME/.sample && ! -e $profiles && ! -e $XDG_STATE_HOME ]] || fail 'missing template was not preflighted'
+    [[ ! -e $XDG_CONFIG_HOME && ! -e $HOME/.pi ]] || fail 'missing template was not preflighted'
 }
 
 stow_missing_zsh() {
     local bash_binary=$commands[bash]
     mkdir "$case_dir/bin"
     ln -s "$commands[dirname]" "$case_dir/bin/dirname"
+    ln -s "$commands[stow]" "$case_dir/bin/stow"
     if PATH="$case_dir/bin" "$bash_binary" "$repo_root/bin/stow" --repo4 > "$output" 2>&1; then fail 'stow accepted missing zsh'; fi
     contains '--repo4 requires zsh'
     [[ ! -e $HOME/.vimrc && ! -e $XDG_CONFIG_HOME && ! -e $XDG_STATE_HOME ]] || fail 'missing zsh was not preflighted'
