@@ -252,6 +252,18 @@ let g:ale_linters = {
       \ 'css': ['stylelint'],
 \}
 
+" Keep build.zig roots; use the file's directory for standalone Zig files.
+function! ZigAleRoot(buffer) abort
+  let l:build = ale#path#FindNearestFile(a:buffer, 'build.zig')
+  if !empty(l:build)
+    return fnamemodify(l:build, ':h')
+  endif
+  return fnamemodify(bufname(a:buffer), ':p:h')
+endfunction
+
+let g:ale_root = get(g:, 'ale_root', {})
+let g:ale_root.zls = function('ZigAleRoot')
+
 function! ConfigureTypeScriptAle() abort
   let b:ale_linters = ['biome']
 
