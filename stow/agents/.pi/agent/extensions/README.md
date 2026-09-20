@@ -4,6 +4,7 @@
 - `mirage`: grouped tool rows, collapsible output/images, configurable colours.
 - `inspector`: same-terminal filename opening, including while Pi is working.
 - `interupt`: first Esc arms interruption; second within 1.5s stops the running response.
+- `echo`: `/echo <name>` completes Markdown snippets and loads them into the editor.
 - `shared`: filename and read-only transcript presentation protocols.
 
 ## After upgrading Pi
@@ -49,7 +50,7 @@ Tests are TypeScript run directly by Node (type stripping, no build step):
   extension, `shared/`, and `test/`, so deleting an extension never breaks another
   extension's tests (only the cross-extension files in `test/` need updating).
 - `test/*.test.ts`: `shared/` contracts, mirage × rearview integration, and a guard
-  that Pi autoloads exactly the four extensions (never `test/` or `shared/`, which
+  that Pi autoloads exactly the five extensions (never `test/` or `shared/`, which
   must not contain an `index.ts`).
 - `test/e2e/`: the terminal suite and its offline provider.
 - `test/pi.ts`, `test/fake-pi.ts`, `test/transcript.ts`, `test/headless-terminal.ts`:
@@ -72,6 +73,7 @@ Coverage includes grouping, live output padding, errors/diffs/images, clicks/Ctr
 background work while Vim owns the terminal, newer/replacement drafts, editor failures,
 saves, resizing, new/resume/fork/reload cleanup, disabling history, rapid scrolling
 between prepend and layout, bounded paging, archived filenames/images, unchanged model
-context, compatibility fallbacks, and idle CPU. Image checks cover Kitty commands,
-not rasterized pixels. Raw output, cell snapshots, screens, and saved sessions remain
-in the printed temporary directory for debugging.
+context, compatibility fallbacks, idle CPU, and snippet autocomplete/loading without
+submission. Image checks cover Kitty commands, not rasterized pixels. Raw output,
+cell snapshots, screens, and saved sessions remain in the printed temporary directory
+for debugging.

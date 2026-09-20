@@ -16,6 +16,9 @@ const extensions = resolve(here, "../..");
 const root = mkdtempSync(join(tmpdir(), "pi-xterm-terminal-"));
 const config = join(root, "config");
 mkdirSync(config);
+const snippets = join(config, "echo");
+mkdirSync(snippets);
+writeFileSync(join(snippets, "review.md"), "ECHO_INITIAL_CONTENT\n");
 const executable = (name: string, source: string) => {
   const path = join(root, name);
   writeFileSync(path, `#!/bin/sh\n${source}\n`, { mode: 0o700 });
@@ -189,7 +192,9 @@ const args = [
   "--session",
   fixture,
   "--no-extensions",
-  // Match the directories' discovery order: inspector, interupt, mirage, rearview.
+  // Match the directories' discovery order: echo, inspector, interupt, mirage, rearview.
+  "-e",
+  join(extensions, "echo/index.ts"),
   "-e",
   join(extensions, "inspector/index.ts"),
   "-e",
@@ -295,6 +300,23 @@ try {
   });
   await terminal.waitFor((s) => s.includes("Fixture ready"), "startup");
   assert.equal(renderedArchive().size, 0, "archived messages are not rendered eagerly");
+  const beforeEcho = readFileSync(fixture, "utf8");
+  writeFileSync(join(snippets, "review.md"), "ECHO_EDITOR_DRAFT\nLiteral $1 stays\n");
+  terminal.send("/echo re");
+  await terminal.waitFor(
+    (s) => s.includes("/echo re") && s.includes("review"),
+    "snippet argument completion",
+  );
+  terminal.send("\t");
+  await terminal.waitFor((s) => s.includes("/echo review"), "accept snippet completion");
+  terminal.send("\r");
+  await terminal.waitFor(
+    (s) => s.includes("ECHO_EDITOR_DRAFT") && s.includes("Literal $1 stays"),
+    "load current snippet contents into editor",
+  );
+  terminal.send("\x03");
+  await terminal.waitFor((s) => !s.includes("ECHO_EDITOR_DRAFT"), "clear unsent snippet draft");
+  assert.equal(readFileSync(fixture, "utf8"), beforeEcho, "echo never submits to the model");
   terminal.send("Run the fixture\r");
   let screen = await terminal.waitFor(
     (s) =>
@@ -650,7 +672,7 @@ try {
   await owners("DISABLED", 0);
   terminal.save();
   console.log(
-    `PASS: xterm.js VT + real Pi/Vim; groups, output padding, Unicode clicks, colours/underlines, interrupt hint without layout shifts, gated background work, newer/replacement drafts, saves, images, errors, Ctrl+O, resize, new/resume/fork/reload ownership and disable cleanup, bounded top paging/anchors, archived Vim/images, unchanged context. Pi idle CPU ${cpu.toFixed(2)}s/2s. Artifacts: ${root}`,
+    `PASS: xterm.js VT + real Pi/Vim; snippet autocomplete/loading without submission, groups, output padding, Unicode clicks, colours/underlines, interrupt hint without layout shifts, gated background work, newer/replacement drafts, saves, images, errors, Ctrl+O, resize, new/resume/fork/reload ownership and disable cleanup, bounded top paging/anchors, archived Vim/images, unchanged context. Pi idle CPU ${cpu.toFixed(2)}s/2s. Artifacts: ${root}`,
   );
 } catch (error) {
   running?.save();
