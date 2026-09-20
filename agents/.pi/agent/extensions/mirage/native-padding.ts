@@ -4,9 +4,9 @@ import {
   VERSION,
 } from "@earendil-works/pi-coding-agent";
 
-const OWNER = Symbol.for("tool-display.native-padding.owner.v1");
-const SOURCE = Symbol.for("tool-display.native-padding.source.v1");
-const PATCH = Symbol.for("tool-display.native-padding.patch.v1");
+const OWNER = Symbol.for("mirage.native-padding.owner.v1");
+const SOURCE = Symbol.for("mirage.native-padding.source.v1");
+const PATCH = Symbol.for("mirage.native-padding.patch.v1");
 type Renderers = NonNullable<ConstructorParameters<typeof ToolExecutionComponent>[4]>;
 type PaddingState = { [SOURCE]?: () => number };
 interface NativeHost {
@@ -43,7 +43,7 @@ export function installNativeOutputPadding(
   const prototype = InteractiveMode.prototype as unknown as NativeHost & { [PATCH]?: Patch };
   let patch = prototype[PATCH];
   if (patch && prototype.getRegisteredToolDefinition !== patch.lookup)
-    throw new Error("Another extension replaced tool-display's padding adapter.");
+    throw new Error("Another extension replaced mirage's padding adapter.");
   if (!patch) {
     const original = prototype.getRegisteredToolDefinition;
     if (typeof original !== "function") throw new Error("Pi's tool renderer lookup changed.");

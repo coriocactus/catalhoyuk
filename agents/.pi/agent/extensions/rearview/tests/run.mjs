@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
-import { pkg, require } from "../../tool-display/tests/pi-package.mjs";
+import { pkg, require } from "../../mirage/tests/pi-package.mjs";
 
 const { createJiti } = require("jiti");
 const jiti = createJiti(import.meta.url, {
@@ -14,7 +14,7 @@ const jiti = createJiti(import.meta.url, {
 const { HistoryCursor, historyBoundary } = await jiti.import("../model.ts");
 const { attachTopPaging } = await jiti.import("../scroll.ts");
 const { renderHistoryPage, installHistoryAdapter } = await jiti.import("../native.ts");
-const { default: installDisplay } = await jiti.import("../../tool-display/index.ts");
+const { default: installDisplay } = await jiti.import("../../mirage/index.ts");
 const { default: installHistory } = await jiti.import("../index.ts");
 const core = await import(join(pkg, "dist/index.js"));
 const tui = await import(require.resolve("@earendil-works/pi-tui"));
@@ -325,7 +325,7 @@ test("an incompatible history API falls back to the full native transcript with 
 });
 
 test("every outgoing history runtime releases its owner, pending input and scroll hooks", async () => {
-  const key = Symbol.for("pi-local.fullscreen-history.v1");
+  const key = Symbol.for("rearview.patch.v1");
   for (const reason of ["new", "new", "resume", "fork", "reload", "quit"]) {
     const handlers = new Map();
     installHistory({
@@ -581,7 +581,7 @@ test("initial tool groups contain only displayed calls, while older pages keep i
   const adapter = installHistoryAdapter(
     (error) => errors.push(error),
     10,
-    (view) => events.emit("pi-local:transcript-view", view),
+    (view) => events.emit("rearview:transcript-view", view),
   );
   try {
     f.host.renderSessionEntries(sm.buildContextEntries());
@@ -622,58 +622,61 @@ test("initial tool groups contain only displayed calls, while older pages keep i
   }
 });
 
-test("archived tool renderers keep separate groups and never execute or disturb live pending tools", async () => {
-  const handlers = new Map(),
-    tools = new Map();
-  const pi = {
-    on(name, fn) {
-      handlers.set(name, fn);
-    },
-    registerTool(tool) {
-      tools.set(tool.name, tool);
-    },
-    events: core.createEventBus(),
-  };
-  installDisplay(pi);
-  const f = fixture(0);
-  bindTools(f.host, tools);
-  const live = new core.ToolExecutionComponent(
-    "read",
-    "live-read",
-    { path: "live.txt" },
-    {},
-    tools.get("read"),
-    f.host.ui,
-    process.cwd(),
-  );
-  live.updateResult({ content: [{ type: "text", text: "LIVE_RESULT" }], isError: false });
-  const before = text(live),
-    pending = f.host.pendingTools,
-    context = JSON.stringify(f.sm.buildSessionContext());
-  const archive = core.SessionManager.inMemory(process.cwd());
-  for (const id of ["old-a", "old-b"]) {
-    archive.appendMessage(
-      assistant("", [{ type: "toolCall", id, name: "read", arguments: { path: `${id}.txt` } }]),
+for (const name of ["read", "edit"]) {
+  test(`archived ${name} groups never execute or merge into live pending tools`, async () => {
+    const handlers = new Map(),
+      tools = new Map();
+    const pi = {
+      on(name, fn) {
+        handlers.set(name, fn);
+      },
+      registerTool(tool) {
+        tools.set(tool.name, tool);
+      },
+      events: core.createEventBus(),
+    };
+    installDisplay(pi);
+    const f = fixture(0);
+    bindTools(f.host, tools);
+    const live = new core.ToolExecutionComponent(
+      name,
+      "live-tool",
+      { path: "live.txt" },
+      {},
+      tools.get(name),
+      f.host.ui,
+      process.cwd(),
     );
-    archive.appendMessage({
-      role: "toolResult",
-      toolCallId: id,
-      toolName: "read",
-      content: [{ type: "text", text: id }],
-      isError: false,
-      timestamp: 1,
-    });
-  }
-  try {
-    const page = renderHistoryPage(f.host, archive.getEntries(), nativeRender);
-    assert.match(text(page), /Explored 2 files/);
-    assert.equal(text(live), before);
-    assert.equal(f.host.pendingTools, pending);
-    assert.equal(f.host.pendingTools.size, 1);
-    assert.equal(JSON.stringify(f.sm.buildSessionContext()), context);
-    assert.equal(f.historyAdds, 0);
-    assert.equal(text(f.chat), "");
-  } finally {
-    handlers.get("session_shutdown")();
-  }
-});
+    live.updateResult({ content: [{ type: "text", text: "LIVE_RESULT" }], isError: false });
+    const before = text(live),
+      pending = f.host.pendingTools,
+      context = JSON.stringify(f.sm.buildSessionContext());
+    const archive = core.SessionManager.inMemory(process.cwd());
+    for (const id of ["old-a", "old-b"]) {
+      archive.appendMessage(
+        assistant("", [{ type: "toolCall", id, name, arguments: { path: `${id}.txt` } }]),
+      );
+      archive.appendMessage({
+        role: "toolResult",
+        toolCallId: id,
+        toolName: name,
+        content: [{ type: "text", text: id }],
+        details: name === "edit" ? { diff: "-1 before\n+1 after" } : undefined,
+        isError: false,
+        timestamp: 1,
+      });
+    }
+    try {
+      const page = renderHistoryPage(f.host, archive.getEntries(), nativeRender);
+      assert.match(text(page), name === "edit" ? /Edited 2 files \+2 −2/ : /Explored 2 files/);
+      assert.equal(text(live), before);
+      assert.equal(f.host.pendingTools, pending);
+      assert.equal(f.host.pendingTools.size, 1);
+      assert.equal(JSON.stringify(f.sm.buildSessionContext()), context);
+      assert.equal(f.historyAdds, 0);
+      assert.equal(text(f.chat), "");
+    } finally {
+      handlers.get("session_shutdown")();
+    }
+  });
+}

@@ -5,8 +5,7 @@ import { colours } from "./colours.ts";
 type Tone = keyof typeof colours;
 
 function foreground(hex: string): { rgb: string; indexed: string } {
-  if (!/^#[\da-f]{6}$/i.test(hex))
-    throw new Error(`Invalid tool-display colour: ${hex}. Use #RRGGBB.`);
+  if (!/^#[\da-f]{6}$/i.test(hex)) throw new Error(`Invalid mirage colour: ${hex}. Use #RRGGBB.`);
   const value = Number.parseInt(hex.slice(1), 16);
   const r = value >> 16,
     g = (value >> 8) & 255,

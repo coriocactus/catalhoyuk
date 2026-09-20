@@ -1,7 +1,8 @@
-# Compact tool display
+# Mirage
 
 ```text
 ✓ Explored 4 files ▸
+✓ Edited 3 files +14 −22 ▸
 ✓ Edited ~/project/index.ts +12 −8 ▸
 $ npm test ▸
 ```
@@ -12,17 +13,20 @@ $ npm test ▸
 - Failed rows stay visible; file tools retain **✗**. Error output stays hidden until expanded.
 - Images start hidden; row toggles and **Ctrl+O** expand/collapse their previews.
 - **Ctrl+O** also controls text output, including errors.
-- Click underlined filenames to open Vim through `vim-files`, even while Pi is working.
-- Edits have change counts and expandable, line-numbered diffs.
+- Click underlined filenames to open Vim through `inspector`, even while Pi is working.
+- Consecutive edits collapse into `Edited X files +X −Y ▸`, with independently expandable
+  file rows and line-numbered diffs. File counts are distinct paths within each working
+  directory; totals sum successful edit diffs, not the net Git diff. Zero counts are omitted.
+- Single edits keep their filename header; `write` calls remain standalone.
 
-Consecutive reads/commands group across tool-only turns. Commentary, thinking,
+Consecutive reads, edits, and commands group by tool across tool-only turns. Commentary, thinking,
 user messages, other tools, and image results separate groups. Image reads stay
 standalone with a visible filename. Local expansion choices reset on reload/resume.
-With `fullscreen-history`, each older page has independent groups: browsing never
+With `rearview`, each older page has independent groups: browsing never
 merges archived calls into live work. Filename clicks and Ctrl+O still work.
 
 `index.ts` adapts Pi events/settings, `model.ts` owns display state, and `view.ts`
-only renders it. `file-tools-shared` connects the independent opener and optional
+only renders it. `shared` connects the independent opener and optional
 history pager without putting presentation metadata in saved messages.
 `native-images.ts` moves Pi's native previews into collapsible bodies;
 `native-padding.ts` supplies the live output padding omitted from tool render contexts.

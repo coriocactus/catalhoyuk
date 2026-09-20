@@ -1,9 +1,9 @@
 import { ToolExecutionComponent, VERSION } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 
-const OWNER = Symbol.for("tool-display.native-images.owner.v1");
-const SLOT = Symbol.for("tool-display.native-images.slot.v1");
-const PATCH = Symbol.for("tool-display.native-images.patch.v1");
+const OWNER = Symbol.for("mirage.native-images.owner.v1");
+const SLOT = Symbol.for("mirage.native-images.slot.v1");
+const PATCH = Symbol.for("mirage.native-images.patch.v1");
 type ImageState = { [SLOT]?: Component };
 type Render = ToolExecutionComponent["render"];
 interface Patch {
@@ -48,7 +48,7 @@ export function installNativeImageSlot(
   };
   let patch = prototype[PATCH];
   if (patch && prototype.render !== patch.render)
-    throw new Error("Another extension replaced tool-display's image adapter.");
+    throw new Error("Another extension replaced mirage's image adapter.");
   if (!patch) {
     const original = prototype.render;
     if (typeof original !== "function")

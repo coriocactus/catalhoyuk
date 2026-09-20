@@ -4,11 +4,7 @@ import { stat } from "node:fs/promises";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-import {
-  type FileReference,
-  isOpenFileRequest,
-  OPEN_FILE_EVENT,
-} from "../file-tools-shared/protocol.ts";
+import { type FileReference, isOpenFileRequest, OPEN_FILE_EVENT } from "../shared/protocol.ts";
 import { resolveToolFile } from "./paths.ts";
 
 /** Owns the editor process and terminal handoff, not tool rendering. */

@@ -14,17 +14,23 @@ import {
   type TuiMouseEventResult,
   truncateToWidth,
 } from "@earendil-works/pi-tui";
-import type { FileReference } from "../file-tools-shared/protocol.ts";
+import type { FileReference } from "../shared/protocol.ts";
 import { isComplete, type ToolGroup, type ToolGroups, type ToolRow } from "./model.ts";
 
 import { colouredDiff, paint } from "./style.ts";
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: OSC 8 links use ESC/BEL delimiters.
-const FILE_LINK_OPEN = /\x1b\]8;[^;\x07\x1b]*;pi-tool-file:[^\x07\x1b]*(?:\x07|\x1b\\)/g;
+const FILE_LINK_OPEN = /\x1b\]8;[^;\x07\x1b]*;mirage:file:[^\x07\x1b]*(?:\x07|\x1b\\)/g;
 const FILE_VERBS = {
   read: { pending: "Read", running: "Reading", success: "Read", error: "Read" },
   edit: { pending: "Edit", running: "Editing", success: "Edited", error: "Edit" },
   write: { pending: "Write", running: "Writing", success: "Wrote", error: "Write" },
+};
+const GROUP_VERBS = {
+  read: { pending: "Explore", running: "Exploring", success: "Explored" },
+  bash: { pending: "Run", running: "Running", success: "Ran" },
+  edit: FILE_VERBS.edit,
+  write: FILE_VERBS.write,
 };
 export type ToggleTarget = ToolGroup | ToolRow;
 type GroupState = Pick<ToolGroups, "epoch" | "expanded"> & { rows: ReadonlyMap<string, ToolRow> };
@@ -126,26 +132,15 @@ export class ToolGroupView implements Component {
       const completed = group.rows.every(isComplete);
       const running = group.rows.some((row) => row.status === "running");
       const count =
-        group.name === "read"
-          ? new Set(
+        group.name === "bash"
+          ? group.rows.length
+          : new Set(
               group.rows.map((row) =>
                 row.file ? JSON.stringify([row.file.cwd, row.file.path]) : row.id,
               ),
-            ).size
-          : group.rows.length;
-      const verb =
-        group.name === "read"
-          ? completed
-            ? "Explored"
-            : running
-              ? "Exploring"
-              : "Explore"
-          : completed
-            ? "Ran"
-            : running
-              ? "Running"
-              : "Run";
-      const noun = group.name === "read" ? "file" : "command";
+            ).size;
+      const verb = GROUP_VERBS[group.name][completed ? "success" : running ? "running" : "pending"];
+      const noun = group.name === "bash" ? "command" : "file";
       const failures = group.rows.filter((row) => row.status === "error").length;
       const status = this.status(
         failures ? "error" : completed ? "success" : "pending",
@@ -153,7 +148,7 @@ export class ToolGroupView implements Component {
       );
       const error = failures ? paint(this.theme, "red", ` (${failures} failed)`) : "";
       this.header(
-        `${status} ${verb} ${count} ${noun}${count === 1 ? "" : "s"}${error}`,
+        `${status} ${verb} ${count} ${noun}${count === 1 ? "" : "s"}${this.editSummary(group.rows)}${error}`,
         group,
         contentWidth,
       );
@@ -216,7 +211,7 @@ export class ToolGroupView implements Component {
         const path = row.file.path;
         const home = homedir();
         const display = path.startsWith(home + sep) ? `~${path.slice(home.length)}` : path;
-        const url = `pi-tool-file:${encodeURIComponent(row.id)}`;
+        const url = `mirage:file:${encodeURIComponent(row.id)}`;
         this.files.set(url, row.file);
         filename = hyperlink(
           this.theme.underline(paint(this.theme, "blue", clean(display).replace(/\n/g, " "))),
@@ -227,14 +222,24 @@ export class ToolGroupView implements Component {
       if (row.name === "read" && typeof row.args.offset === "number")
         label += this.theme.fg("dim", `:${row.args.offset}`);
       if (row.hasImages) label += this.theme.fg("dim", " (image)");
-      const changes = row.name === "edit" ? diff(row) : "";
-      if (changes && row.status === "success") {
-        const { added, removed } = diffCounts(changes);
-        if (added) label += ` ${paint(this.theme, "green", `+${added}`)}`;
-        if (removed) label += ` ${paint(this.theme, "red", `−${removed}`)}`;
-      }
+      if (row.name === "edit") label += this.editSummary([row]);
     }
     return `${this.status(row.status, row.name === "bash")} ${label}`;
+  }
+
+  private editSummary(rows: readonly ToolRow[]): string {
+    let added = 0,
+      removed = 0;
+    for (const row of rows) {
+      if (row.name !== "edit" || row.status !== "success") continue;
+      const counts = diffCounts(diff(row));
+      added += counts.added;
+      removed += counts.removed;
+    }
+    return (
+      (added ? ` ${paint(this.theme, "green", `+${added}`)}` : "") +
+      (removed ? ` ${paint(this.theme, "red", `−${removed}`)}` : "")
+    );
   }
 
   private header(label: string, target: ToggleTarget, width: number): void {

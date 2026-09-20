@@ -47,6 +47,7 @@ writeFileSync(join(root, filename), "const VIM_BUSY_TARGET = true;\n");
 writeFileSync(join(root, "b.txt"), "READ_B_RESULT\n");
 writeFileSync(join(root, "archived.txt"), "ARCHIVED_VIM_TARGET\n");
 writeFileSync(join(root, "edited.txt"), "before\n");
+writeFileSync(join(root, "edited-other.txt"), "before-second\n");
 writeFileSync(
   join(root, "picture.png"),
   Buffer.from(
@@ -162,7 +163,7 @@ writeFileSync(
   `
 import { existsSync } from "node:fs";
 import { InteractiveMode } from "@earendil-works/pi-coding-agent";
-import history from ${JSON.stringify(join(extension, "../fullscreen-history/index.ts"))};
+import history from ${JSON.stringify(join(extension, "../rearview/index.ts"))};
 export default function (pi) {
   const prototype = InteractiveMode.prototype;
   const key = Symbol.for("fixture.original-history");
@@ -177,12 +178,13 @@ const args = [
   "--session",
   fixture,
   "--no-extensions",
+  // Match the renamed directories' discovery order: inspector, mirage, rearview.
   "-e",
-  historyWrapper,
+  join(extension, "../inspector/index.ts"),
   "-e",
   join(extension, "index.ts"),
   "-e",
-  join(extension, "../vim-files/index.ts"),
+  historyWrapper,
   "-e",
   join(extension, "tests/offline-provider.ts"),
   "--provider",
@@ -231,6 +233,13 @@ function assertOutputPadding(padding) {
     : "$ Ran 2 commands";
   assert.equal(terminal.locate(command).x, padding);
 }
+async function expandEditGroup() {
+  terminal.click("Edited 2 files");
+  await terminal.waitFor(
+    (s) => s.includes("edited.txt") && s.includes("edited-other.txt"),
+    "expand edit group into file rows",
+  );
+}
 async function setOutputPadding(padding) {
   terminal.send("/settings\r");
   await terminal.waitFor((s) => s.includes("Enter/Space to change"), "open settings");
@@ -274,26 +283,29 @@ try {
   terminal.send("Run the fixture\r");
   let screen = await terminal.waitFor(
     (s) =>
-      s.includes("Explored 2 files") && s.includes("Running 2 commands") && s.includes("+1 −1"),
-    "live groups and completed edit",
+      s.includes("Explored 2 files") &&
+      s.includes("Running 2 commands") &&
+      s.includes("Edited 2 files +3 −2"),
+    "live groups and completed edits",
   );
   assert(!screen.includes("VIM_BUSY_TARGET") && !screen.includes("READ_B_RESULT"));
   assert(screen.includes("picture.png (image)"));
   assert(!terminal.rawSince().includes("\x1b_Ga=T"), "images start hidden");
   terminal.assertColour("✓", colours.green);
-  terminal.assertColour("+1", colours.green);
-  terminal.assertColour("−1", colours.red);
+  terminal.assertColour("+3", colours.green);
+  terminal.assertColour("−2", colours.red);
   terminal.assertColour("picture.png", colours.blue);
   assert(terminal.locate("picture.png").cell.style.underline, "clickable filenames are underlined");
   assert(!terminal.locate("(image)").cell.style.underline, "underline ends at the filename");
-  assert(!terminal.locate("+1").cell.style.underline, "diff counts are not underlined");
-  for (const label of ["Explored 2 files", "edited.txt", "picture.png", "Running 2 commands"]) {
+  assert(!terminal.locate("+3").cell.style.underline, "diff counts are not underlined");
+  assert(!screen.includes("edited.txt") && !screen.includes("edited-other.txt"));
+  for (const label of ["Explored 2 files", "Edited 2 files", "picture.png", "Running 2 commands"]) {
     const row = terminal.locate(label).row;
     assert(row.text.trimEnd().endsWith(" ▸"), "tool carets trail the header text");
     assert(!row.cells.findLast((cell) => cell.text === "▸").style.underline);
   }
   assert(
-    !terminal.rawSince().includes("pi-tool-file:"),
+    !terminal.rawSince().includes("mirage:file:"),
     "private filename links must not reach the terminal",
   );
 
@@ -372,19 +384,26 @@ try {
   terminal.assertColour("ERROR_BODY_MARKER", colours.red);
   terminal.click("DISPLAY_FIXTURE_ERROR");
   await terminal.waitFor((s) => !s.includes("ERROR_BODY_MARKER"), "collapse error");
-  terminal.click("Edited ");
+  await expandEditGroup();
+  assert(terminal.locate("edited.txt").cell.style.underline);
+  assert(terminal.locate("edited-other.txt").row.text.includes("+2 −1 ▸"));
+  assert(!terminal.screen.includes("-1 before"), "file rows start with closed diffs");
+  terminal.click("edited.txt");
   await terminal.waitFor(
     (s) => s.includes("-1 before") && s.includes("+1 after"),
-    "expand numbered diff",
+    "expand one grouped numbered diff",
   );
+  assert(!terminal.screen.includes("before-second"), "other diffs stay independently closed");
   terminal.assertColour("-1 before", colours.red);
   terminal.assertColour("+1 after", colours.green);
   assert(
     terminal.locate("before").cell.style.inverse && terminal.locate("after").cell.style.inverse,
     "word changes retain inverse highlighting",
   );
-  terminal.click("Edited ");
+  terminal.click("edited.txt");
   await terminal.waitFor((s) => !s.includes("-1 before"), "collapse diff");
+  terminal.click("Edited 2 files");
+  await terminal.waitFor((s) => !s.includes("edited.txt"), "collapse edit group");
 
   mark = terminal.mark();
   terminal.send("\x0f");
@@ -392,6 +411,8 @@ try {
     (s) =>
       s.includes("READ_B_RESULT") &&
       s.includes("-1 before") &&
+      s.includes("-1 before-second") &&
+      s.includes("+2 extra") &&
       s.includes("STREAM_TWO") &&
       s.includes("ERROR_BODY_MARKER") &&
       terminal.rawSince(mark).includes("\x1b_Ga=T"),
@@ -427,6 +448,8 @@ try {
   screen = await terminal.waitFor((s) => s.includes("Reloaded"), "reload");
   assert(screen.includes("Explored 2 files") && !screen.includes("ERROR_BODY_MARKER"));
   assertOutputPadding(1);
+  assert(screen.includes("Edited 2 files +3 −2") && !screen.includes("edited.txt"));
+  await expandEditGroup();
   terminal.click("edited.txt", true);
   await terminal.waitFor(
     (s) => s.includes("after") && !s.includes("BACKGROUND_FINISHED"),
@@ -455,6 +478,7 @@ try {
     "resume saved session",
   );
   assert(screen.includes("Explored 2 files") && !screen.includes("ERROR_BODY_MARKER"));
+  assert(screen.includes("Edited 2 files +3 −2") && !screen.includes("edited.txt"));
   assert(!terminal.rawSince().includes("\x1b_Ga=T"), "resumed images start hidden");
   assertOutputPadding(1);
   terminal.click("picture.png");
@@ -566,6 +590,7 @@ try {
     (s) => s.includes("REPLACEMENT_ARMED"),
     "arm replacement while Vim is open",
   );
+  await expandEditGroup();
   terminal.click("edited.txt", true);
   await terminal.waitFor(
     (s) => s.includes("after") && !s.includes("REPLACEMENT_ARMED"),

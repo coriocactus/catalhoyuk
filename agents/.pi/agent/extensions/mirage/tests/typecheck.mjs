@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { pkg, version } from "./pi-package.mjs";
 
 const extension = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const temporary = mkdtempSync(join(tmpdir(), "pi-tool-display-types-"));
+const temporary = mkdtempSync(join(tmpdir(), "pi-mirage-types-"));
 try {
   const paths = Object.fromEntries(
     ["pi-ai", "pi-agent-core", "pi-tui"].map((name) => [
@@ -34,8 +34,8 @@ try {
       files: [
         join(extension, "index.ts"),
         join(extension, "tests/offline-provider.ts"),
-        join(extension, "../vim-files/index.ts"),
-        join(extension, "../fullscreen-history/index.ts"),
+        join(extension, "../inspector/index.ts"),
+        join(extension, "../rearview/index.ts"),
       ],
     }),
   );

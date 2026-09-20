@@ -1,4 +1,4 @@
-# Fullscreen history
+# Rearview
 
 Run `/reload` in fullscreen mode. The transcript starts with roughly **50 saved
 entries**, plus the current compaction summary. Scroll upward with the wheel,
@@ -10,7 +10,7 @@ branch's beginning. End returns to live output.
 - Reload/resume and tree navigation start a fresh recent view. Reload after changing TUI mode.
 - Model context, branch selection, session files, prompt history, and unsent drafts
   are unchanged. Tools are **never re-executed**.
-- `tool-display` groups each historical page independently. Its filename-to-Vim
+- `mirage` groups each historical page independently. Its filename-to-Vim
   clicks, hidden images, local toggles, and Ctrl+O still work.
 - Change `PAGE_SIZE` in `model.ts`, then `/reload`, to adjust the batch size. A batch
   can be larger to keep tool calls with their results.

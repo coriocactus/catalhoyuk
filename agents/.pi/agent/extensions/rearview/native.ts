@@ -8,12 +8,8 @@ import {
   VERSION,
 } from "@earendil-works/pi-coding-agent";
 import { type Component, Container, type ScrollView, type TUI } from "@earendil-works/pi-tui";
-import {
-  HISTORY_PAGE,
-  type HistoryPage,
-  type HistoryRenderState,
-} from "../file-tools-shared/history.ts";
-import type { TranscriptView } from "../file-tools-shared/transcript.ts";
+import { HISTORY_PAGE, type HistoryPage, type HistoryRenderState } from "../shared/history.ts";
+import type { TranscriptView } from "../shared/transcript.ts";
 import { HistoryCursor, historyBoundary, historyGap, PAGE_SIZE, recentEntries } from "./model.ts";
 import { attachTopPaging } from "./scroll.ts";
 
@@ -325,7 +321,7 @@ interface Patch {
   owners: Set<Owner>;
   controllers: Map<NativeHost, { owner: Owner; controller: HistoryController }>;
 }
-const PATCH = Symbol.for("pi-local.fullscreen-history.v1");
+const PATCH = Symbol.for("rearview.patch.v1");
 
 export function installHistoryAdapter(
   report: Owner["report"],
@@ -337,7 +333,7 @@ export function installHistoryAdapter(
   const prototype = InteractiveMode.prototype as unknown as NativeHost & { [PATCH]?: Patch };
   let patch = prototype[PATCH];
   if (patch && prototype.renderSessionEntries !== patch.wrapped)
-    throw new Error("Another extension replaced fullscreen-history's adapter.");
+    throw new Error("Another extension replaced rearview's adapter.");
   if (!patch) {
     const original = prototype.renderSessionEntries;
     if (typeof original !== "function") throw new Error("Pi's transcript renderer is unavailable.");

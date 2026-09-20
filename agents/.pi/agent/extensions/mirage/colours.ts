@@ -1,4 +1,4 @@
-// Edit these six-digit RGB values, then /reload. These affect tool-display only.
+// Edit these six-digit RGB values, then /reload. These affect mirage only.
 export const colours = {
   red: "#dd331d", // Removed lines/counts, failed status, and error output.
   green: "#65bd55", // Added lines/counts and successful status.

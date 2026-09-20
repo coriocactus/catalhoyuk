@@ -18,9 +18,11 @@ const jiti = createJiti(import.meta.url, {
 });
 const extension = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const { default: installDisplay } = await jiti.import(join(extension, "index.ts"));
-const { default: installVim } = await jiti.import(join(extension, "../vim-files/index.ts"));
-const { OPEN_FILE_EVENT } = await jiti.import(join(extension, "../file-tools-shared/protocol.ts"));
-const { resolveToolFile } = await jiti.import(join(extension, "../vim-files/paths.ts"));
+const { default: installVim } = await jiti.import(join(extension, "../inspector/index.ts"));
+const { OPEN_FILE_EVENT } = await jiti.import(join(extension, "../shared/protocol.ts"));
+const { TRANSCRIPT_VIEW } = await jiti.import(join(extension, "../shared/transcript.ts"));
+const { HISTORY_PAGE } = await jiti.import(join(extension, "../shared/history.ts"));
+const { resolveToolFile } = await jiti.import(join(extension, "../inspector/paths.ts"));
 const { ToolGroups } = await jiti.import(join(extension, "model.ts"));
 const { diffCounts } = await jiti.import(join(extension, "view.ts"));
 const { colours } = await jiti.import(join(extension, "colours.ts"));
@@ -33,7 +35,7 @@ const nativeRender = core.ToolExecutionComponent.prototype.render;
 const nativeLookup = core.InteractiveMode.prototype.getRegisteredToolDefinition;
 const PIXEL_PNG =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII=";
-const root = mkdtempSync(join(tmpdir(), "pi-tool-display-"));
+const root = mkdtempSync(join(tmpdir(), "pi-mirage-"));
 const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
 const sessions = [];
 after(async () => {
@@ -186,6 +188,12 @@ async function fixture({ global = {}, project = {}, trusted = false, mode = "tui
   };
 }
 
+test("shared presentation identifiers use the renamed extension namespaces", () => {
+  assert.equal(OPEN_FILE_EVENT, "inspector:open");
+  assert.equal(TRANSCRIPT_VIEW, "rearview:transcript-view");
+  assert.equal(Symbol.keyFor(HISTORY_PAGE), "rearview.history-page.v1");
+});
+
 test("compatibility checks capabilities, not a version allowlist, and warns before native fallback", async (t) => {
   const shim = join(root, "future-pi.mjs");
   writeFileSync(
@@ -202,7 +210,7 @@ test("compatibility checks capabilities, not a version allowlist, and warns befo
   });
   const images = await future.import(join(extension, "native-images.ts"));
   const padding = await future.import(join(extension, "native-padding.ts"));
-  const history = await future.import(join(extension, "../fullscreen-history/native.ts"));
+  const history = await future.import(join(extension, "../rearview/native.ts"));
   t.mock.method(core.ToolExecutionComponent.prototype, "render", () => ["native fallback"]);
   t.mock.method(core.InteractiveMode.prototype, "getRegisteredToolDefinition", function () {
     return this.definition;
@@ -245,10 +253,7 @@ test("compatibility checks capabilities, not a version allowlist, and warns befo
   } finally {
     for (const release of releases.reverse()) release();
   }
-  assert.equal(
-    core.InteractiveMode.prototype[Symbol.for("pi-local.fullscreen-history.v1")],
-    undefined,
-  );
+  assert.equal(core.InteractiveMode.prototype[Symbol.for("rearview.patch.v1")], undefined);
   const imageRender = core.ToolExecutionComponent.prototype.render;
   core.ToolExecutionComponent.prototype.render = undefined;
   try {
@@ -303,9 +308,13 @@ test("group boundaries, streaming snapshots, and expansion survive growth and me
   assert.equal(a.file.path, "updated", "streamed arguments update the snapshot");
   model.addCall("foreign", "grep", {}, root);
   assert.notEqual(model.addCall("c", "read", {}, root).group, a.group);
-  assert.notEqual(
+  assert.equal(
     model.addCall("edit1", "edit", {}, root).group,
     model.addCall("edit2", "edit", {}, root).group,
+  );
+  assert.notEqual(
+    model.addCall("write1", "write", {}, root).group,
+    model.addCall("write2", "write", {}, root).group,
   );
   model.reset();
   function batch(id, blocks = []) {
@@ -342,6 +351,52 @@ test("group boundaries, streaming snapshots, and expansion survive growth and me
   model.setAllExpanded(false);
   model.setAllExpanded(true);
   assert(model.expanded(first), "global expansion supersedes local choices");
+});
+
+test("edit groups merge across tool-only turns without crossing message or tool boundaries", () => {
+  const model = new ToolGroups();
+  function batch(id, blocks = []) {
+    const message = {
+      role: "assistant",
+      content: [...blocks, { type: "toolCall", id, name: "edit", arguments: { path: id } }],
+      stopReason: "toolUse",
+    };
+    model.startMessage({ role: "assistant", content: [] }, root);
+    model.observe(message, root);
+    return message;
+  }
+  const first = batch("first");
+  model.finishMessage(first, root);
+  const a = model.rows.get("first");
+  model.toggle(a);
+  const second = batch("second");
+  const b = model.rows.get("second");
+  assert.notEqual(a.group, b.group, "wait for late commentary before merging");
+  model.finishMessage(second, root);
+  assert.equal(a.group, b.group);
+  assert(model.expanded(a) && model.expanded(a.group), "merging preserves open diffs");
+
+  for (const block of [
+    { type: "text", text: "Commentary" },
+    { type: "thinking", thinking: "Reasoning" },
+  ]) {
+    const previous = model.rows.get(second.content[0].id);
+    const next = batch(block.type);
+    next.content.push(block);
+    model.finishMessage(next, root);
+    assert.notEqual(model.rows.get(block.type).group, previous.group);
+  }
+  for (const name of ["read", "bash", "write", "grep"]) {
+    const before = model.addCall(`before-${name}`, "edit", {}, root);
+    model.addCall(`boundary-${name}`, name, {}, root);
+    const after = model.addCall(`after-${name}`, "edit", {}, root);
+    assert.notEqual(before.group, after.group, name);
+  }
+  for (const role of ["user", "custom", "bashExecution"]) {
+    const before = model.addCall(`before-${role}`, "edit", {}, root);
+    model.startMessage({ role, content: "Boundary" }, root);
+    assert.notEqual(model.addCall(`after-${role}`, "edit", {}, root).group, before.group);
+  }
 });
 
 test("normalized renderer inputs tolerate invalid arguments without bypassing validation", async () => {
@@ -543,6 +598,107 @@ test("edit headers omit zero counts while retaining nonzero additions and remova
     edit.result(result("success", { diff }));
     assert.equal(plain(edit.view), `✓ Edited edit.ts${suffix} ▸`);
   }
+});
+
+test("edit groups count distinct files and sum only completed diff snapshots", async () => {
+  const f = await fixture();
+  const a = f.call("edit", "edits-a", { path: "a.txt" }, false);
+  const b = f.call("edit", "edits-b", { path: "b.txt" }, false);
+  assert.equal(plain(a.view), "… Edit 2 files ▸");
+  assert.equal(plain(b.view), "");
+  b.result(result("partial", { diff: "-1 old-b\n+1 new-b\n+2 extra" }), false, true);
+  assert.equal(plain(a.view), "… Editing 2 files ▸", "partial diffs do not inflate totals");
+  b.result(result("done", { diff: "-1 old-b\n+1 new-b\n+2 extra" }));
+  a.context.executionStarted = true;
+  a.redraw();
+  assert.equal(plain(a.view), "… Editing 2 files +2 −1 ▸");
+  a.result(result("done", { diff: "-1 old-a\n+1 new-a" }));
+  assert.equal(plain(a.view), "✓ Edited 2 files +3 −2 ▸");
+  const cached = a.view.render(160);
+  assert.equal(a.view.render(160), cached);
+  b.result(result("done", { diff: "-1 old-b\n+1 new-b\n+2 extra" }));
+  assert.equal(plain(a.view), "✓ Edited 2 files +3 −2 ▸", "snapshots are not cumulative");
+
+  const again = f.call("edit", "edits-again", { path: "a.txt" });
+  again.result(result("done", { diff: "-1 old-a\n-2 another" }));
+  assert.equal(plain(a.view), "✓ Edited 2 files +3 −4 ▸", "repeated paths count once");
+  again.context.cwd = join(f.dir, "other-project");
+  again.redraw();
+  assert.equal(plain(a.view), "✓ Edited 3 files +3 −4 ▸", "working directories stay distinct");
+  again.context.cwd = f.dir;
+  again.redraw();
+  b.result(result("done"));
+  again.result(result("done", { diff: "" }));
+  for (const [diff, suffix] of [
+    ["+1 addition", " +1"],
+    ["-1 removal", " −1"],
+    [" 1 unchanged", ""],
+  ]) {
+    a.result(result("done", { diff }));
+    assert.equal(plain(a.view), `✓ Edited 2 files${suffix} ▸`);
+  }
+});
+
+test("edit groups expand into clickable files with independent diffs and global toggles", async () => {
+  const f = await fixture();
+  let opened;
+  f.pi.events.on(OPEN_FILE_EVENT, (request) => {
+    request.accepted = true;
+    opened = request;
+  });
+  const path = "日本語 long edited filename.txt";
+  const a = f.call("edit", "expand-edit-a", { path });
+  a.result(result("done", { diff: "-1 BEFORE_A\n+1 AFTER_A" }));
+  const b = f.call("edit", "expand-edit-b", { path: "b.txt" });
+  b.result(result("done", { diff: "+1 AFTER_B" }));
+  assert.equal(plain(a.view), "✓ Edited 2 files +2 −1 ▸");
+  const header = a.view.render(160)[0];
+  assert(header.includes(paint(themes.theme, "green", "+2")));
+  assert(header.includes(paint(themes.theme, "red", "−1")));
+  a.view.handleMouse(mouse(tui.visibleWidth(plain(a.view)) - 1));
+  assert.equal(
+    plain(a.view),
+    `✓ Edited 2 files +2 −1 ▾\n  ✓ Edited ${path} +1 −1 ▸\n  ✓ Edited b.txt +1 ▸`,
+  );
+  for (const width of [0, 1, 2, 3, 10, 24, 160]) {
+    for (const [i, line] of a.view.render(width).entries()) {
+      assert(tui.visibleWidth(line) <= width);
+      if (width) assert(tui.stripTerminalSequences(line).endsWith(i ? "▸" : "▾"));
+    }
+  }
+  const clipped = a.view.render(24)[1];
+  a.view.invalidate();
+  a.view.handleMouse(mouse(tui.visibleWidth("  ✓ Edited "), 1));
+  assert.deepEqual(opened, { path, cwd: f.dir, tool: "edit", accepted: true });
+  a.view.handleMouse(mouse(tui.visibleWidth(clipped) - 1, 1));
+  assert.match(plain(a.view), /-1 BEFORE_A\n\s*\+1 AFTER_A/);
+  assert(!plain(a.view).includes("AFTER_B"));
+  const c = f.call("edit", "expand-edit-c", { path: "c.txt" });
+  c.result(result("done", { diff: "+1 AFTER_C" }));
+  assert.match(plain(a.view), /Edited 3 files \+3 −1 ▾/);
+  assert(plain(a.view).includes("AFTER_A"), "growing a group preserves its open diffs");
+  assert(!plain(a.view).includes("AFTER_C"));
+  f.expand(true);
+  assert(plain(a.view).includes("AFTER_B") && plain(a.view).includes("AFTER_C"));
+  f.expand(false);
+  assert.equal(plain(a.view), "✓ Edited 3 files +3 −1 ▸");
+});
+
+test("failed edits stay visible in collapsed groups and do not contribute diff totals", async () => {
+  const f = await fixture();
+  const a = f.call("edit", "good-edit", { path: "good.txt" });
+  a.result(result("done", { diff: "-1 before\n+1 after" }));
+  const b = f.call("edit", "failed-edit", { path: "bad.txt" });
+  b.result(result("EDIT_ERROR_BODY", { diff: "+1 NOT_APPLIED" }), true);
+  assert.equal(plain(a.view), "✗ Edited 2 files +1 −1 (1 failed) ▸\n  ✗ Edit bad.txt ▸");
+  assert.equal(plain(b.view), "");
+  a.view.handleMouse(mouse(0, 1));
+  assert(plain(a.view).includes("EDIT_ERROR_BODY"));
+  assert(!plain(a.view).includes("NOT_APPLIED"));
+  f.expand(true);
+  assert(plain(a.view).includes("EDIT_ERROR_BODY") && plain(a.view).includes("-1 before"));
+  f.expand(false);
+  assert(plain(a.view).includes("✗ Edit bad.txt") && !plain(a.view).includes("EDIT_ERROR_BODY"));
 });
 
 test("output padding follows the live host for cached headers, bodies, clicks and images", async (t) => {
@@ -882,7 +1038,7 @@ test("filename resolution matches Pi, including Unicode spaces, URLs, and macOS 
   const row = f.call("read", "missing-opener", args);
   const label = plain(row.view);
   row.view.handleMouse(mouse(label.indexOf(args.path) + 1));
-  assert.match(f.notices.at(-1)[0], /requires vim-files/);
+  assert.match(f.notices.at(-1)[0], /requires inspector/);
 });
 
 test("reload/tree/compaction reconstruct persisted groups, failures, and image boundaries", async () => {
@@ -944,6 +1100,44 @@ test("reload/tree/compaction reconstruct persisted groups, failures, and image b
   }
   await f.rebuild("session_tree");
   assert(!plain(f.call("read", "new-branch", {}).view).includes("2 files"));
+});
+
+test("reload/tree/compaction reconstruct edit groups and reset local expansion", async () => {
+  const f = await fixture();
+  const entries = [
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        content: ["a", "b"].map((id) => ({
+          type: "toolCall",
+          id,
+          name: "edit",
+          arguments: { path: `${id}.txt` },
+        })),
+      },
+    },
+    ...["a", "b"].map((id) => ({
+      type: "message",
+      message: {
+        role: "toolResult",
+        toolCallId: id,
+        toolName: "edit",
+        ...result("done", { diff: `-1 before-${id}\n+1 after-${id}` }),
+        isError: false,
+      },
+    })),
+  ];
+  const before = JSON.stringify(entries);
+  for (const event of ["session_start", "session_tree", "session_compact"]) {
+    await f.rebuild(event, entries);
+    const view = f.call("edit", "a", { path: "a.txt" }).view;
+    assert.equal(plain(view), "✓ Edited 2 files +2 −2 ▸");
+    view.handleMouse(mouse(0));
+    assert(plain(view).includes("Edited a.txt") && plain(view).includes("Edited b.txt"));
+    assert.equal(plain(f.call("edit", "b", { path: "b.txt" }).view), "");
+  }
+  assert.equal(JSON.stringify(entries), before, "grouping is presentation-only");
 });
 
 test("real Pi dialog preserves newer drafts on Vim success, failure and session replacement", async (t) => {
