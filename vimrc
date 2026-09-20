@@ -52,12 +52,10 @@ set expandtab
 set shiftwidth=2
 set softtabstop=2
 set backspace=indent,eol,start
-" set mouse=a
-
-set autoindent
 
 set hidden
 set nowrap
+set autoindent
 set hlsearch
 set belloff=all
 set signcolumn=yes
@@ -66,8 +64,9 @@ set laststatus=0
 set cursorline
 set scrolloff=0
 
+" use newer/faster regex engine automatically
+set regexpengine=0  
 set redrawtime=2000
-set regexpengine=0
 
 let g:netrw_liststyle = 3
 let g:netrw_hide = 1

@@ -142,7 +142,7 @@ path=(
 
 typeset -U path
 
-# editor and colors
+# editor and colors (after setting brew path so we use brew vim)
 export VISUAL="$(which vim)"
 export EDITOR="$VISUAL"
 export CLICOLOR=1
@@ -192,3 +192,4 @@ if command -v jj >/dev/null 2>&1; then source <(COMPLETE=zsh jj); fi
 if command -v fnm >/dev/null 2>&1; then eval "$(fnm env --use-on-cd --version-file-strategy=recursive --shell zsh)"; fi
 if command -v eza >/dev/null 2>&1; then alias ls="eza --icons --group-directories-first --sort oldest"; fi
 if command -v mise >/dev/null 2>&1; then eval "$(mise activate zsh)"; fi
+if command -v just >/dev/null 2>&1; then source <(JUST_COMPLETE=zsh just); fi
