@@ -160,18 +160,6 @@ export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 [ -f "$HOME/.ripgreprc" ] && export RIPGREP_CONFIG_PATH="$HOME/.ripgreprc"
 [ -s "$HOME/.bun/_bun" ] && source "$HOME/.bun/_bun"
 
-# purge dead shells
-fnm-purge() {
-  for d in ~/.local/state/fnm_multishells/*(N); do
-    local pid="${${d:t}%%_*}"
-    if kill -0 "$pid" 2>/dev/null; then
-      ps -p "$pid" -o comm= 2>/dev/null | grep -qE 'zsh|bash|sh' || rm -rf "$d"
-    else
-      rm -rf "$d"
-    fi
-  done
-}
-
 # ssh port forwarding functions
 fip() {
   (( $# < 2 )) && echo "Usage: fip <host> <port1> [port2] ..." && return 1
@@ -194,7 +182,6 @@ lip() {
 }
 
 if command -v jj >/dev/null 2>&1; then source <(COMPLETE=zsh jj); fi
-if command -v fnm >/dev/null 2>&1; then eval "$(fnm env --use-on-cd --version-file-strategy=recursive --shell zsh)"; fi
 if command -v eza >/dev/null 2>&1; then alias ls="eza --icons --group-directories-first --sort oldest"; fi
 if command -v mise >/dev/null 2>&1; then eval "$(mise activate zsh)"; source <(mise completion zsh); fi
 if command -v just >/dev/null 2>&1; then source <(JUST_COMPLETE=zsh just); fi

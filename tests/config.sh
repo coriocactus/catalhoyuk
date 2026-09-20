@@ -286,10 +286,40 @@ zsh_tools() {
     # These tools are only visible after zshrc establishes its paths.
     printf '%s\n' '#!/bin/sh' 'printf "%s\n" "typeset -g FZF_LOADED=1"' > "$BREW_PREFIX/bin/fzf"
     local tool
-    for tool in fnm mise just; do
+    for tool in mise just; do
         printf '%s\n' '#!/bin/sh' 'exit 0' > "$BREW_PREFIX/bin/$tool"
     done
+    # A leftover fnm installation must never be initialized.
+    printf '%s\n' '#!/bin/sh' 'printf "fnm invoked\n" >> "$CALLS"' 'exit 99' > "$BREW_PREFIX/bin/fnm"
     chmod +x "$BREW_PREFIX/bin/"{fzf,fnm,mise,just}
+}
+
+zsh_runtime_manager() {
+    zsh_tools
+    export MISE_CALLS="$case_dir/mise-calls" RUNTIME_BIN="$case_dir/mise node/bin"
+    mkdir -p "$RUNTIME_BIN"
+    printf '%s\n' '#!/bin/sh' 'exit 0' > "$RUNTIME_BIN/node"
+    cp "$RUNTIME_BIN/node" "$BREW_PREFIX/bin/node"
+    chmod +x "$RUNTIME_BIN/node" "$BREW_PREFIX/bin/node"
+    printf '%s\n' '#!/bin/sh' \
+        'printf "%s\n" "$*" >> "$MISE_CALLS"' \
+        'case "$*" in' \
+        '  "activate zsh") printf '\''path=("$RUNTIME_BIN" $path)\n'\'' ;;' \
+        '  "completion zsh") printf "typeset -g MISE_COMPLETION_LOADED=1\n" ;;' \
+        '  *) exit 99 ;;' \
+        'esac' > "$BREW_PREFIX/bin/mise"
+    printf '%s\n' \
+        'source "$HOME/.zshrc"' \
+        '[[ ${commands[node]} == "$RUNTIME_BIN/node" ]] || exit 11' \
+        '[[ ${MISE_COMPLETION_LOADED:-} == 1 ]] || exit 12' \
+        '(( ! $+functions[fnm-purge] )) || exit 13' \
+        'source "$HOME/.zshrc"' \
+        '[[ ${commands[node]} == "$RUNTIME_BIN/node" ]] || exit 14' \
+        > "$case_dir/runtime.zsh"
+    "$zsh_binary" -f -i "$case_dir/runtime.zsh" > "$output" 2>&1
+    absent "$CALLS"
+    printf '%s\n' 'activate zsh' 'completion zsh' 'activate zsh' 'completion zsh' > "$case_dir/expected"
+    cmp "$case_dir/expected" "$MISE_CALLS" || fail 'mise activation or completion was not initialized correctly'
 }
 
 zsh_reload() {
@@ -379,6 +409,7 @@ for kind in diff hook; do run_test "jj prek propagates $kind failure and cleans 
 run_test 'jj prek leaves hook fixes in @ and never rewrites @-' jj_fixes
 for colour in green red blue; do run_test "tmux $colour loads common settings and Homebrew Zsh" tmux_profile "$colour" brew; done
 for mode in default-xdg no-zsh failed-brew no-path standard-prefix startup; do run_test "tmux Homebrew discovery: $mode" tmux_profile blue "$mode"; done
+run_test 'Zsh uses mise ahead of Homebrew runtimes and never initializes leftover fnm' zsh_runtime_manager
 run_test 'Zsh reload is idempotent, preserves hooks, and discovers tools before initialization' zsh_reload
 run_test 'BRANCH and BOOKMARK track real repositories, prompts, directory changes, and reloads' zsh_vcs_variables
 printf '\nAll %s configuration tests passed.\n' "$test_count"
