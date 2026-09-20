@@ -2,6 +2,7 @@ tap "hashicorp/tap", trusted: true
 tap "oven-sh/bun", trusted: true
 
 brew "zsh"
+brew "stow"
 brew "tmux"
 brew "vim"
 brew "btop"
