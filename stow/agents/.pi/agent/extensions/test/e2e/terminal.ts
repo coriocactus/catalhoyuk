@@ -302,20 +302,32 @@ try {
   assert.equal(renderedArchive().size, 0, "archived messages are not rendered eagerly");
   const beforeEcho = readFileSync(fixture, "utf8");
   writeFileSync(join(snippets, "review.md"), "ECHO_EDITOR_DRAFT\nLiteral $1 stays\n");
-  terminal.send("/echo re");
+  writeFileSync(join(snippets, "plan.md"), "ECHO_PLAN\n");
+  terminal.send("ECHO_AFTER\x01ECHO_BEFORE @@rev");
   await terminal.waitFor(
-    (s) => s.includes("/echo re") && s.includes("review"),
-    "snippet argument completion",
+    (s) => s.includes("@@rev") && s.includes("→ review"),
+    "inline snippet completion inside a draft",
   );
   terminal.send("\t");
-  await terminal.waitFor((s) => s.includes("/echo review"), "accept snippet completion");
+  await terminal.waitFor(
+    (s) => s.includes("ECHO_BEFORE ECHO_EDITOR_DRAFT") && s.includes("ECHO_AFTER"),
+    "first inline snippet preserves surrounding draft",
+  );
+  terminal.send("@@pl");
+  await terminal.waitFor((s) => s.includes("→ plan"), "second inline snippet completion");
   terminal.send("\r");
   await terminal.waitFor(
-    (s) => s.includes("ECHO_EDITOR_DRAFT") && s.includes("Literal $1 stays"),
-    "load current snippet contents into editor",
+    (s) => s.includes("ECHO_PLAN") && !s.includes("@@pl"),
+    "Enter inserts a second snippet without submitting",
   );
-  terminal.send("\x03");
-  await terminal.waitFor((s) => !s.includes("ECHO_EDITOR_DRAFT"), "clear unsent snippet draft");
+  terminal.send("ECHO_CURSOR ");
+  await terminal.waitFor(
+    (s) => s.includes("ECHO_CURSOR ECHO_AFTER") && s.includes("Literal $1 stays"),
+    "cursor follows the inserted snippets, before the original suffix",
+  );
+  // Clear all four lines without arming Pi's double-Ctrl+C exit.
+  terminal.send(`\x05${"\x15".repeat(7)}`);
+  await terminal.waitFor((s) => !s.includes("ECHO_EDITOR_DRAFT"), "clear combined unsent draft");
   assert.equal(readFileSync(fixture, "utf8"), beforeEcho, "echo never submits to the model");
   terminal.send("Run the fixture\r");
   let screen = await terminal.waitFor(
@@ -668,11 +680,17 @@ try {
   await owners("FORK");
   await replace("reload", "reload");
   await owners("RELOAD");
+  terminal.send("@@pl");
+  await terminal.waitFor((s) => s.includes("→ plan"), "inline snippets after reload");
+  terminal.send("\t");
+  await terminal.waitFor((s) => s.includes("ECHO_PLAN"), "inline insertion after reload");
+  terminal.send("\x15\x15");
+  await terminal.waitFor((s) => !s.includes("ECHO_PLAN"), "clear reloaded snippet draft");
   await replace("fixture-disable-history", "reload");
   await owners("DISABLED", 0);
   terminal.save();
   console.log(
-    `PASS: xterm.js VT + real Pi/Vim; snippet autocomplete/loading without submission, groups, output padding, Unicode clicks, colours/underlines, interrupt hint without layout shifts, gated background work, newer/replacement drafts, saves, images, errors, Ctrl+O, resize, new/resume/fork/reload ownership and disable cleanup, bounded top paging/anchors, archived Vim/images, unchanged context. Pi idle CPU ${cpu.toFixed(2)}s/2s. Artifacts: ${root}`,
+    `PASS: xterm.js VT + real Pi/Vim; inline snippet composition without submission, groups, output padding, Unicode clicks, colours/underlines, interrupt hint without layout shifts, gated background work, newer/replacement drafts, saves, images, errors, Ctrl+O, resize, new/resume/fork/reload ownership and disable cleanup, bounded top paging/anchors, archived Vim/images, unchanged context. Pi idle CPU ${cpu.toFixed(2)}s/2s. Artifacts: ${root}`,
   );
 } catch (error) {
   running?.save();

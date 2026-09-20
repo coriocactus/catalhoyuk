@@ -4,7 +4,7 @@
 - `mirage`: grouped tool rows, collapsible output/images, configurable colours.
 - `inspector`: same-terminal filename opening, including while Pi is working.
 - `interupt`: first Esc arms interruption; second within 1.5s stops the running response.
-- `echo`: `/echo <name>` completes Markdown snippets and loads them into the editor.
+- `echo`: `@@name` inserts Markdown snippets at the cursor.
 - `shared`: filename and read-only transcript presentation protocols.
 
 ## After upgrading Pi
