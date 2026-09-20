@@ -14,12 +14,10 @@
   "defaultModel": "gpt-6-astra",
   "defaultThinkingLevel": "xhigh",
   "enabledModels": [
-    "gpt-6-astra",
-    "gpt-6-sol"
+    "gpt-6-astra"
   ],
   "modelThinkingLevels": {
-    "gpt-6-astra": "xhigh",
-    "gpt-6-sol": "xhigh"
+    "gpt-6-astra": "xhigh"
   },
   "packages": [
     "npm:pi-web-access",

@@ -6,7 +6,7 @@
     "check": "biome check . --error-on-warnings",
     "format": "biome format --write .",
     "typecheck": "node mirage/tests/typecheck.mjs",
-    "test": "node mirage/tests/run.mjs && node rearview/tests/run.mjs",
+    "test": "node mirage/tests/run.mjs && node rearview/tests/run.mjs && node interupt/tests/run.mjs",
     "test:terminal": "node mirage/tests/terminal.mjs",
     "verify": "npm run check && npm run typecheck && npm test && npm run test:terminal"
   },

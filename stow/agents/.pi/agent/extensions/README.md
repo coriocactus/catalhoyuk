@@ -3,13 +3,15 @@
 - `rearview`: recent rows first; prepend older batches on reaching the top.
 - `mirage`: grouped tool rows, collapsible output/images, configurable colours.
 - `inspector`: same-terminal filename opening, including while Pi is working.
+- `interupt`: first Esc arms interruption; second within 1.5s stops the running response.
 - `shared`: filename and read-only transcript presentation protocols.
 
 ## After upgrading Pi
 
 1. Upgrade normally and **restart Pi** (not just `/reload`).
-2. Run `cd ~/.pi/agent/extensions && npm run verify`.
-3. If it fails, give Pi the failure output and printed artifact paths, fix it, and rerun.
+2. Check whether Pi now covers any extension features; prefer native support.
+3. Run `cd ~/.pi/agent/extensions && npm run verify`.
+4. If it fails, give Pi the failure output and printed artifact paths, fix it, and rerun.
 
 There is no version allowlist or approval step. Adapters check the APIs they use
 and retain patch-ownership checks. Detected layout changes fall back to the native
