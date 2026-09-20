@@ -1,0 +1,10 @@
+{
+  "alwaysOn": true,
+  "simpleMode": true,
+  "contextMaxChars": 9007199254740991,
+  "advisorModelWhitelist": [],
+  "advisorOutcomeLogging": false,
+  "advisor": "openai-codex/gpt-6-astra",
+  "advisorEffort": "max",
+  "executor": "openai-codex/gpt-6-astra"
+}
