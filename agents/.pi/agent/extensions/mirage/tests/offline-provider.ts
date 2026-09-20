@@ -31,12 +31,12 @@ export default function (pi: ExtensionAPI) {
     description: "Inspect runtime adapter ownership in the isolated test",
     handler: async (label, ctx) => {
       const host = InteractiveMode.prototype;
-      const history = Reflect.get(host, Symbol.for("pi-local.fullscreen-history.v1"));
+      const history = Reflect.get(host, Symbol.for("rearview.patch.v1"));
       const images = Reflect.get(
         ToolExecutionComponent.prototype,
-        Symbol.for("tool-display.native-images.patch.v1"),
+        Symbol.for("mirage.native-images.patch.v1"),
       );
-      const padding = Reflect.get(host, Symbol.for("tool-display.native-padding.patch.v1"));
+      const padding = Reflect.get(host, Symbol.for("mirage.native-padding.patch.v1"));
       const restored =
         Reflect.get(host, "renderSessionEntries") ===
         Reflect.get(host, Symbol.for("fixture.original-history"));
@@ -144,7 +144,7 @@ export default function (pi: ExtensionAPI) {
             .filter((message) => message.role === "toolResult")
             .map((message) => message.toolCallId),
         );
-        if (completed.has("live-5")) {
+        if (completed.has("live-6")) {
           output.content.push({ type: "text", text: "BACKGROUND_FINISHED" });
           stream.push({ type: "text_start", contentIndex: 0, partial: structuredClone(output) });
           stream.push({
@@ -178,6 +178,13 @@ export default function (pi: ExtensionAPI) {
               },
             },
             {
+              name: "edit",
+              arguments: {
+                path: join(root, "edited-other.txt"),
+                edits: [{ oldText: "before-second", newText: "after-second\nextra" }],
+              },
+            },
+            {
               name: "bash",
               arguments: {
                 command:
@@ -191,7 +198,7 @@ export default function (pi: ExtensionAPI) {
           ];
           // Reads arrive in separate tool-only turns to exercise cross-turn grouping.
           const indices = completed.has("live-1")
-            ? [2, 3, 4, 5]
+            ? [2, 3, 4, 5, 6]
             : completed.has("live-0")
               ? [1]
               : [0];

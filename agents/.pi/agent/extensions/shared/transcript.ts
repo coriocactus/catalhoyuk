@@ -1,7 +1,7 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 
 /** Synchronous presentation-only notification before Pi reconstructs live rows. */
-export const TRANSCRIPT_VIEW = "pi-local:transcript-view";
+export const TRANSCRIPT_VIEW = "rearview:transcript-view";
 export interface TranscriptView {
   sessionId: string;
   cwd: string;

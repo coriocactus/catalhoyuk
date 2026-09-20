@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { getPackageDir } from "@earendil-works/pi-coding-agent";
-import type { FileReference } from "../file-tools-shared/protocol.ts";
+import type { FileReference } from "../shared/protocol.ts";
 
 interface PiPathResolvers {
   resolveToCwd(path: string, cwd: string): string;

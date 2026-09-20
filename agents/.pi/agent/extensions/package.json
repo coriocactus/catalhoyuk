@@ -1,13 +1,13 @@
 {
-  "name": "pi-local-extensions",
+  "name": "pi-catalhoyuk",
   "private": true,
   "type": "module",
   "scripts": {
     "check": "biome check . --error-on-warnings",
     "format": "biome format --write .",
-    "typecheck": "node tool-display/tests/typecheck.mjs",
-    "test": "node tool-display/tests/run.mjs && node fullscreen-history/tests/run.mjs",
-    "test:terminal": "node tool-display/tests/terminal.mjs",
+    "typecheck": "node mirage/tests/typecheck.mjs",
+    "test": "node mirage/tests/run.mjs && node rearview/tests/run.mjs",
+    "test:terminal": "node mirage/tests/terminal.mjs",
     "verify": "npm run check && npm run typecheck && npm test && npm run test:terminal"
   },
   "devDependencies": {

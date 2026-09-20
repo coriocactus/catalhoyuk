@@ -13,21 +13,9 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
-import {
-  HISTORY_PAGE,
-  type HistoryPage,
-  type HistoryRenderState,
-} from "../file-tools-shared/history.ts";
-import {
-  type FileReference,
-  OPEN_FILE_EVENT,
-  type OpenFileRequest,
-} from "../file-tools-shared/protocol.ts";
-import {
-  isTranscriptView,
-  TRANSCRIPT_VIEW,
-  type TranscriptView,
-} from "../file-tools-shared/transcript.ts";
+import { HISTORY_PAGE, type HistoryPage, type HistoryRenderState } from "../shared/history.ts";
+import { type FileReference, OPEN_FILE_EVENT, type OpenFileRequest } from "../shared/protocol.ts";
+import { isTranscriptView, TRANSCRIPT_VIEW, type TranscriptView } from "../shared/transcript.ts";
 import { ToolGroups, type ToolName } from "./model.ts";
 import { installNativeImageSlot, ownImageRendering, renderNativeImages } from "./native-images.ts";
 import { installNativeOutputPadding, outputPadding, ownOutputPadding } from "./native-padding.ts";
@@ -61,7 +49,7 @@ export default function (pi: ExtensionAPI) {
       for (const message of warnings.splice(0)) sessionContext.ui.notify(message, "warning");
   };
   const report = (error: Error) => {
-    warnings.push(`Tool display: ${error.message}`);
+    warnings.push(`Mirage: ${error.message}`);
     queueMicrotask(flushWarnings); // Never add UI messages in the middle of a render.
   };
   let releaseRendering: (() => void) | undefined = installNativeRendering(report);
@@ -168,7 +156,7 @@ export default function (pi: ExtensionAPI) {
     pi.events.emit(OPEN_FILE_EVENT, request);
     if (!request.accepted)
       sessionContext?.ui.notify(
-        "Filename opening requires vim-files. Enable it and run /reload.",
+        "Filename opening requires inspector. Enable it and run /reload.",
         "warning",
       );
   }

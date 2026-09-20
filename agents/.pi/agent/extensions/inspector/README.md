@@ -1,4 +1,4 @@
-# Vim file clicks
+# Inspector
 
 Plain-click a tool filename to open Vim in the same terminal. Exit with `:q`, or
 save and exit with `:wq`, to return to Pi with the **latest** draft preserved,
@@ -10,7 +10,7 @@ Pi keeps working in the background. Avoid saving a file that Pi is also changing
 Uses `$VISUAL`, then `$EDITOR`, then `vim`; the value must be an executable path,
 not a shell command. Opens existing regular files only, with asynchronous checks.
 
-`tool-display` supplies fullscreen filename clicks through `file-tools-shared`.
+`mirage` supplies fullscreen filename clicks through `shared`.
 This extension owns only file resolution, the editor process, and terminal handoff.
 `paths.ts` isolates the dependency on Pi's installed path resolver, including Unicode 
 and macOS filename rules.

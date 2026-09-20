@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
-import type { FileReference, FileToolName } from "../file-tools-shared/protocol.ts";
+import type { FileReference, FileToolName } from "../shared/protocol.ts";
 
 export type ToolName = FileToolName | "bash";
 export type ToolArgs = Readonly<Record<string, unknown>>;
@@ -43,7 +43,7 @@ function canJoin(group: ToolGroup | undefined, name: ToolName): group is ToolGro
   return (
     !!group &&
     group.name === name &&
-    (name === "read" || name === "bash") &&
+    (name === "read" || name === "bash" || name === "edit") &&
     !group.rows.some((row) => row.hasImages)
   );
 }

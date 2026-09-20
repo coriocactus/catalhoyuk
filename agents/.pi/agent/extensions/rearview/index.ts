@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { TRANSCRIPT_VIEW } from "../file-tools-shared/transcript.ts";
+import { TRANSCRIPT_VIEW } from "../shared/transcript.ts";
 import { PAGE_SIZE } from "./model.ts";
 import { installHistoryAdapter } from "./native.ts";
 
@@ -10,7 +10,7 @@ export default function (pi: ExtensionAPI) {
   const warnings: string[] = [];
   const adapter = installHistoryAdapter(
     (error) => {
-      const message = `Fullscreen history: ${error instanceof Error ? error.message : String(error)}`;
+      const message = `Rearview: ${error instanceof Error ? error.message : String(error)}`;
       if (context?.mode === "tui") context.ui.notify(message, "error");
       else warnings.push(message);
     },

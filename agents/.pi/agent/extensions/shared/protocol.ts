@@ -1,7 +1,7 @@
 import { isAbsolute } from "node:path";
 
 // This directory has no extension entry point; both extensions import this contract.
-export const OPEN_FILE_EVENT = "vim-files:open";
+export const OPEN_FILE_EVENT = "inspector:open";
 export type FileToolName = "read" | "edit" | "write";
 
 export interface FileReference {

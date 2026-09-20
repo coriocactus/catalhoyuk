@@ -1,9 +1,9 @@
-# Local Pi extensions
+# pi-catalhoyuk
 
-- `fullscreen-history`: recent rows first; prepend older batches on reaching the top.
-- `tool-display`: grouped tool rows, collapsible output/images, configurable colours.
-- `vim-files`: same-terminal filename opening, including while Pi is working.
-- `file-tools-shared`: filename and read-only transcript presentation protocols.
+- `rearview`: recent rows first; prepend older batches on reaching the top.
+- `mirage`: grouped tool rows, collapsible output/images, configurable colours.
+- `inspector`: same-terminal filename opening, including while Pi is working.
+- `shared`: filename and read-only transcript presentation protocols.
 
 ## After upgrading Pi
 
