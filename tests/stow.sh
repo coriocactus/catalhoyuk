@@ -41,7 +41,7 @@ copy_checkout() {
     mkdir -p "$checkout/bin" "$checkout/stow/agents/.agents/skills" "$checkout/stow/agents/.pi/agent/extensions"
     cp "$repo_root/bin/stow" "$checkout/bin/"
     cp -R "$repo_root/stow/home" "$repo_root/stow/xdg" "$repo_root/stow/vim-ssh" "$repo_root"/stow/tmux-* "$checkout/stow/"
-    cp "$repo_root/stow/agents/.pi/agent/settings.json" "$checkout/stow/agents/.pi/agent/"
+    cp "$repo_root/stow/agents/.pi/agent/"{settings,advisor}.json "$checkout/stow/agents/.pi/agent/"
     printf 'stub\n' > "$checkout/stow/agents/.pi/agent/extensions/index.ts"
     printf '{}\n' > "$checkout/stow/agents/skills-lock.json"
 }
@@ -61,6 +61,7 @@ default_install() {
     linked "$HOME/.tmux.conf" "$checkout/stow/tmux-green/.tmux.conf"
     linked "$HOME/.agents" "$checkout/stow/agents/.agents"
     linked "$HOME/.pi/agent/settings.json" "$checkout/stow/agents/.pi/agent/settings.json"
+    linked "$HOME/.pi/agent/advisor.json" "$checkout/stow/agents/.pi/agent/advisor.json"
     linked "$HOME/.pi/agent/extensions" "$checkout/stow/agents/.pi/agent/extensions"
     [ -d "$HOME/.pi/agent" ] && [ ! -L "$HOME/.pi" ] && [ ! -L "$HOME/.pi/agent" ] || fail '~/.pi must stay a real directory'
     [ -d "$HOME/.local/bin" ] && [ ! -L "$HOME/.local/bin" ] || fail '~/.local/bin must stay a real directory'
@@ -143,6 +144,7 @@ delete() {
     absent "$HOME/.vimrc-ssh"
     absent "$HOME/.agents"
     absent "$HOME/.pi/agent/settings.json"
+    absent "$HOME/.pi/agent/advisor.json"
     absent "$XDG_CONFIG_HOME/tmux/common.conf"
     [ -f "$XDG_CONFIG_HOME/repo4/identities.conf" ] || fail 'private profiles were removed'
     [ -d "$HOME/.pi/agent/sessions" ] || fail 'Pi state was removed'

@@ -4,12 +4,12 @@ set -euo pipefail
 cd -- "${JJ_WORKSPACE_ROOT:-$(jj --no-pager root)}"
 
 die() { printf 'jj prek: %s\n' "$*" >&2; exit 1; }
-snapshot() {
+clean_working_copy_id() {
     jj --no-pager --color=never log --no-graph -r @ -T \
         'if(empty && parents.len() == 1 && !conflict, commit_id)'
 }
-unchanged() {
-    [ "$(snapshot)" = "$before" ] && return 0
+check_working_copy_unchanged() {
+    [ "$(clean_working_copy_id)" = "$initial_working_copy_id" ] && return 0
     printf '%s\n' 'jj prek: Working copy changed. Review fixes, jj squash, then rerun jj prek.' >&2
     return 1
 }
@@ -17,7 +17,7 @@ run_hooks() {
     local status=0
     prek run "$@" || status=$?
     # Report fixes even on failure, without masking the hook's exit code.
-    if ! unchanged && [ "$status" -eq 0 ]; then status=1; fi
+    if ! check_working_copy_unchanged && [ "$status" -eq 0 ]; then status=1; fi
     return "$status"
 }
 
@@ -25,8 +25,8 @@ revision=@-
 if [ "$#" -eq 0 ]; then
     [ -z "${SKIP:-}${PREK_SKIP:-}" ] || die 'Unset SKIP and PREK_SKIP for a full run; use jj prek [OPTIONS] for checks only.'
     [ -d .git ] || die 'A full run requires a colocated Git repository with a .git directory.'
-    before=$(snapshot)
-    [ -n "$before" ] || die 'A full run requires an empty, conflict-free @ with one parent. Review and squash your changes first.'
+    initial_working_copy_id=$(clean_working_copy_id)
+    [ -n "$initial_working_copy_id" ] || die 'A full run requires an empty, conflict-free @ with one parent. Review and squash your changes first.'
     revision=$(jj --no-pager --color=never log --no-graph -r @- -T commit_id)
 else
     printf '%s\n' 'jj prek: Checks only; commit-msg hooks will not run.' >&2
@@ -39,20 +39,20 @@ trap 'rm -f -- "$list"; if [ -n "$message" ]; then rm -f -- "$message"; fi' EXIT
 jj --no-pager --color=never diff -r "$revision" --template \
     'if(status != "removed", "./" ++ path ++ "\0")' > "$list"
 # Keep --files even for an empty selection, so always_run hooks still execute.
-files=(--files)
+file_args=(--files)
 while IFS= read -r -d '' file; do
     if [ -e "$file" ] || [ -L "$file" ]; then
-        files+=("$file")
+        file_args+=("$file")
     elif [ "$#" -eq 0 ]; then
         die "Changed file is missing: $file. Restore it before a full run."
     fi
 done < "$list"
 if [ "$#" -gt 0 ]; then
-    if [ "${#files[@]}" -eq 1 ]; then
+    if [ "${#file_args[@]}" -eq 1 ]; then
         printf '%s\n' 'No changed files to check.'
         exit 0
     fi
-    prek run "$@" "${files[@]}"
+    prek run "$@" "${file_args[@]}"
     exit 0
 fi
 
@@ -60,8 +60,8 @@ fi
 message=$(mktemp .git/jj-prek.XXXXXX)
 jj --no-pager --color=never log --no-graph -r "$revision" -T description > "$message"
 [ -s "$message" ] || die 'Describe @- before running jj prek.'
-unchanged
-run_hooks --stage pre-commit "${files[@]}"
+check_working_copy_unchanged
+run_hooks --stage pre-commit "${file_args[@]}"
 # --all-files avoids Git's index/stash machinery; commit-msg still receives only the message file.
 run_hooks --stage commit-msg --all-files --commit-msg-filename "$message"
 jj --no-pager describe -r "$revision" --stdin < "$message"

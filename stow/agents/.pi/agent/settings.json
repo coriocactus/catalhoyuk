@@ -14,15 +14,22 @@
   "defaultModel": "gpt-6-astra",
   "defaultThinkingLevel": "xhigh",
   "enabledModels": [
-    "gpt-6-astra"
+    "gpt-6-astra",
+    "claude-fable-5-1",
+    "claude-opus-5-5"
   ],
   "modelThinkingLevels": {
-    "gpt-6-astra": "xhigh"
+    "gpt-6-astra": "xhigh",
+    "claude-fable-5-1": "xhigh",
+    "claude-opus-5-5": "xhigh"
+  },
+  "warnings": {
+    "anthropicExtraUsage": false
   },
   "packages": [
     "npm:pi-web-access",
-    "npm:@plannotator/pi-extension",
+    "npm:pi-advisor-flow",
     "npm:@narumitw/pi-btw",
-    "npm:@upstash/context7-pi"
+    "npm:@gotgenes/pi-anthropic-auth"
   ]
 }
