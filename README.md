@@ -48,6 +48,25 @@ the checkout (drop `-print`, add `-delete` to remove, then rerun `./bin/stow`):
 find ~ -maxdepth 3 -type l -lname '*/catalhoyuk/*' ! -exec test -e {} \; -print 2>/dev/null
 ```
 
+## Node, Bun, Yarn
+
+Homebrew provides the global `node`, `npm`, `bun`, and `yarn`; global npm CLIs
+are installed from `~` with Homebrew's npm. [mise](https://mise.jdx.dev) overrides
+them per project: Zsh activates it, and on `cd` it selects the version the project
+declares, falling back to Homebrew elsewhere. `stow/xdg/mise/config.toml` pins
+nothing globally; it only lets Node, Bun, and Yarn read `.nvmrc`, `.node-version`,
+`.bun-version`, `.yvmrc`, and `package.json` (`devEngines`, `packageManager`).
+`mise.toml` and `.tool-versions` always apply.
+
+```sh
+mise install                    # install what the project declares
+mise use --pin node@24 yarn@1   # declare versions in a project
+mise exec -- COMMAND            # non-interactive shells
+```
+
+mise ignores `engines` in `package.json`: it is a compatibility range, not a
+version to develop with. In such a project, `mise use node@24` writes a `mise.toml`.
+
 ## repo4
 
 Repository identity switcher for Git and JJ. Requires Zsh and Git; JJ for JJ repositories.
