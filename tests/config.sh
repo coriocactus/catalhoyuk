@@ -11,6 +11,7 @@ tmux_binary=$(type -P tmux)
 stow_binary=$(type -P stow)
 zsh_binary=$(type -P zsh)
 jj_binary=$(type -P jj)
+prek_binary=$(type -P prek)
 
 fail() {
     local details=
@@ -28,7 +29,9 @@ setup() {
     export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$case_dir/gitconfig" JJ_CONFIG="$case_dir/jjconfig"
     unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_CONFIG GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
     unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL EMAIL JJ_USER JJ_EMAIL JJ_WORKSPACE_ROOT
-    unset TMUX HOMEBREW_PREFIX
+    unset TMUX HOMEBREW_PREFIX SKIP PREK_SKIP
+    unset PREK_STATUS PREK_MESSAGE_STATUS PREK_FIX_FILE PREK_FIX_STAGE PREK_REWRITE_STAGE PREK_NO_TRAILER
+    export PREK_HOME="$case_dir/prek-cache"
     export SHELL=/bin/sh TERM=xterm-256color TMUX_TMPDIR="$case_dir/tmux-tmp"
     export CALLS="$case_dir/calls" INSTALL_LOG="$case_dir/install-log" BREW_PREFIX="$case_dir/brew prefix"
     mkdir -p "$HOME" "$TMPDIR" "$case_dir/bin" "$BREW_PREFIX/bin" "$TMUX_TMPDIR"
@@ -155,10 +158,7 @@ vim_bootstrap() {
 new_jj() {
     "$jj_binary" --no-pager git init --colocate "$case_dir/repo" > "$output" 2>&1
     cd "$case_dir/repo"
-    printf '%s\n' '#!/bin/sh' 'printf "%s\0" "$@" > "$CALLS"' \
-        'pwd -P > "$CALLS.cwd"' \
-        'if [ -n "${PREK_FIX_FILE:-}" ]; then printf "fixed\n" > "$PREK_FIX_FILE"; fi' \
-        'exit "${PREK_STATUS:-0}"' > "$case_dir/bin/prek"
+    cp "$repo_root/tests/fixtures/prek" "$case_dir/bin/prek"
     chmod +x "$case_dir/bin/prek"
 }
 jj_paths() {
@@ -183,8 +183,9 @@ jj_paths() {
     done
     # -R must use the selected workspace, not the caller's current directory.
     cd "$case_dir"
-    jj --no-pager -R "$case_dir/repo" prek > "$output" 2>&1
+    jj --no-pager -R "$case_dir/repo" prek --verbose > "$output" 2>&1
     [ "$(< "$CALLS.cwd")" = "$(cd repo && pwd -P)" ] || fail '-R selected the wrong workspace'
+    absent "$CALLS.message-args"
 }
 jj_empty() {
     new_jj
@@ -200,38 +201,190 @@ jj_empty() {
     else
         printf 'not selected\n' > only-in-working-copy.py
     fi
-    jj --no-pager prek > "$output" 2>&1
+    jj --no-pager prek --verbose > "$output" 2>&1
     absent "$CALLS"
+    absent "$CALLS.message-args"
     grep -F 'No changed files' "$output" >/dev/null || fail 'empty selection was not reported'
+    grep -F 'Checks only; commit-msg hooks will not run.' "$output" >/dev/null || fail 'empty check-only run was not identified'
 }
 jj_failure() {
     new_jj
     printf 'changed\n' > changed.py
-    jj --no-pager new > "$output" 2>&1
+    jj --no-pager commit -m 'fix: changed file' > "$output" 2>&1
     if [ "$1" = diff ]; then
         printf '%s\n' '#!/bin/sh' 'printf "./partial.py\0"' 'exit 42' > "$case_dir/bin/jj"
         chmod +x "$case_dir/bin/jj"
-        if JJ_WORKSPACE_ROOT="$PWD" jj-prek > "$output" 2>&1; then fail 'failed diff was accepted'; fi
+        if JJ_WORKSPACE_ROOT="$PWD" jj-prek --verbose > "$output" 2>&1; then fail 'failed diff was accepted'; fi
         absent "$CALLS"
     else
         local rc=0
         PREK_STATUS=42 jj --no-pager prek > "$output" 2>&1 || rc=$?
         [ "$rc" -eq 42 ] || fail "hook failure status changed: $rc"
+        if grep -F 'Review fixes' "$output" >/dev/null; then fail 'unchanged files prompted a squash'; fi
     fi
-    [ -z "$(find "$TMPDIR" -name 'jj-prek.*' -print)" ] || fail 'filename spool leaked'
+    absent "$CALLS.message-args"
+    jj_no_temps
 }
 
+jj_no_temps() {
+    [ -z "$(find "$TMPDIR" .git -name 'jj-prek.*' -print)" ] || fail 'jj prek temporary files leaked'
+}
 jj_fixes() {
     new_jj
     printf 'unformatted\n' > target.py
-    jj --no-pager new > "$output" 2>&1
-    local parent rc=0
+    jj --no-pager commit -m 'fix: format target' > "$output" 2>&1
+    local parent rc=0 pre_status=0 message_status=0 expected=1
+    if [ "$1" = pre-commit ]; then pre_status=$2; else message_status=$2; fi
+    if [ "$2" -ne 0 ]; then expected=$2; fi
     parent=$(jj --no-pager log --no-graph -r @- -T commit_id)
-    PREK_FIX_FILE=target.py PREK_STATUS=1 jj --no-pager prek > "$output" 2>&1 || rc=$?
-    [ "$rc" -eq 1 ] || fail 'formatting failure was not propagated'
+    PREK_FIX_FILE=target.py PREK_FIX_STAGE="$1" PREK_STATUS="$pre_status" PREK_MESSAGE_STATUS="$message_status" \
+        jj --no-pager prek > "$output" 2>&1 || rc=$?
+    [ "$rc" -eq "$expected" ] || fail "wrong status for hook fixes: $rc (expected $expected)"
+    grep -F 'Review fixes, jj squash, then rerun jj prek.' "$output" >/dev/null || fail 'hook fixes lacked recovery guidance'
+    if [ "$1" = pre-commit ]; then absent "$CALLS.message-args"; fi
     [ "$(< target.py)" = fixed ] || fail 'hooks did not modify the working copy'
     [ "$(jj --no-pager log --no-graph -r @- -T commit_id)" = "$parent" ] || fail 'hooks rewrote @-'
     [ "$(jj --no-pager diff -r @ --template path)" = target.py ] || fail 'fixes are not visible in @ for manual squash'
+    jj_no_temps
+    # The explicit squash-and-rerun workflow must then succeed.
+    jj --no-pager squash > "$output" 2>&1
+    jj --no-pager prek >> "$output" 2>&1
+    jj --no-pager log --no-graph -r @- -T description | grep -q 'Signed-off-by: fixture commit-msg' || fail 'rerun did not sign off'
+    jj_no_temps
+}
+
+jj_full_run() {
+    new_jj
+    printf 'changed\n' > target.py
+    local description=$'feat: check target\n\nKeep this body.\n\nCo-authored-by: Other <other@example.invalid>'
+    jj --no-pager commit -m "$description" > "$output" 2>&1
+    jj --no-pager bookmark create checked -r @- >> "$output" 2>&1
+    local parent
+    parent=$(jj --no-pager log --no-graph -r @- -T commit_id)
+    cd "$case_dir"
+    jj --no-pager -R "$case_dir/repo" prek > "$output" 2>&1
+    cd "$case_dir/repo"
+    if grep -F 'Checks only' "$output" >/dev/null; then fail 'full run was labelled check-only'; fi
+    printf '%s\n' pre-commit commit-msg > "$case_dir/expected"
+    cmp "$case_dir/expected" "$CALLS.stages" || fail 'stages did not run in order'
+    printf '%s\0' run --stage pre-commit --files ./target.py > "$case_dir/expected"
+    cmp "$case_dir/expected" "$CALLS" || fail 'wrong pre-commit arguments'
+    printf '%s\0' run --stage commit-msg --all-files --commit-msg-filename "$(< "$CALLS.message-path")" > "$case_dir/expected"
+    cmp "$case_dir/expected" "$CALLS.message-args" || fail 'wrong commit-msg arguments'
+    [ "$(< "$CALLS.message-before")" = "$description" ] || fail 'description changed before hooks'
+    [ "$(jj --no-pager log --no-graph -r @- -T description)" = "$description"$'\n\nSigned-off-by: fixture commit-msg' ] || fail 'hook message was not applied intact'
+    [ -z "$(jj --no-pager diff --from "$parent" --to @- --template path)" ] || fail 'sign-off changed file contents'
+    [ "$(jj --no-pager log --no-graph -r @ -T empty)" = true ] || fail 'sign-off left changes in @'
+    [ "$(jj --no-pager log --no-graph -r checked -T commit_id)" = "$(jj --no-pager log --no-graph -r @- -T commit_id)" ] || fail 'bookmark did not follow sign-off'
+    jj_no_temps
+    parent=$(jj --no-pager log --no-graph -r @- -T commit_id)
+    jj --no-pager prek > "$output" 2>&1
+    [ "$(jj --no-pager log --no-graph -r @- -T commit_id)" = "$parent" ] || fail 'unchanged message needlessly rewrote @-'
+    jj_no_temps
+}
+
+jj_guard() {
+    new_jj
+    printf 'changed\n' > target.py
+    jj --no-pager commit -m 'fix: check target' > "$output" 2>&1
+    case "$1" in
+        dirty) printf 'unscanned\n' > target.py ;;
+        missing) rm target.py ;;
+        sparse) jj --no-pager sparse set --clear >> "$output" 2>&1 ;;
+        merge)
+            jj --no-pager bookmark create checked -r @- >> "$output" 2>&1
+            jj --no-pager new @-- -m sibling >> "$output" 2>&1
+            jj --no-pager new @ checked >> "$output" 2>&1 ;;
+        conflict)
+            jj --no-pager new @- -m left >> "$output" 2>&1
+            printf 'left\n' > target.py
+            jj --no-pager bookmark create left >> "$output" 2>&1
+            jj --no-pager new @- -m right >> "$output" 2>&1
+            printf 'right\n' > target.py
+            jj --no-pager new @ left -m merge >> "$output" 2>&1
+            jj --no-pager new >> "$output" 2>&1 ;;
+        undescribed) jj --no-pager describe -r @- -m '' >> "$output" 2>&1 ;;
+        SKIP|PREK_SKIP) export "$1=files" ;;
+        noncolocated)
+            jj --no-pager git init --no-colocate "$case_dir/other" >> "$output" 2>&1
+            cd "$case_dir/other" ;;
+    esac
+    if jj --no-pager prek > "$output" 2>&1; then fail "accepted $1 for full run"; fi
+    absent "$CALLS"
+    absent "$CALLS.message-args"
+    [ -z "$(find "$TMPDIR" . -name 'jj-prek.*' -print)" ] || fail 'guard leaked temporary files'
+}
+
+jj_message_failure() {
+    new_jj
+    printf 'changed\n' > target.py
+    jj --no-pager commit -m 'fix: check target' > "$output" 2>&1
+    local parent rc=0
+    parent=$(jj --no-pager log --no-graph -r @- -T commit_id)
+    PREK_MESSAGE_STATUS=43 jj --no-pager prek > "$output" 2>&1 || rc=$?
+    [ "$rc" -eq 43 ] || fail 'commit-msg failure status changed'
+    if grep -F 'Review fixes' "$output" >/dev/null; then fail 'unchanged files prompted a squash'; fi
+    [ -f "$CALLS.message-args" ] || fail 'commit-msg did not run'
+    [ "$(jj --no-pager log --no-graph -r @- -T commit_id)" = "$parent" ] || fail 'failed message hook rewrote @-'
+    jj_no_temps
+}
+
+jj_parent_changed() {
+    new_jj
+    printf 'changed\n' > target.py
+    jj --no-pager commit -m 'fix: check target' > "$output" 2>&1
+    if PREK_REWRITE_STAGE="$1" jj --no-pager prek > "$output" 2>&1; then fail 'concurrent rewrite was accepted'; fi
+    [ "$(jj --no-pager log --no-graph -r @- -T description)" = 'fix: changed during hooks' ] || fail 'concurrent description was overwritten'
+    jj_no_temps
+}
+
+jj_check_only() {
+    new_jj
+    printf 'changed\n' > target.py
+    jj --no-pager commit -m 'fix: check target' > "$output" 2>&1
+    local parent
+    parent=$(jj --no-pager log --no-graph -r @- -T commit_id)
+    # Even a clean workspace must not sign off partial, skipped, or dry runs.
+    SKIP=files jj --no-pager prek "$1" > "$output" 2>&1
+    grep -F 'Checks only; commit-msg hooks will not run.' "$output" >/dev/null || fail 'check-only run was not identified'
+    [ -f "$CALLS" ] || fail 'check-only run did not invoke prek'
+    absent "$CALLS.message-args"
+    [ "$(jj --no-pager log --no-graph -r @- -T commit_id)" = "$parent" ] || fail 'check-only run rewrote @-'
+    jj_no_temps
+}
+
+jj_real_prek() {
+    new_jj
+    rm "$case_dir/bin/prek"
+    ln -s "$prek_binary" "$case_dir/bin/prek"
+    printf '%s\n' 'repos:' '- repo: local' '  hooks:' \
+        '  - id: files' '    name: files' '    language: system' \
+        "    entry: bash \"$repo_root/tests/fixtures/prek\" run --stage pre-commit" \
+        '    stages: [pre-commit]' '    types: [python]' '    always_run: true' \
+        '  - id: message' '    name: message' '    language: system' \
+        "    entry: bash \"$repo_root/tests/fixtures/prek\" run --stage commit-msg --commit-msg-filename" \
+        '    stages: [commit-msg]' > .pre-commit-config.yaml
+    printf 'base\n' > target.py
+    jj --no-pager commit -m 'chore: configure hooks' > "$output" 2>&1
+    case "$1" in
+        changed|unchanged-message) printf 'changed\n' > target.py ;;
+        deleted) rm target.py ;;
+        empty) ;;
+    esac
+    jj --no-pager commit -m 'fix: check target' >> "$output" 2>&1
+    if [ "$1" = unchanged-message ]; then export PREK_NO_TRAILER=1; fi
+    local parent
+    parent=$(jj --no-pager log --no-graph -r @- -T commit_id)
+    jj --no-pager prek > "$output" 2>&1
+    printf '%s\n' pre-commit commit-msg > "$case_dir/expected"
+    cmp "$case_dir/expected" "$CALLS.stages" || fail 'real prek skipped a stage or always_run hook'
+    if [ "$1" = unchanged-message ]; then
+        [ "$(jj --no-pager log --no-graph -r @- -T commit_id)" = "$parent" ] || fail 'unmodified description caused a rewrite'
+    else
+        jj --no-pager log --no-graph -r @- -T description | grep -q 'Signed-off-by: fixture commit-msg' || fail 'real prek did not apply trailer'
+    fi
+    [ "$(jj --no-pager log --no-graph -r @ -T empty)" = true ] || fail 'real prek changed @'
+    jj_no_temps
 }
 
 fake_brew() {
@@ -406,7 +559,19 @@ for outcome in failure success; do run_test "explicit Vim bootstrap: $outcome" v
 run_test 'jj prek selects @- filenames, not @, and preserves options and subdirectories' jj_paths
 for state in empty deleted missing; do run_test "jj prek skips $state selections" jj_empty "$state"; done
 for kind in diff hook; do run_test "jj prek propagates $kind failure and cleans up" jj_failure "$kind"; done
-run_test 'jj prek leaves hook fixes in @ and never rewrites @-' jj_fixes
+run_test 'jj prek runs both stages, preserves the description, and follows bookmarks' jj_full_run
+for state in dirty missing sparse merge conflict undescribed SKIP PREK_SKIP noncolocated; do
+    run_test "jj prek refuses $state full runs" jj_guard "$state"
+done
+for stage in pre-commit commit-msg; do
+    run_test "jj prek refuses successful $stage hooks that change files; squash and rerun succeeds" jj_fixes "$stage" 0
+    run_test "jj prek refuses concurrent parent rewrites during $stage" jj_parent_changed "$stage"
+done
+run_test 'jj prek reports failing pre-commit fixes and preserves the exit code' jj_fixes pre-commit 42
+run_test 'jj prek reports failing commit-msg fixes and preserves the exit code' jj_fixes commit-msg 43
+run_test 'jj prek propagates message-hook failure without rewriting @-' jj_message_failure
+for option in ruff --verbose --dry-run; do run_test "jj prek $option is check-only" jj_check_only "$option"; done
+for state in changed deleted empty unchanged-message; do run_test "jj prek with real prek: $state" jj_real_prek "$state"; done
 for colour in green red blue; do run_test "tmux $colour loads common settings and Homebrew Zsh" tmux_profile "$colour" brew; done
 for mode in default-xdg no-zsh failed-brew no-path standard-prefix startup; do run_test "tmux Homebrew discovery: $mode" tmux_profile blue "$mode"; done
 run_test 'Zsh uses mise ahead of Homebrew runtimes and never initializes leftover fnm' zsh_runtime_manager

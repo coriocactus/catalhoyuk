@@ -1,19 +1,67 @@
 #!/usr/bin/env bash
-# Check working-copy files changed in @-; leave fixes in @ for manual squash.
+# No arguments: check @- and apply its commit-msg hooks. Arguments: checks only.
 set -euo pipefail
 cd -- "${JJ_WORKSPACE_ROOT:-$(jj --no-pager root)}"
 
+die() { printf 'jj prek: %s\n' "$*" >&2; exit 1; }
+snapshot() {
+    jj --no-pager --color=never log --no-graph -r @ -T \
+        'if(empty && parents.len() == 1 && !conflict, commit_id)'
+}
+unchanged() {
+    [ "$(snapshot)" = "$before" ] && return 0
+    printf '%s\n' 'jj prek: Working copy changed. Review fixes, jj squash, then rerun jj prek.' >&2
+    return 1
+}
+run_hooks() {
+    local status=0
+    prek run "$@" || status=$?
+    # Report fixes even on failure, without masking the hook's exit code.
+    if ! unchanged && [ "$status" -eq 0 ]; then status=1; fi
+    return "$status"
+}
+
+revision=@-
+if [ "$#" -eq 0 ]; then
+    [ -z "${SKIP:-}${PREK_SKIP:-}" ] || die 'Unset SKIP and PREK_SKIP for a full run; use jj prek [OPTIONS] for checks only.'
+    [ -d .git ] || die 'A full run requires a colocated Git repository with a .git directory.'
+    before=$(snapshot)
+    [ -n "$before" ] || die 'A full run requires an empty, conflict-free @ with one parent. Review and squash your changes first.'
+    revision=$(jj --no-pager --color=never log --no-graph -r @- -T commit_id)
+else
+    printf '%s\n' 'jj prek: Checks only; commit-msg hooks will not run.' >&2
+fi
+
 # Spool first: a failed diff must never run hooks on a partial list.
 list=$(mktemp "${TMPDIR:-/tmp}/jj-prek.XXXXXX")
-trap 'rm -f -- "$list"' EXIT
-jj --no-pager --color=never diff -r @- --template \
+message=
+trap 'rm -f -- "$list"; if [ -n "$message" ]; then rm -f -- "$message"; fi' EXIT
+jj --no-pager --color=never diff -r "$revision" --template \
     'if(status != "removed", "./" ++ path ++ "\0")' > "$list"
-files=()
+# Keep --files even for an empty selection, so always_run hooks still execute.
+files=(--files)
 while IFS= read -r -d '' file; do
-    if [ -e "$file" ] || [ -L "$file" ]; then files+=("$file"); fi
+    if [ -e "$file" ] || [ -L "$file" ]; then
+        files+=("$file")
+    elif [ "$#" -eq 0 ]; then
+        die "Changed file is missing: $file. Restore it before a full run."
+    fi
 done < "$list"
-if [ "${#files[@]}" -eq 0 ]; then
-    printf '%s\n' 'No changed files to check.'
+if [ "$#" -gt 0 ]; then
+    if [ "${#files[@]}" -eq 1 ]; then
+        printf '%s\n' 'No changed files to check.'
+        exit 0
+    fi
+    prek run "$@" "${files[@]}"
     exit 0
 fi
-prek run "$@" --files "${files[@]}"
+
+# Docker hooks mount the repository, not the host's temporary directory.
+message=$(mktemp .git/jj-prek.XXXXXX)
+jj --no-pager --color=never log --no-graph -r "$revision" -T description > "$message"
+[ -s "$message" ] || die 'Describe @- before running jj prek.'
+unchanged
+run_hooks --stage pre-commit "${files[@]}"
+# --all-files avoids Git's index/stash machinery; commit-msg still receives only the message file.
+run_hooks --stage commit-msg --all-files --commit-msg-filename "$message"
+jj --no-pager describe -r "$revision" --stdin < "$message"

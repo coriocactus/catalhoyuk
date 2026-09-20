@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Offline hook runner, also used as a local hook by the real prek integration tests.
+set -eu
+args=("$@")
+stage=pre-commit
+message=
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --stage) stage=$2; shift ;;
+        --commit-msg-filename) message=$2; shift ;;
+    esac
+    shift
+done
+printf '%s\n' "$stage" >> "$CALLS.stages"
+pwd -P > "$CALLS.cwd"
+if [ "$stage" = commit-msg ]; then
+    printf '%s\0' "${args[@]}" > "$CALLS.message-args"
+    case "$message" in .git/jj-prek.*) ;; *) exit 90 ;; esac
+    [ -s "$message" ] || exit 91
+    printf '%s\n' "$message" > "$CALLS.message-path"
+    cp "$message" "$CALLS.message-before"
+    if [ "${PREK_NO_TRAILER:-0}" != 1 ] && ! grep -q '^Signed-off-by: fixture commit-msg$' "$message"; then
+        printf '\nSigned-off-by: fixture commit-msg\n' >> "$message"
+    fi
+    status=${PREK_MESSAGE_STATUS:-0}
+else
+    printf '%s\0' "${args[@]}" > "$CALLS"
+    status=${PREK_STATUS:-0}
+fi
+if [ "${PREK_FIX_STAGE:-pre-commit}" = "$stage" ] && [ -n "${PREK_FIX_FILE:-}" ]; then
+    printf 'fixed\n' > "$PREK_FIX_FILE"
+fi
+if [ "${PREK_REWRITE_STAGE:-}" = "$stage" ]; then
+    jj --no-pager describe -r @- -m 'fix: changed during hooks'
+fi
+exit "$status"
