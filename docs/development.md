@@ -28,7 +28,8 @@ npm --prefix stow/agents/.pi/agent/extensions run verify
 - `home` and `xdg` use `--no-folding`: real directories, one link per file.
 - `agents` folds: `~/.agents` and `~/.pi/agent/extensions` become directory links. `~/.pi/agent` is created first so Pi's own state stays out of the checkout. A real `~/.pi/agent/extensions` directory is refused.
 - Unselected `tmux-*` and `vim-ssh` packages are unstowed on every run.
-- `--ignore` keeps `skills-lock.json` and `identities.example` out of the targets.
+- `agents/.agents/.skill-lock.json` is installed at `$HOME/.agents/.skill-lock.json`.
+- `--ignore` keeps `identities.example` out of the targets.
 - `--repo4` preflights `repo4 init` before linking and runs it after.
 
 Each `stow` invocation checks all its conflicts before changing anything, but the run as a whole is not a transaction.
