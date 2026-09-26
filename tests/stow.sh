@@ -43,7 +43,7 @@ copy_checkout() {
     cp -R "$repo_root/stow/home" "$repo_root/stow/xdg" "$repo_root/stow/vim-ssh" "$repo_root"/stow/tmux-* "$checkout/stow/"
     cp "$repo_root/stow/agents/.pi/agent/"{settings,advisor}.json "$checkout/stow/agents/.pi/agent/"
     printf 'stub\n' > "$checkout/stow/agents/.pi/agent/extensions/index.ts"
-    printf '{}\n' > "$checkout/stow/agents/skills-lock.json"
+    cp "$repo_root/stow/agents/.agents/.skill-lock.json" "$checkout/stow/agents/.agents/"
 }
 
 # Every regular file in a leaf package must be linked at the same relative path.
@@ -60,6 +60,7 @@ default_install() {
     package_linked xdg "$XDG_CONFIG_HOME"
     linked "$HOME/.tmux.conf" "$checkout/stow/tmux-green/.tmux.conf"
     linked "$HOME/.agents" "$checkout/stow/agents/.agents"
+    [ "$HOME/.agents/.skill-lock.json" -ef "$checkout/stow/agents/.agents/.skill-lock.json" ] || fail 'skill lock is not stowed'
     linked "$HOME/.pi/agent/settings.json" "$checkout/stow/agents/.pi/agent/settings.json"
     linked "$HOME/.pi/agent/advisor.json" "$checkout/stow/agents/.pi/agent/advisor.json"
     linked "$HOME/.pi/agent/extensions" "$checkout/stow/agents/.pi/agent/extensions"
@@ -89,6 +90,7 @@ dry_run() {
     install --dry-run --ssh
     contains 'LINK: .vimrc-ssh'
     absent "$HOME/.vimrc"
+    absent "$HOME/.agents"
     absent "$HOME/.pi"
     absent "$XDG_CONFIG_HOME"
     install --tmux red
@@ -132,6 +134,7 @@ coexists_with_real_directories() {
     [ ! -L "$HOME/.agents" ] || fail 'existing ~/.agents was replaced by a link'
     [ -f "$HOME/.agents/skills/own/SKILL.md" ] || fail 'own skill was removed'
     linked "$HOME/.agents/skills/postgres" "$checkout/stow/agents/.agents/skills/postgres"
+    linked "$HOME/.agents/.skill-lock.json" "$checkout/stow/agents/.agents/.skill-lock.json"
     [ -d "$HOME/.pi/agent/sessions" ] || fail 'Pi state was removed'
 }
 
