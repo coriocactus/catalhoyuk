@@ -6,7 +6,7 @@ usage() { printf '%s\n' 'Usage: ./bin/stow [--ssh] [--tmux PROFILE] [--repo4] [-
 error() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 root=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-profile=green ssh= repo4= dry= delete=
+profile=home ssh= repo4= dry= delete=
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --ssh) ssh=1 ;;

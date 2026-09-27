@@ -394,7 +394,12 @@ fake_brew() {
     ln -s "$zsh_binary" "$BREW_PREFIX/bin/zsh"
 }
 tmux_profile() (
-    local colour=$1 mode=$2 socket="$case_dir/socket" expected
+    local profile=$1 mode=$2 socket="$case_dir/socket" expected colour
+    case "$profile" in
+        home) colour=colour57 ;;
+        work) colour=blue ;;
+        remote) colour=red ;;
+    esac
     trap '"$tmux_binary" -S "$socket" kill-server >/dev/null 2>&1 || :' EXIT
     fake_brew
     expected="$BREW_PREFIX/bin/zsh"
@@ -420,7 +425,7 @@ tmux_profile() (
             ln -s "$stow_binary" "$case_dir/bin/stow"
             export PATH="$case_dir/bin:/usr/bin:/bin" ;;
     esac
-    "$BASH" "$repo_root/bin/stow" --tmux "$colour" > "$output" 2>&1
+    "$BASH" "$repo_root/bin/stow" --tmux "$profile" > "$output" 2>&1
     if [ "$mode" = startup ]; then
         "$tmux_binary" -S "$socket" -f "$HOME/.tmux.conf" new-session -d -s config-test 'sleep 120' >> "$output" 2>&1
     else
@@ -572,8 +577,8 @@ run_test 'jj prek reports failing commit-msg fixes and preserves the exit code' 
 run_test 'jj prek propagates message-hook failure without rewriting @-' jj_message_failure
 for option in ruff --verbose --dry-run; do run_test "jj prek $option is check-only" jj_check_only "$option"; done
 for state in changed deleted empty unchanged-message; do run_test "jj prek with real prek: $state" jj_real_prek "$state"; done
-for colour in green red blue; do run_test "tmux $colour loads common settings and Homebrew Zsh" tmux_profile "$colour" brew; done
-for mode in default-xdg no-zsh failed-brew no-path standard-prefix startup; do run_test "tmux Homebrew discovery: $mode" tmux_profile blue "$mode"; done
+for profile in home work remote; do run_test "tmux $profile loads common settings and Homebrew Zsh" tmux_profile "$profile" brew; done
+for mode in default-xdg no-zsh failed-brew no-path standard-prefix startup; do run_test "tmux Homebrew discovery: $mode" tmux_profile work "$mode"; done
 run_test 'Zsh uses mise ahead of Homebrew runtimes and never initializes leftover fnm' zsh_runtime_manager
 run_test 'Zsh reload is idempotent, preserves hooks, and discovers tools before initialization' zsh_reload
 run_test 'BRANCH and BOOKMARK track real repositories, prompts, directory changes, and reloads' zsh_vcs_variables

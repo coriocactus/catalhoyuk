@@ -6,8 +6,9 @@ Dotfiles, installed with [GNU Stow](https://www.gnu.org/software/stow/).
 
 ```sh
 brew install stow
-./bin/stow                    # home + XDG configs, green tmux
-./bin/stow --ssh --tmux blue  # also SSH vimrc, blue tmux
+./bin/stow                    # home + XDG configs, home tmux
+./bin/stow --ssh --tmux work   # also SSH vimrc, work tmux
+./bin/stow --tmux remote      # remote tmux
 ./bin/stow --repo4            # also repo4 identity profiles
 ./bin/stow --dry-run          # report only
 ./bin/stow --delete           # remove all links
@@ -34,7 +35,7 @@ Packages:
 | `home` | `~` | Leaf files linked; directories created |
 | `xdg` | `~/.config` | Same; `repo4/identities.example` is not linked |
 | `agents` | `~` | `.agents` and `.pi/agent/extensions` linked as directories |
-| `tmux-*` | `~` | One selected by `--tmux`; profiles differ only in colour |
+| `tmux-*` | `~` | `home` (default), `work`, or `remote`, selected by `--tmux`; differ only in colour |
 | `vim-ssh` | `~` | Selected by `--ssh` |
 
 To add a file, place it in a package at its home-relative path and rerun.

@@ -58,7 +58,7 @@ default_install() {
     install
     package_linked home "$HOME"
     package_linked xdg "$XDG_CONFIG_HOME"
-    linked "$HOME/.tmux.conf" "$checkout/stow/tmux-green/.tmux.conf"
+    linked "$HOME/.tmux.conf" "$checkout/stow/tmux-home/.tmux.conf"
     linked "$HOME/.agents" "$checkout/stow/agents/.agents"
     [ "$HOME/.agents/.skill-lock.json" -ef "$checkout/stow/agents/.agents/.skill-lock.json" ] || fail 'skill lock is not stowed'
     linked "$HOME/.pi/agent/settings.json" "$checkout/stow/agents/.pi/agent/settings.json"
@@ -73,17 +73,21 @@ default_install() {
 }
 
 flags() {
-    install --ssh --tmux blue
+    install --ssh --tmux work
     linked "$HOME/.vimrc-ssh" "$checkout/stow/vim-ssh/.vimrc-ssh"
-    linked "$HOME/.tmux.conf" "$checkout/stow/tmux-blue/.tmux.conf"
+    linked "$HOME/.tmux.conf" "$checkout/stow/tmux-work/.tmux.conf"
+    install --tmux remote
+    linked "$HOME/.tmux.conf" "$checkout/stow/tmux-remote/.tmux.conf"
+    install --tmux home
+    linked "$HOME/.tmux.conf" "$checkout/stow/tmux-home/.tmux.conf"
     install
     absent "$HOME/.vimrc-ssh"
-    linked "$HOME/.tmux.conf" "$checkout/stow/tmux-green/.tmux.conf"
-    reject --tmux purple
+    linked "$HOME/.tmux.conf" "$checkout/stow/tmux-home/.tmux.conf"
+    reject --tmux unknown
     contains 'tmux-*'
     reject --tmux
     reject --bogus
-    linked "$HOME/.tmux.conf" "$checkout/stow/tmux-green/.tmux.conf"
+    linked "$HOME/.tmux.conf" "$checkout/stow/tmux-home/.tmux.conf"
 }
 
 dry_run() {
@@ -93,10 +97,10 @@ dry_run() {
     absent "$HOME/.agents"
     absent "$HOME/.pi"
     absent "$XDG_CONFIG_HOME"
-    install --tmux red
+    install --tmux remote
     install --dry-run
-    contains 'tmux-green/.tmux.conf'
-    linked "$HOME/.tmux.conf" "$checkout/stow/tmux-red/.tmux.conf"
+    contains 'tmux-home/.tmux.conf'
+    linked "$HOME/.tmux.conf" "$checkout/stow/tmux-remote/.tmux.conf"
 }
 
 rename_prunes_stale_link() {
@@ -139,7 +143,7 @@ coexists_with_real_directories() {
 }
 
 delete() {
-    install --ssh --tmux red --repo4
+    install --ssh --tmux remote --repo4
     mkdir -p "$HOME/.pi/agent/sessions"
     install --delete
     absent "$HOME/.zshrc"
