@@ -1,5 +1,5 @@
 {
-  "lastChangelogVersion": "0.87.1",
+  "lastChangelogVersion": "0.99.1",
   "theme": "dark",
   "tuiMode": "fullscreen",
   "fullscreenScrollbar": "auto",
@@ -10,26 +10,31 @@
   "quietStartup": true,
   "enableSkillCommands": false,
   "hideThinkingBlock": true,
-  "defaultProvider": "openai-codex",
-  "defaultModel": "gpt-6-astra",
-  "defaultThinkingLevel": "xhigh",
+  "defaultProvider": "anthropic",
+  "defaultModel": "claude-opus-5-5",
   "enabledModels": [
-    "gpt-6-astra",
-    "claude-fable-5-1",
-    "claude-opus-5-5"
+    "openai/gpt-6-astra",
+    "openai/gpt-6.1-sol",
+    "anthropic/claude-fable-5-1",
+    "anthropic/claude-opus-5-5",
+    "anthropic/claude-sonnet-5-5"
   ],
+  "defaultThinkingLevel": "xhigh",
   "modelThinkingLevels": {
-    "gpt-6-astra": "xhigh",
-    "claude-fable-5-1": "xhigh",
-    "claude-opus-5-5": "xhigh"
+    "openai/gpt-6-astra": "xhigh",
+    "openai/gpt-6.1-sol": "xhigh",
+    "anthropic/claude-fable-5-1": "xhigh",
+    "anthropic/claude-opus-5-5": "xhigh",
+    "anthropic/claude-sonnet-5-5": "max"
   },
   "warnings": {
     "anthropicExtraUsage": false
   },
   "packages": [
     "npm:pi-web-access",
-    "npm:pi-advisor-flow",
-    "npm:@narumitw/pi-btw",
-    "npm:@gotgenes/pi-anthropic-auth"
-  ]
+    "npm:@everyx/pi-subagent",
+    "npm:@gotgenes/pi-anthropic-auth",
+    "npm:@narumitw/pi-btw"
+  ],
+  "deviceId": "a5f18aeb-ec49-4c13-8bbb-1e9112604e5d"
 }
