@@ -7,6 +7,13 @@ export interface TranscriptView {
   cwd: string;
   entries: readonly SessionEntry[];
   expanded: boolean;
+  /** Identity of the mounted transcript, not the saved session. */
+  scope?: object;
+  /** Already loaded historical entries in displayed order, before the live range. */
+  history?: readonly SessionEntry[];
+  /** Stage a prepend before constructing native components; caller settles it. */
+  prepend?: boolean;
+  transaction?: { commit(): void; rollback(): void };
 }
 export function isTranscriptView(value: unknown): value is TranscriptView {
   if (!value || typeof value !== "object") return false;
@@ -15,6 +22,9 @@ export function isTranscriptView(value: unknown): value is TranscriptView {
     typeof view.sessionId === "string" &&
     typeof view.cwd === "string" &&
     typeof view.expanded === "boolean" &&
+    (view.scope === undefined || (view.scope !== null && typeof view.scope === "object")) &&
+    (view.prepend === undefined || typeof view.prepend === "boolean") &&
+    (view.history === undefined || Array.isArray(view.history)) &&
     Array.isArray(view.entries) &&
     view.entries.every(
       (entry) => entry && typeof entry.id === "string" && typeof entry.type === "string",

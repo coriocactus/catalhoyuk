@@ -10,6 +10,7 @@ import {
 import { type Component, Container, type ScrollView, type TUI } from "@earendil-works/pi-tui";
 import { HISTORY_PAGE, type HistoryPage, type HistoryRenderState } from "../shared/history.ts";
 import type { TranscriptView } from "../shared/transcript.ts";
+import { captureViewportAnchor } from "./anchors.ts";
 import { HistoryCursor, historyBoundary, historyGap, PAGE_SIZE, recentEntries } from "./model.ts";
 import { attachTopPaging } from "./scroll.ts";
 
@@ -75,8 +76,9 @@ export function renderHistoryPage(
   host: NativeHost,
   entries: SessionEntry[],
   render: RenderEntries,
+  scope?: object,
 ): Container {
-  const page: HistoryPage = { entries, cwd: host.sessionManager.getCwd() };
+  const page: HistoryPage = { entries, cwd: host.sessionManager.getCwd(), scope };
   const receiver: NativeHost = Object.create(host);
   receiver.chatContainer = new Container();
   receiver.pendingTools = new Map();
@@ -109,6 +111,9 @@ class HistoryPages extends Container {
 
 export class HistoryController {
   private readonly pages: HistoryPages;
+  private readonly pageEntries = new Map<Container, readonly SessionEntry[]>();
+  private scope: object = {};
+  private readonly display?: (view: TranscriptView) => void;
   private padding = 0;
   private readonly filler: Component;
   private readonly scrollHook: ReturnType<typeof attachTopPaging>;
@@ -133,8 +138,10 @@ export class HistoryController {
     render: RenderEntries,
     report: (error: unknown) => void,
     size = PAGE_SIZE,
+    display?: (view: TranscriptView) => void,
   ) {
     this.host = host;
+    this.display = display;
     this.render = render;
     this.report = report;
     this.size = size;
@@ -174,6 +181,39 @@ export class HistoryController {
     );
   }
 
+  present(entries: SessionEntry[]): void {
+    const boundary = historyBoundary(entries);
+    const key = JSON.stringify([this.host.sessionManager.getSessionId(), entries[0]?.id, boundary]);
+    let gap: SessionEntry[] | undefined;
+    if (key !== this.boundaryKey) {
+      gap =
+        this.boundaryKey && this.sessionId === this.host.sessionManager.getSessionId()
+          ? historyGap(
+              boundary,
+              this.boundary,
+              (id) => this.host.sessionManager.getEntry(id),
+              new Set(entries.map((entry) => entry.id)),
+            )
+          : undefined;
+      if (!gap) {
+        this.scope = {};
+        this.pages.clear();
+        this.pageEntries.clear();
+      }
+    }
+    this.display?.({
+      sessionId: this.host.sessionManager.getSessionId(),
+      cwd: this.host.sessionManager.getCwd(),
+      entries,
+      expanded: this.host.toolOutputExpanded,
+      scope: this.scope,
+      history: [
+        ...this.pages.children.flatMap((page) => this.pageEntries.get(page as Container) ?? []),
+        ...(gap ?? []),
+      ],
+    });
+  }
+
   refresh(entries: SessionEntry[]): void {
     if (this.closed) return;
     const boundary = historyBoundary(entries),
@@ -196,6 +236,7 @@ export class HistoryController {
         if (gap.length) this.pages.addChild(this.renderPage(gap));
       } else {
         this.pages.clear();
+        this.pageEntries.clear();
         this.cursor = new HistoryCursor(boundary, lookup, visible);
       }
       this.boundaryKey = key;
@@ -263,18 +304,49 @@ export class HistoryController {
           this.busy = false;
           return;
         }
-        const page = this.renderPage(batch.entries);
-        // Preserve blank space below a short transcript too; otherwise native
-        // scroll clamping would move the old messages downward after a prepend.
         const scroll = this.host.transcriptScrollView;
-        const beforeHeight = this.host.documentContainer.render(
-          scroll.getContentWidth(this.host.ui.terminal.columns),
-        ).length;
-        if (this.closed || generation !== this.generation || cursor !== this.cursor) return;
-        this.padding += Math.max(0, scroll.viewportHeight - beforeHeight);
-        cursor.commit(batch);
-        this.pages.children.unshift(page);
-        this.scrollHook.anchor(page);
+        const width = scroll.getContentWidth(this.host.ui.terminal.columns);
+        const anchor = captureViewportAnchor(
+          () => this.components(),
+          // Header, resources, and filler are direct document children; chat rows are not.
+          (component) => !this.host.documentContainer.children.includes(component),
+          scroll.scrollTop,
+          width,
+        );
+        const change: TranscriptView = {
+          sessionId: this.host.sessionManager.getSessionId(),
+          cwd: this.host.sessionManager.getCwd(),
+          entries: batch.entries,
+          expanded: this.host.toolOutputExpanded,
+          scope: this.scope,
+          prepend: true,
+        };
+        let page: Container | undefined;
+        try {
+          this.display?.(change);
+          page = this.renderPage(batch.entries);
+          if (this.closed || generation !== this.generation || cursor !== this.cursor) {
+            change.transaction?.rollback();
+            this.pageEntries.delete(page);
+            return;
+          }
+          cursor.commit(batch);
+          change.transaction?.commit();
+          this.pages.children.unshift(page);
+        } catch (error) {
+          change.transaction?.rollback();
+          if (page) this.pageEntries.delete(page);
+          throw error;
+        }
+        // Preserve blank space below short transcripts, even when merging a
+        // group removed an old header and the new page added no net rows.
+        const afterHeight = this.host.documentContainer.render(width).length;
+        const added = anchor?.(width) ?? page.render(width).length;
+        this.padding += Math.max(
+          0,
+          Math.max(0, scroll.scrollTop + added) + scroll.viewportHeight - afterHeight,
+        );
+        this.scrollHook.anchor(anchor ?? page);
         this.host.ui.requestRender();
       } catch (error) {
         this.busy = false;
@@ -282,6 +354,18 @@ export class HistoryController {
         this.report(error);
       }
     });
+  }
+
+  private components(): Component[] {
+    return this.host.documentContainer.children.flatMap((child) =>
+      child === this.host.chatContainer
+        ? this.host.chatContainer.children.flatMap((entry) =>
+            entry === this.pages
+              ? this.pages.children.flatMap((page) => (page as Container).children)
+              : [entry],
+          )
+        : [child],
+    );
   }
 
   private renderPage(source: readonly SessionEntry[]): Container {
@@ -307,7 +391,9 @@ export class HistoryController {
       )
         entries.push(entry);
     }
-    return renderHistoryPage(this.host, entries, this.render);
+    const page = renderHistoryPage(this.host, entries, this.render, this.scope);
+    this.pageEntries.set(page, source);
+    return page;
   }
 
   dispose(): void {
@@ -318,6 +404,7 @@ export class HistoryController {
     this.host.chatContainer.removeChild(this.pages);
     this.host.documentContainer.removeChild(this.filler);
     this.pages.clear();
+    this.pageEntries.clear();
   }
 }
 
@@ -379,19 +466,20 @@ export function installHistoryAdapter(
             throw new Error("Pi's transcript layout changed.");
           current = {
             owner,
-            controller: new HistoryController(this, original, owner.report, owner.size),
+            controller: new HistoryController(
+              this,
+              original,
+              owner.report,
+              owner.size,
+              owner.display,
+            ),
           };
           controllers.set(this, current);
         }
         visible = current.controller.select(this.sessionManager.buildContextEntries());
         const ids = new Set(visible.map((entry) => entry.id));
         selected = entries.filter((entry) => ids.has(entry.id));
-        current.owner.display?.({
-          sessionId: this.sessionManager.getSessionId(),
-          cwd: this.sessionManager.getCwd(),
-          entries: visible,
-          expanded: this.toolOutputExpanded,
-        });
+        current.controller.present(visible);
         // Keep native Up-arrow prompt history complete even when its old rows are
         // not constructed. Paging itself never adds prompts to editor history.
         if (options?.populateHistory)

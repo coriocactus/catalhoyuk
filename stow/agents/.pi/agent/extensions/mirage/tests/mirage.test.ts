@@ -6,6 +6,7 @@ import { after, test } from "node:test";
 import type {
   AgentToolResult,
   ExtensionContext,
+  ExtensionToolContext,
   SessionEntry,
   Theme,
 } from "@earendil-works/pi-coding-agent";
@@ -13,6 +14,7 @@ import type { Component, TUI, TuiMouseEvent, TuiMouseEventType } from "@earendil
 import { OPEN_FILE_EVENT, type OpenFileRequest } from "../../shared/protocol.ts";
 import { type FakePi, fake, fakePi, type Tool } from "../../test/fake-pi.ts";
 import { core, load, loadFuture, themes, tui } from "../../test/pi.ts";
+import { assistant as assistantMessage } from "../../test/transcript.ts";
 import { colours } from "../colours.ts";
 import type { ToolGroupView } from "../view.ts";
 
@@ -136,7 +138,11 @@ async function fixture({
   let allExpanded = false,
     entries: SessionEntry[] = [],
     invalidations = 0;
-  const ctx = fake<ExtensionContext>({
+  const ctx = fake<ExtensionToolContext>({
+    tools: [],
+    async executeTool() {
+      throw new Error("Unexpected nested execution in renderer fixture.");
+    },
     mode,
     cwd: dir,
     isProjectTrusted: () => trusted,
@@ -327,7 +333,7 @@ test("group boundaries, streaming snapshots, and expansion survive growth and me
   model.addCall("foreign", "grep", {}, root);
   assert.notEqual(add("c", "read", {}).group, a.group);
   assert.equal(add("edit1", "edit", {}).group, add("edit2", "edit", {}).group);
-  assert.notEqual(add("write1", "write", {}).group, add("write2", "write", {}).group);
+  assert.equal(add("write1", "write", {}).group, add("write2", "write", {}).group);
   model.reset();
   const batch = (id: string, blocks: object[] = []) => {
     const message = {
@@ -368,7 +374,7 @@ test("group boundaries, streaming snapshots, and expansion survive growth and me
   assert(model.expanded(first), "global expansion supersedes local choices");
 });
 
-test("edit groups merge across tool-only turns without crossing message or tool boundaries", () => {
+test("mixed groups merge across tool-only turns without crossing messages or foreign tools", () => {
   const model = new ToolGroups();
   const row = (id: string) => {
     const value = model.rows.get(id);
@@ -396,16 +402,29 @@ test("edit groups merge across tool-only turns without crossing message or tool 
   model.toggle(a);
   const second = batch("second");
   const b = row("second");
-  assert.notEqual(a.group, b.group, "wait for late commentary before merging");
+  assert.equal(a.group, b.group, "a streaming call joins its run while arguments load");
+  assert(model.expanded(a) && model.expanded(a.group), "joining preserves open diffs");
   model.finishMessage(second as unknown as Message, root);
   assert.equal(a.group, b.group);
-  assert(model.expanded(a) && model.expanded(a.group), "merging preserves open diffs");
+  // Late commentary renders above the call, so it must split the provisional join.
+  const late = batch("late");
+  assert.equal(row("late").group, a.group);
+  late.content.push({ type: "text", text: "Late commentary" } as never);
+  model.observe(late as unknown as Message, root);
+  assert.notEqual(row("late").group, a.group, "late commentary splits at once, mid-stream");
+  assert.deepEqual(
+    a.group.rows.map((value) => value.id),
+    ["first", "second"],
+  );
+  assert(model.expanded(a), "splitting preserves open rows");
+  model.finishMessage(late as unknown as Message, root);
+  assert.notEqual(row("late").group, a.group);
 
   for (const block of [
     { type: "text", text: "Commentary" },
     { type: "thinking", thinking: "Reasoning" },
   ]) {
-    const previous = row("second");
+    const previous = row("late");
     const next = batch(block.type);
     next.content.push(block);
     model.finishMessage(next as unknown as Message, root);
@@ -415,13 +434,164 @@ test("edit groups merge across tool-only turns without crossing message or tool 
     const before = add(`before-${name}`, "edit");
     model.addCall(`boundary-${name}`, name, {}, root);
     const after = add(`after-${name}`, "edit");
-    assert.notEqual(before.group, after.group, name);
+    if (name === "grep") assert.notEqual(before.group, after.group, name);
+    else assert.equal(before.group, after.group, name);
   }
   for (const role of ["user", "custom", "bashExecution"]) {
     const before = add(`before-${role}`, "edit");
     model.startMessage({ role, content: "Boundary" } as unknown as Message, root);
     assert.notEqual(add(`after-${role}`, "edit").group, before.group);
   }
+});
+
+test("hidden thinking joins mixed turns, while visibility toggles restore ordered boundaries", async () => {
+  const f = await fixture({ global: { hideThinkingBlock: true } });
+  const batch = async (id: string, name: string, blocks: object[] = []) => {
+    await f.pi.event("message_start", { message: assistantStart }, f.ctx);
+    const message = {
+      role: "assistant",
+      content: [...blocks, { type: "toolCall", id, name, arguments: { path: `${id}.txt` } }],
+      stopReason: "toolUse",
+    };
+    await f.pi.event("message_end", { message }, f.ctx);
+    return f.call(name, id, { path: `${id}.txt`, command: "echo ok", content: "new" });
+  };
+  const a = await batch("mixed-read", "read");
+  a.result(result("READ_BODY"));
+  const thinking = { type: "thinking" as const, thinking: "REASONING" };
+  const b = await batch("mixed-command", "bash", [thinking]);
+  b.result(result("COMMAND_BODY"));
+  const c = await batch("mixed-write", "write", [thinking]);
+  c.result(result("done"));
+  const d = await batch("mixed-edit", "edit");
+  d.result(result("done", { diff: "-1 before\n+1 after" }));
+  assert.equal(
+    plain(a.view),
+    "✓ Read 1 file, ran 1 command, wrote 1 file, edited 1 file (+1 −1) ▸",
+  );
+  assert.equal(plain(b.view), "");
+  a.view.handleMouse(mouse(0));
+  assert.match(plain(a.view), /mixed-write.txt/);
+  b.result(result("COMMAND_FAILED"), true);
+  a.view.handleMouse(mouse(0));
+  assert.equal(
+    plain(a.view),
+    "✓ Read 1 file, ran 1 command, wrote 1 file, edited 1 file (+1 −1) ▸",
+  );
+  // The native toggle drives all existing view models without replacing their rows.
+  const assistant = new core.AssistantMessageComponent();
+  assistant.updateContent(assistantMessage("", [thinking]));
+  assert.match(plain(a.view), /^✓ Read mixed-read.txt/);
+  assert.match(plain(b.view), /^\$ echo ok/);
+  assert.match(plain(c.view), /^✓ Wrote 1 file, edited 1 file/);
+  assistant.setHideThinkingBlock(true);
+  assert.match(plain(a.view), /Read 1 file, ran 1 command, wrote 1 file, edited 1 file/);
+  const boundary = await batch("after-text", "read", [{ type: "text", text: "COMMENTARY" }]);
+  assert.notEqual(boundary.view.row.group, a.view.row.group);
+  const late = {
+    role: "assistant",
+    content: [{ type: "toolCall", id: "late-mixed", name: "write", arguments: {} }] as object[],
+  };
+  await f.pi.event("message_start", { message: assistantStart }, f.ctx);
+  await f.pi.event("message_update", { message: late }, f.ctx);
+  late.content.push({ type: "text", text: "LATE_COMMENTARY" });
+  await f.pi.event("message_end", { message: late }, f.ctx);
+  const afterLate = f.call("write", "late-mixed", {});
+  assert.notEqual(afterLate.view.row.group, boundary.view.row.group);
+  for (const value of [false, true]) {
+    assistant.setHideThinkingBlock(value);
+    assert.notEqual(afterLate.view.row.group, boundary.view.row.group);
+    assert.notEqual(boundary.view.row.group, a.view.row.group);
+  }
+});
+
+test("hidden thinking and images join runs; assistant failures remain boundaries", () => {
+  const model = new ToolGroups();
+  model.setThinkingHidden(true);
+  const a = model.addCall("a", "read", {}, root);
+  assert(a);
+  const reasoning = {
+    role: "assistant",
+    content: [{ type: "thinking", thinking: "hidden" }],
+    stopReason: "stop",
+  } as Message;
+  model.startMessage(reasoning, root);
+  model.finishMessage(reasoning, root);
+  const b = model.addCall("b", "write", {}, root);
+  assert(b);
+  assert.equal(a.group, b.group);
+  model.setThinkingHidden(false);
+  assert.notEqual(a.group, b.group);
+  model.setThinkingHidden(true);
+  assert.equal(a.group, b.group);
+  const image = model.addCall("image", "read", {}, root);
+  const after = model.addCall("after", "edit", {}, root);
+  assert(image && after);
+  model.updateResult(
+    image,
+    { content: [{ type: "image", data: PIXEL_PNG, mimeType: "image/png" }], details: undefined },
+    false,
+    false,
+  );
+  for (const hidden of [false, true]) {
+    model.setThinkingHidden(hidden);
+    assert.equal(image.group, after.group);
+    assert.equal(image.group, b.group);
+  }
+  for (const stopReason of ["aborted", "error", "length"] as const) {
+    const failure = { ...reasoning, stopReason };
+    model.startMessage(failure, root);
+    model.finishMessage(failure, root);
+    const next = model.addCall(stopReason, "bash", {}, root);
+    assert(next);
+    assert.notEqual(next.group, after.group);
+  }
+});
+
+test("transactional prepends keep live identities, in-flight fences, results and expansion", () => {
+  const live = new ToolGroups();
+  live.setThinkingHidden(true);
+  const a = live.addCall("live-a", "bash", { command: "cd project" }, root);
+  assert(a);
+  live.toggle(a);
+  live.startMessage(assistantStart, root);
+  const b = live.addCall("live-b", "read", { path: "b" }, root);
+  assert(b);
+  assert.equal(b.group, a.group, "a loading call joins its group immediately");
+  live.updateResult(b, result("PARTIAL"), true, false);
+  const older = new ToolGroups();
+  older.startMessage(assistantStart, root);
+  older.finishMessage(
+    assistantMessage("", [
+      { type: "toolCall", id: "older", name: "read", arguments: { path: "picture.png" } },
+    ]),
+    root,
+  );
+  const staged = live.stagePrepend(older);
+  assert(live.rows.has("older"));
+  const ids = () => a.group.rows.map((row) => row.id);
+  assert.deepEqual(ids(), ["live-a", "live-b"], "construction cannot regroup mounted rows");
+  staged.rollback();
+  staged.rollback();
+  assert(!live.rows.has("older"));
+  const committed = live.stagePrepend(older);
+  committed.commit();
+  committed.commit();
+  assert.deepEqual(ids(), ["older", "live-a", "live-b"]);
+  assert(live.expanded(a.group) && live.expanded(a));
+  assert.equal(live.rows.get("live-a"), a);
+  assert.equal(b.status, "running");
+  assert.equal(firstText(b.result as Result), "PARTIAL");
+  const call = { type: "toolCall" as const, id: "live-b", name: "read", arguments: { path: "b" } };
+  live.observe(assistantMessage("", [{ type: "thinking", thinking: "hidden" }, call]), root);
+  assert.equal(b.group, a.group, "hidden thinking does not split");
+  const late = assistantMessage("", [{ type: "text", text: "LATE" }, call]);
+  live.observe(late, root);
+  assert.notEqual(b.group, a.group, "the in-flight fence survives the prepend");
+  assert.deepEqual(ids(), ["older", "live-a"]);
+  live.finishMessage(late, root);
+  const next = live.addCall("next", "write", { path: "next" }, root);
+  assert.equal(next?.group, b.group, "later calls continue the live tail");
 });
 
 test("normalized renderer inputs tolerate invalid arguments without bypassing validation", async () => {
@@ -438,6 +608,7 @@ test("normalized renderer inputs tolerate invalid arguments without bypassing va
       assert(!plain(row).includes("VALIDATION_ERROR"));
     }
   }
+  await f.pi.event("user_bash");
   const invalid = f.call("edit", "invalid-expanded", null);
   invalid.result(result("VALIDATION_ERROR"), true);
   invalid.view.render(100);
@@ -534,6 +705,7 @@ test("trailing carets survive truncation and toggle independently of filename li
   a.view.handleMouse(mouse(tui.visibleWidth(clipped) - 1, 1));
   assert.match(plain(a.view, 24), /DETAIL_A/);
   assert.deepEqual(opened, [path], "the clipped filename link must not capture the caret");
+  await f.pi.event("user_bash");
   const write = f.call("write", "trailing-write", { path: "new.ts", content: "new" });
   write.result(result("written"));
   assert.equal(plain(write.view), "✓ Wrote new.ts ▸");
@@ -563,21 +735,28 @@ test("command headers use a status-coloured dollar without ticks or crosses", as
   assert.equal(plain(a.view), "$ Ran 2 commands ▸");
   assert(a.view.render(160)[0].startsWith(`${paint(themes.theme, "green", "$")} Ran `));
   b.result(result("failed"), true);
-  assert.equal(plain(a.view), "$ Ran 2 commands (1 failed) ▸\n  $ npm run lint ▸");
-  assert(a.view.render(160)[0].startsWith(`${paint(themes.theme, "red", "$")} Ran `));
+  assert.equal(plain(a.view), "$ Ran 2 commands ▸", "no failure count; closed groups are one line");
+  assert(
+    a.view.render(160)[0].startsWith(`${paint(themes.theme, "green", "$")} Ran `),
+    "one failure does not turn the group red",
+  );
   f.expand(true);
-  const headers = a.view
-    .render(160)
-    .filter((line) => tui.stripTerminalSequences(line).endsWith("▾"));
-  assert.equal(headers.length, 3);
-  for (const [i, tone] of (["red", "green", "red"] as const).entries()) {
+  const headers = () =>
+    a.view.render(160).filter((line) => tui.stripTerminalSequences(line).endsWith("▾"));
+  assert.equal(headers().length, 3);
+  for (const [i, tone] of (["green", "green", "red"] as const).entries()) {
     const prefix = `${i ? "  " : ""}${paint(themes.theme, tone, "$")} `;
-    assert(headers[i].startsWith(prefix));
-    assert(!/[✓✗]/.test(tui.stripTerminalSequences(headers[i])));
+    assert(headers()[i].startsWith(prefix), "the failed call is red on its own row");
+    assert(!/[✓✗]/.test(tui.stripTerminalSequences(headers()[i])));
   }
+  a.result(result("failed"), true);
+  assert(
+    headers()[0].startsWith(`${paint(themes.theme, "red", "$")} Ran 2 commands `),
+    "a group is red only when every call failed",
+  );
 });
 
-test("failed calls remain visible, but their error bodies obey row and global toggles", async () => {
+test("closed groups hide failed calls; open groups show them with their error bodies", async () => {
   const f = await fixture();
   const a = f.call("bash", "a", { command: "printf hello" }, false);
   const b = f.call("bash", "b", { command: "exit 1" }, false);
@@ -586,18 +765,21 @@ test("failed calls remain visible, but their error bodies obey row and global to
   assert.match(plain(a.view), /Running 2 commands/);
   a.result(result("success"));
   b.result(result("ERROR_BODY\nSTACK_TRACE"), true);
-  assert.match(plain(a.view), /Ran 2 commands \(1 failed\)/);
+  assert.equal(plain(a.view), "$ Ran 2 commands ▸");
+  a.view.handleMouse(mouse(0));
   assert.match(plain(a.view), /^ {2}\$ exit 1 ▸$/m);
-  assert(!plain(a.view).includes("ERROR_BODY"));
-  a.view.handleMouse(mouse(0, 1));
+  assert(!plain(a.view).includes("ERROR_BODY"), "error output stays closed with its row");
+  a.view.handleMouse(mouse(0, 2));
   assert.match(plain(a.view), /ERROR_BODY\n\s*STACK_TRACE/);
-  a.view.handleMouse(mouse(0, 1));
+  a.view.handleMouse(mouse(0, 2));
   assert(!plain(a.view).includes("STACK_TRACE"));
+  a.view.handleMouse(mouse(0));
+  assert.equal(plain(a.view), "$ Ran 2 commands ▸");
   f.expand(true);
   assert.match(plain(a.view), /STACK_TRACE/);
   f.expand(false);
-  assert.match(plain(a.view), /^ {2}\$ exit 1 ▸$/m);
-  assert(!plain(a.view).includes("STACK_TRACE"));
+  assert.equal(plain(a.view), "$ Ran 2 commands ▸");
+  await f.pi.event("user_bash");
   const edit = f.call("edit", "e", { path: "edit.ts" });
   edit.result(result("success", { diff: "-1 before\n+1 after" }));
   assert.match(plain(edit.view), /\+1 −1/);
@@ -637,27 +819,27 @@ test("edit groups count distinct files and sum only completed diff snapshots", a
   b.result(result("done", { diff: "-1 old-b\n+1 new-b\n+2 extra" }));
   a.context.executionStarted = true;
   a.redraw();
-  assert.equal(plain(a.view), "… Editing 2 files +2 −1 ▸");
+  assert.equal(plain(a.view), "… Editing 2 files (+2 −1) ▸");
   a.result(result("done", { diff: "-1 old-a\n+1 new-a" }));
-  assert.equal(plain(a.view), "✓ Edited 2 files +3 −2 ▸");
+  assert.equal(plain(a.view), "✓ Edited 2 files (+3 −2) ▸");
   const cached = a.view.render(160);
   assert.equal(a.view.render(160), cached);
   b.result(result("done", { diff: "-1 old-b\n+1 new-b\n+2 extra" }));
-  assert.equal(plain(a.view), "✓ Edited 2 files +3 −2 ▸", "snapshots are not cumulative");
+  assert.equal(plain(a.view), "✓ Edited 2 files (+3 −2) ▸", "snapshots are not cumulative");
 
   const again = f.call("edit", "edits-again", { path: "a.txt" });
   again.result(result("done", { diff: "-1 old-a\n-2 another" }));
-  assert.equal(plain(a.view), "✓ Edited 2 files +3 −4 ▸", "repeated paths count once");
+  assert.equal(plain(a.view), "✓ Edited 2 files (+3 −4) ▸", "repeated paths count once");
   again.context.cwd = join(f.dir, "other-project");
   again.redraw();
-  assert.equal(plain(a.view), "✓ Edited 3 files +3 −4 ▸", "working directories stay distinct");
+  assert.equal(plain(a.view), "✓ Edited 3 files (+3 −4) ▸", "working directories stay distinct");
   again.context.cwd = f.dir;
   again.redraw();
   b.result(result("done"));
   again.result(result("done", { diff: "" }));
   for (const [diff, suffix] of [
-    ["+1 addition", " +1"],
-    ["-1 removal", " −1"],
+    ["+1 addition", " (+1)"],
+    ["-1 removal", " (−1)"],
     [" 1 unchanged", ""],
   ]) {
     a.result(result("done", { diff }));
@@ -678,14 +860,21 @@ test("edit groups expand into clickable files with independent diffs and global 
   a.result(result("done", { diff: "-1 BEFORE_A\n+1 AFTER_A" }));
   const b = f.call("edit", "expand-edit-b", { path: "b.txt" });
   b.result(result("done", { diff: "+1 AFTER_B" }));
-  assert.equal(plain(a.view), "✓ Edited 2 files +2 −1 ▸");
+  assert.equal(plain(a.view), "✓ Edited 2 files (+2 −1) ▸");
   const header = a.view.render(160)[0];
-  assert(header.includes(paint(themes.theme, "green", "+2")));
-  assert(header.includes(paint(themes.theme, "red", "−1")));
+  // Group summaries: grey brackets around plain counts; rows keep green/red counts.
+  const dim = (text: string) => themes.theme.fg("dim", text);
+  assert(header.includes(`${dim("(")}+2 −1${dim(")")}`));
+  assert(!header.includes(paint(themes.theme, "green", "+2")));
   a.view.handleMouse(mouse(tui.visibleWidth(plain(a.view)) - 1));
   assert.equal(
     plain(a.view),
-    `✓ Edited 2 files +2 −1 ▾\n  ✓ Edited ${path} +1 −1 ▸\n  ✓ Edited b.txt +1 ▸`,
+    `✓ Edited 2 files (+2 −1) ▾\n  ✓ Edited ${path} +1 −1 ▸\n  ✓ Edited b.txt +1 ▸`,
+  );
+  const row = a.view.render(160)[1];
+  assert(
+    row.includes(paint(themes.theme, "green", "+1")) &&
+      row.includes(paint(themes.theme, "red", "−1")),
   );
   for (const width of [0, 1, 2, 3, 10, 24, 160]) {
     for (const [i, line] of a.view.render(width).entries()) {
@@ -702,30 +891,36 @@ test("edit groups expand into clickable files with independent diffs and global 
   assert(!plain(a.view).includes("AFTER_B"));
   const c = f.call("edit", "expand-edit-c", { path: "c.txt" });
   c.result(result("done", { diff: "+1 AFTER_C" }));
-  assert.match(plain(a.view), /Edited 3 files \+3 −1 ▾/);
+  assert.match(plain(a.view), /Edited 3 files \(\+3 −1\) ▾/);
   assert(plain(a.view).includes("AFTER_A"), "growing a group preserves its open diffs");
   assert(!plain(a.view).includes("AFTER_C"));
   f.expand(true);
   assert(plain(a.view).includes("AFTER_B") && plain(a.view).includes("AFTER_C"));
   f.expand(false);
-  assert.equal(plain(a.view), "✓ Edited 3 files +3 −1 ▸");
+  assert.equal(plain(a.view), "✓ Edited 3 files (+3 −1) ▸");
 });
 
-test("failed edits stay visible in collapsed groups and do not contribute diff totals", async () => {
+test("failed edits are hidden in closed groups, red only when all failed, and add no diff totals", async () => {
   const f = await fixture();
   const a = f.call("edit", "good-edit", { path: "good.txt" });
   a.result(result("done", { diff: "-1 before\n+1 after" }));
   const b = f.call("edit", "failed-edit", { path: "bad.txt" });
   b.result(result("EDIT_ERROR_BODY", { diff: "+1 NOT_APPLIED" }), true);
-  assert.equal(plain(a.view), "✗ Edited 2 files +1 −1 (1 failed) ▸\n  ✗ Edit bad.txt ▸");
+  assert.equal(plain(a.view), "✓ Edited 2 files (+1 −1) ▸");
+  assert(a.view.render(160)[0].startsWith(paint(themes.theme, "green", "✓")));
   assert.equal(plain(b.view), "");
-  a.view.handleMouse(mouse(0, 1));
+  a.view.handleMouse(mouse(0));
+  assert.match(plain(a.view), /\n {2}✗ Edit bad.txt ▸$/);
+  a.view.handleMouse(mouse(0, 2));
   assert(plain(a.view).includes("EDIT_ERROR_BODY"));
   assert(!plain(a.view).includes("NOT_APPLIED"));
   f.expand(true);
   assert(plain(a.view).includes("EDIT_ERROR_BODY") && plain(a.view).includes("-1 before"));
   f.expand(false);
-  assert(plain(a.view).includes("✗ Edit bad.txt") && !plain(a.view).includes("EDIT_ERROR_BODY"));
+  assert.equal(plain(a.view), "✓ Edited 2 files (+1 −1) ▸");
+  a.result(result("ALSO_FAILED"), true);
+  assert.equal(plain(a.view), "✗ Edit 2 files ▸", "all-failed edits did not happen");
+  assert(a.view.render(160)[0].startsWith(paint(themes.theme, "red", "✗")));
 });
 
 test("output padding follows the live host for cached headers, bodies, clicks and images", async (t) => {
@@ -770,6 +965,7 @@ test("output padding follows the live host for cached headers, bodies, clicks an
     ["write", { path: "write.txt", content: "WRITE_BODY" }, result("written")],
     ["bash", { command: "echo BASH_BODY" }, result("BASH_BODY")],
   ] as const) {
+    await f.pi.event("user_bash");
     const next = row(name, `padded-${name}`, args);
     next.updateResult({ ...output, isError: false });
     components.push(next);
@@ -794,6 +990,7 @@ test("output padding follows the live host for cached headers, bodies, clicks an
   // Binding is host-local, scoped to our definitions, and never mutates the originals.
   const otherHost = { ...host, outputPad: 0 };
   const other = interactive.getRegisteredToolDefinition.call(otherHost, "write");
+  await f.pi.event("user_bash");
   const otherRow = component(
     "write",
     "other-host",
@@ -816,6 +1013,7 @@ test("output padding follows the live host for cached headers, bodies, clicks an
 
   tui.setCapabilityOverrides({ images: "kitty" });
   try {
+    await f.pi.event("user_bash");
     const image = row("read", "padded-image", { path: "picture.png" });
     const output = {
       content: [{ type: "image", data: PIXEL_PNG, mimeType: "image/png" }],
@@ -842,90 +1040,99 @@ test("output padding follows the live host for cached headers, bodies, clicks an
   }
 });
 
-test("native previews default hidden, obey local/global toggles, and leave payloads and other tools untouched", async () => {
+test("grouped native images bind before first paint and expand independently without duplication", async (t) => {
   const f = await fixture();
-  const png = PIXEL_PNG;
   tui.setCapabilityOverrides({ images: "kitty" });
   try {
-    const components = ["before", "picture", "after"].map((id) =>
+    const components = ["before", "picture", "wide"].map((id) =>
       component("read", id, { path: `${id}.png` }, f.tool("read"), f.dir, { showImages: true }),
     );
-    components[0].updateResult({ ...result("before"), isError: false });
-    const output = {
-      content: [{ type: "image", data: png, mimeType: "image/png" }],
+    const leader = components[0];
+    leader.updateResult({ ...result("TEXT_BODY"), isError: false });
+    const wide =
+      "iVBORw0KGgoAAAANSUhEUgAACDQAAAABCAYAAAArDGywAAAAH0lEQVR4nO3BIQEAAAACIP+f1hsGIAUAAAAAAAAAODMSH7ERSSRpYgAAAABJRU5ErkJggg==";
+    const outputs = [PIXEL_PNG, wide].map((data) => ({
+      content: [{ type: "image", data, mimeType: "image/png" }],
       isError: false,
+    }));
+    const payload = JSON.stringify(outputs);
+    for (const [i, output] of outputs.entries()) components[i + 1].updateResult(output);
+    const rendered: number[] = [];
+    for (const [i, item] of components.slice(1).entries()) {
+      const nativeImage = internals(item).imageComponents[0];
+      const render = nativeImage.render.bind(nativeImage);
+      t.mock.method(nativeImage, "render", (width: number) => {
+        rendered.push(i);
+        return render(width);
+      });
+    }
+    // Neither image member has ever been painted; its slot must already exist.
+    assert.match(plain(leader), /Explored 3 files ▸/);
+    assert(!leader.render(160).some(isImageLine));
+    leader.handleMouse(mouse(0, 1));
+    const toggle = (path: string) => {
+      const y = leader
+        .render(160)
+        .findIndex((line) => tui.stripTerminalSequences(line).includes(path));
+      assert(y > 0);
+      leader.handleMouse(mouse(0, y));
     };
-    const payload = JSON.stringify(output);
-    components[1].updateResult(output);
-    components[2].updateResult({ ...result("after"), isError: false });
-    assert(!plain(components[0]).includes("Explored 3 files"));
-    assert.match(plain(components[1]), /Read picture.png \(image\)/);
-    assert.match(plain(components[2]), /Read after.png/);
-    assert.equal(
-      components[1].render(160).length,
-      2,
-      "collapsed row has only a header and spacing",
+    assert.match(plain(leader), /Read picture.png \(image\)/);
+    assert(!leader.render(160).some(isImageLine));
+    toggle("picture.png");
+    assert(leader.render(160).some(isImageLine));
+    assert.deepEqual(rendered, [0], "first frame uses only the requested member's preview");
+    rendered.length = 0;
+    toggle("wide.png");
+    assert.equal(leader.render(160).filter(isImageLine).length, 2);
+    assert.deepEqual(rendered, [0, 1]);
+    for (const item of components.slice(1))
+      assert.deepEqual(item.render(160), [], "no native duplicate outside leader");
+    toggle("picture.png");
+    assert.equal(leader.render(160).filter(isImageLine).length, 1);
+    const command = component(
+      "bash",
+      "after-image",
+      { command: "echo after" },
+      f.tool("bash"),
+      f.dir,
     );
-    assert(!components[1].render(160).some(isImageLine));
-    components[1].handleMouse(mouse(0, 1));
-    const expanded = components[1].render(160);
-    assert(expanded.some(isImageLine), "expanded row contains real native image protocol");
+    command.updateResult({ ...result("AFTER_BODY"), isError: false });
+    components.push(command);
+    assert.match(plain(leader), /Read 3 files, ran 1 command/);
+    for (const value of [true, false, true]) {
+      f.expand(value);
+      for (const item of components) item.setExpanded(value);
+      assert.equal(leader.render(160).filter(isImageLine).length, value ? 2 : 0);
+    }
+    components[2].setShowImages(false);
+    assert.equal(leader.render(160).filter(isImageLine).length, 1);
+    assert.match(
+      plain(leader),
+      /image\/png/,
+      "disabled member gets a fallback, not another member's preview",
+    );
+    components[2].updateResult({ ...result("REPLACED_IMAGE"), isError: false });
+    assert.match(plain(leader), /REPLACED_IMAGE/);
+    assert(!plain(leader).includes("image/png"));
     const unmanaged = component(
       "read",
       "unmanaged",
-      { path: "picture.png" },
+      {},
       core.createReadToolDefinition(f.dir),
       f.dir,
-      { showImages: true },
     );
-    unmanaged.updateResult(output);
-    const nativeImageLines = unmanaged.render(160).filter(isImageLine).length;
-    assert(nativeImageLines > 0, "unmanaged tools retain their original behavior");
-    assert.equal(expanded.filter(isImageLine).length, nativeImageLines, "image is not duplicated");
-    components[1].handleMouse(mouse(0, 1));
-    assert.equal(components[1].render(160).length, 2);
-    for (const value of [true, false]) {
-      f.expand(value);
-      for (const item of components) item.setExpanded(value);
-      assert.equal(
-        components[1].render(160).some(isImageLine),
-        value,
-        "Ctrl+O also controls previews",
-      );
-    }
-    const next = f.call("read", "next", { path: "next.txt" });
-    assert.equal(
-      next.view.row.group.rows[0].id,
-      "after",
-      "new calls cannot merge across the image",
-    );
-    components[1].setShowImages(false);
-    components[1].render(160);
-    components[1].handleMouse(mouse(0, 1));
-    assert.match(
-      plain(components[1]),
-      /image\/png/,
-      "disabled image setting gives a text fallback",
-    );
-    assert(!components[1].render(160).some(isImageLine));
-    assert.equal(JSON.stringify(output), payload, "model/session image data stays unchanged");
+    unmanaged.updateResult(outputs[0]);
+    assert(unmanaged.render(160).some(isImageLine));
+    assert.equal(JSON.stringify(outputs), payload);
+    f.expand(false);
     await f.pi.event("session_shutdown");
     await f.pi.event("session_start", {}, f.ctx);
-    const resumed = component(
-      "read",
-      "resumed-image",
-      { path: "picture.png" },
-      f.tool("read"),
-      f.dir,
-      { showImages: true },
-    );
-    resumed.updateResult(output);
-    assert.equal(resumed.render(160).length, 2);
+    const resumed = component("read", "resumed", { path: "resumed.png" }, f.tool("read"), f.dir);
+    resumed.updateResult(outputs[0]);
+    assert(!resumed.render(160).some(isImageLine), "resumed previews start hidden");
     resumed.handleMouse(mouse(0, 1));
-    assert(
-      resumed.render(160).some(isImageLine),
-      "image control reattaches after a shutdown/start cycle",
-    );
+    assert(resumed.render(160).some(isImageLine));
   } finally {
     tui.setCapabilityOverrides({ images: null });
   }
@@ -994,6 +1201,12 @@ test("configured executors preserve shell options, image sizing, and project tru
       "promptGuidelines",
       "promptSnippet",
       "executionMode",
+      "exposure",
+      "namespace",
+      "annotations",
+      "outputSchema",
+      "constrainedSampling",
+      "prepareLoadout",
     ] as const)
       assert.deepEqual(f.tool(name)[key], factory(f.dir)[key]);
   }
@@ -1031,7 +1244,7 @@ test("filename clicks without inspector warn instead of opening", async () => {
   assert.match(f.notices.at(-1)?.[0] ?? "", /requires inspector/);
 });
 
-test("reload/tree/compaction reconstruct persisted groups, failures, and image boundaries", async () => {
+test("reconstruction keeps images in persisted groups and failures discoverable", async () => {
   const f = await fixture();
   const assistant = (content: object[]) => ({ role: "assistant", content });
   const call = (id: string, path: string) => ({
@@ -1084,20 +1297,20 @@ test("reload/tree/compaction reconstruct persisted groups, failures, and image b
   for (const event of ["session_start", "session_tree", "session_compact"]) {
     await f.rebuild(event, entries);
     const view = f.call("read", "saved1", { path: "a" }).view;
-    assert.match(plain(view), /Explored 2 files \(1 failed\)/);
+    assert.equal(plain(view), "✓ Explored 4 files ▸");
+    assert.equal(plain(f.call("read", "picture", { path: "image.png" }).view), "");
+    view.handleMouse(mouse(0));
     assert.match(plain(view), /✗ Read b/);
     assert(!plain(view).includes("SAVED_ERROR"));
-    assert.match(
-      plain(f.call("read", "picture", { path: "image.png" }).view),
-      /Read image.png \(image\)/,
-    );
-    assert.match(plain(f.call("read", "after-image", { path: "c" }).view), /Read c/);
+    assert.match(plain(view), /Read image.png \(image\)/);
+    assert.match(plain(view), /Read c/);
+    view.handleMouse(mouse(0));
   }
   await f.rebuild("session_tree");
   assert(!plain(f.call("read", "new-branch", {}).view).includes("2 files"));
 });
 
-test("reload/tree/compaction reconstruct edit groups and reset local expansion", async () => {
+test("in-runtime reconstruction preserves rows and local expansion without editing entries", async () => {
   const f = await fixture();
   const entries = [
     {
@@ -1127,8 +1340,10 @@ test("reload/tree/compaction reconstruct edit groups and reset local expansion",
   for (const event of ["session_start", "session_tree", "session_compact"]) {
     await f.rebuild(event, entries);
     const view = f.call("edit", "a", { path: "a.txt" }).view;
-    assert.equal(plain(view), "✓ Edited 2 files +2 −2 ▸");
-    view.handleMouse(mouse(0));
+    if (event === "session_start") {
+      assert.equal(plain(view), "✓ Edited 2 files (+2 −2) ▸");
+      view.handleMouse(mouse(0));
+    }
     assert(plain(view).includes("Edited a.txt") && plain(view).includes("Edited b.txt"));
     assert.equal(plain(f.call("edit", "b", { path: "b.txt" }).view), "");
   }

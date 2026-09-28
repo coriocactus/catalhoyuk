@@ -15,6 +15,10 @@ const { attachTopPaging } = await load<typeof import("../scroll.ts")>(
   "../scroll.ts",
   import.meta.url,
 );
+const { captureViewportAnchor } = await load<typeof import("../anchors.ts")>(
+  "../anchors.ts",
+  import.meta.url,
+);
 const { installHistoryAdapter } = await load<typeof import("../native.ts")>(
   "../native.ts",
   import.meta.url,
@@ -136,6 +140,32 @@ test("top-scroll hooks ignore paints, preserve anchors across resize/appends, an
   hook.dispose();
   assert.equal(scroll.scrollBy, original);
   assert(!Object.hasOwn(scroll, "scrollBy"));
+});
+
+test("viewport anchors skip Pi's header, measure chat-relative, and survive chat rebuilds", () => {
+  let headerLines = 3,
+    chat = [page(2, "a"), page(4, "b")];
+  const header = { render: () => Array(headerLines).fill("header"), invalidate() {} };
+  const components = () => [header, ...chat];
+  const anchorable = (component: Component) => component !== header;
+  // The top line is inside the header: anchor the first chat row, not the header.
+  const measure = captureViewportAnchor(components, anchorable, 1, 100);
+  assert(measure);
+  const [a, b] = chat;
+  chat = [page(5, "older"), a, b];
+  assert.equal(measure(100), 5, "the prepended rows push the anchor down");
+  headerLines = 1; // Pi rewrapped its header at the new width; chat offsets are unchanged.
+  assert.equal(measure(80), 5);
+  chat = [page(5, "older"), page(2, "rebuilt a"), page(4, "rebuilt b")];
+  assert.equal(measure(100), 5, "a rebuilt chat keeps the last measured offset");
+  const inside = captureViewportAnchor(components, anchorable, 7, 100);
+  assert(inside);
+  chat = [page(3, "newest"), ...chat];
+  assert.equal(inside(100), 3, "a line inside a component keeps its offset");
+  assert.equal(
+    captureViewportAnchor(() => [header], anchorable, 0, 100),
+    undefined,
+  );
 });
 
 test("scroll input between prepend construction and layout is rebased, ordered and coalesced", () => {

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { type AssistantMessage, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import {
+  AssistantMessageComponent,
   type ExtensionAPI,
   InteractiveMode,
   ToolExecutionComponent,
@@ -37,11 +38,15 @@ export default function (pi: ExtensionAPI) {
         Symbol.for("mirage.native-images.patch.v1"),
       );
       const padding = Reflect.get(host, Symbol.for("mirage.native-padding.patch.v1"));
+      const thinking = Reflect.get(
+        AssistantMessageComponent.prototype,
+        Symbol.for("mirage.native-thinking.patch.v1"),
+      );
       const restored =
         Reflect.get(host, "renderSessionEntries") ===
         Reflect.get(host, Symbol.for("fixture.original-history"));
       ctx.ui.notify(
-        `OWNERS_${label}_H${history?.owners.size ?? 0}_I${images?.users ?? 0}_P${padding?.users ?? 0}_R${Number(restored)}`,
+        `OWNERS_${label}_H${history?.owners.size ?? 0}_I${images?.users ?? 0}_P${padding?.users ?? 0}_T${thinking?.owners.size ?? 0}_R${Number(restored)}`,
         "info",
       );
     },
@@ -144,7 +149,7 @@ export default function (pi: ExtensionAPI) {
             .filter((message) => message.role === "toolResult")
             .map((message) => message.toolCallId),
         );
-        if (completed.has("live-6")) {
+        if (completed.has("live-8")) {
           output.content.push({ type: "text", text: "BACKGROUND_FINISHED" });
           stream.push({ type: "text_start", contentIndex: 0, partial: structuredClone(output) });
           stream.push({
@@ -156,20 +161,40 @@ export default function (pi: ExtensionAPI) {
           output.stopReason = "stop";
           writeFileSync(join(root, "background-done"), "done");
         } else {
-          if (!completed.has("live-0")) {
-            output.content.push({ type: "text", text: "LIVE_WORK_STARTED" });
-            stream.push({ type: "text_start", contentIndex: 0, partial: structuredClone(output) });
+          // Commentary before a turn's calls separates groups; hidden reasoning does not.
+          const text = !completed.has("live-0")
+            ? "LIVE_WORK_STARTED"
+            : completed.has("live-5") && !completed.has("live-7")
+              ? "MIXED_WORK"
+              : completed.has("live-3") && !completed.has("live-5")
+                ? "COMMAND_WORK"
+                : completed.has("live-1") && !completed.has("live-3")
+                  ? "EDIT_WORK"
+                  : undefined;
+          if (text) {
+            const contentIndex = output.content.push({ type: "text", text }) - 1;
+            stream.push({ type: "text_start", contentIndex, partial: structuredClone(output) });
             stream.push({
               type: "text_delta",
-              contentIndex: 0,
-              delta: "LIVE_WORK_STARTED",
+              contentIndex,
+              delta: text,
+              partial: structuredClone(output),
+            });
+          }
+          if (completed.has("live-5")) {
+            const contentIndex =
+              output.content.push({ type: "thinking", thinking: "FIXTURE_REASONING" }) - 1;
+            stream.push({ type: "thinking_start", contentIndex, partial: structuredClone(output) });
+            stream.push({
+              type: "thinking_delta",
+              contentIndex,
+              delta: "FIXTURE_REASONING",
               partial: structuredClone(output),
             });
           }
           const calls = [
             { name: "read", arguments: { path: join(root, "a-日本語.ts") } },
             { name: "read", arguments: { path: join(root, "b.txt") } },
-            { name: "read", arguments: { path: join(root, "picture.png") } },
             {
               name: "edit",
               arguments: {
@@ -195,13 +220,24 @@ export default function (pi: ExtensionAPI) {
               name: "bash",
               arguments: { command: "printf '%s\\n' \"$DISPLAY_FIXTURE_ERROR\" >&2; exit 1" },
             },
+            {
+              name: "write",
+              arguments: { path: join(root, "mixed.txt"), content: "MIXED_BODY\n" },
+            },
+            { name: "read", arguments: { path: join(root, "picture.png") } },
+            { name: "bash", arguments: { command: "printf MIXED_COMMAND" } },
           ];
-          // Reads arrive in separate tool-only turns to exercise cross-turn grouping.
-          const indices = completed.has("live-1")
-            ? [2, 3, 4, 5, 6]
-            : completed.has("live-0")
-              ? [1]
-              : [0];
+          const indices = completed.has("live-7")
+            ? [8]
+            : completed.has("live-5")
+              ? [6, 7]
+              : completed.has("live-3")
+                ? [4, 5]
+                : completed.has("live-1")
+                  ? [2, 3]
+                  : completed.has("live-0")
+                    ? [1]
+                    : [0];
           for (const index of indices) {
             const call = calls[index];
             const block = {
@@ -213,6 +249,11 @@ export default function (pi: ExtensionAPI) {
             const contentIndex = output.content.push(block) - 1;
             stream.push({ type: "toolcall_start", contentIndex, partial: structuredClone(output) });
             await delay(80);
+            // Hold one call's arguments open, so the test sees a loading call.
+            for (let i = 0; index === 1 && !existsSync(join(root, "release-pending")); i++) {
+              if (i === 400) throw new Error("Timed out waiting for the pending-call gate.");
+              await delay(25);
+            }
             block.arguments = call.arguments;
             stream.push({
               type: "toolcall_end",

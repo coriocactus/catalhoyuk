@@ -14,6 +14,7 @@ import {
   type TuiMouseEventResult,
   truncateToWidth,
 } from "@earendil-works/pi-tui";
+import type { RowAnchor } from "../shared/anchors.ts";
 import type { FileReference } from "../shared/protocol.ts";
 import { isComplete, type ToolGroup, type ToolGroups, type ToolRow } from "./model.ts";
 
@@ -38,7 +39,7 @@ interface ViewActions {
   toggle(target: ToggleTarget): void;
   openFile(file: FileReference): void;
   outputPad(): number;
-  renderImages(width: number): string[];
+  renderImages(row: ToolRow, width: number): string[];
 }
 
 function text(value: unknown): string {
@@ -133,35 +134,24 @@ export class ToolGroupView implements Component {
     } else {
       const expanded = this.model.expanded(group);
       const completed = group.rows.every(isComplete);
-      const running = group.rows.some((row) => row.status === "running");
-      const count =
-        group.name === "bash"
-          ? group.rows.length
-          : new Set(
-              group.rows.map((row) =>
-                row.file ? JSON.stringify([row.file.cwd, row.file.path]) : row.id,
-              ),
-            ).size;
-      const verb = GROUP_VERBS[group.name][completed ? "success" : running ? "running" : "pending"];
-      const noun = group.name === "bash" ? "command" : "file";
-      const failures = group.rows.filter((row) => row.status === "error").length;
+      const commandsOnly = group.rows.every((row) => row.name === "bash");
+      // Like Amp: a group is red only when every call failed. Individual failures
+      // show on their own rows once the group is opened.
       const status = this.status(
-        failures ? "error" : completed ? "success" : "pending",
-        group.name === "bash",
+        !completed
+          ? "pending"
+          : group.rows.every((row) => row.status === "error")
+            ? "error"
+            : "success",
+        commandsOnly,
       );
-      const error = failures ? paint(this.theme, "red", ` (${failures} failed)`) : "";
-      this.header(
-        `${status} ${verb} ${count} ${noun}${count === 1 ? "" : "s"}${this.editSummary(group.rows)}${error}`,
-        group,
-        contentWidth,
-      );
-      for (const row of group.rows) {
-        // Failed calls remain discoverable even when their parent group is closed.
-        if (!expanded && row.status !== "error") continue;
-        const detailExpanded = this.model.expanded(row);
-        this.header(`  ${this.rowLabel(row)}`, row, contentWidth);
-        if (detailExpanded) this.body(row, contentWidth, 4);
-      }
+      this.header(`${status} ${this.groupLabel(group)}`, group, contentWidth);
+      if (expanded)
+        for (const row of group.rows) {
+          const detailExpanded = this.model.expanded(row);
+          this.header(`  ${this.rowLabel(row)}`, row, contentWidth);
+          if (detailExpanded) this.body(row, contentWidth, 4);
+        }
     }
     // Hit testing uses these padded lines, including after invalidation until
     // the next render. Reserve the same inset on the right as Pi.
@@ -176,6 +166,29 @@ export class ToolGroupView implements Component {
       lines,
     };
     return lines;
+  }
+
+  capture(line: number, width: number): RowAnchor | undefined {
+    if (!this.render(width).length) return undefined;
+    // The summary line stays put when a merge or expansion changes the group.
+    if (line <= 0) return { key: this.row, offset: line, top: true };
+    const target = this.targets.get(line);
+    if (!target) return undefined;
+    const key = "group" in target ? target : this.row;
+    const start = [...this.targets].find(([, value]) => value === target)?.[0] ?? 0;
+    return { key, offset: line - start };
+  }
+
+  locate(anchor: RowAnchor, width: number): number | undefined {
+    if (!this.render(width).length || !this.row.group.rows.includes(anchor.key as ToolRow))
+      return undefined;
+    if (anchor.top) return anchor.offset;
+    const lines = [...this.targets]
+      .filter(([, target]) => target === anchor.key)
+      .map(([line]) => line);
+    // A collapsed group represents every member on its summary line.
+    if (!lines.length) return 0;
+    return lines[0] + Math.min(anchor.offset, lines.length - 1);
   }
 
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
@@ -230,7 +243,38 @@ export class ToolGroupView implements Component {
     return `${this.status(row.status, row.name === "bash")} ${label}`;
   }
 
-  private editSummary(rows: readonly ToolRow[]): string {
+  private groupLabel(group: ToolGroup): string {
+    const names = [...new Set(group.rows.map((row) => row.name))];
+    return names
+      .map((name, index) => {
+        const rows = group.rows.filter((row) => row.name === name);
+        const state = rows.every(isComplete)
+          ? "success"
+          : rows.some((row) => row.status === "running")
+            ? "running"
+            : "pending";
+        const verbs = name === "read" && names.length > 1 ? FILE_VERBS.read : GROUP_VERBS[name];
+        // All-failed edits/writes did not happen: use the failed-row verb.
+        const failedVerb = (verbs as { error?: string }).error;
+        const word =
+          failedVerb && rows.every((row) => row.status === "error") ? failedVerb : verbs[state];
+        const verb = index ? word.toLowerCase() : word;
+        const count =
+          name === "bash"
+            ? rows.length
+            : new Set(
+                rows.map((row) =>
+                  row.file ? JSON.stringify([row.file.cwd, row.file.path]) : row.id,
+                ),
+              ).size;
+        const noun = name === "bash" ? "command" : "file";
+        return `${verb} ${count} ${noun}${count === 1 ? "" : "s"}${this.editSummary(rows, true)}`;
+      })
+      .join(", ");
+  }
+
+  /** Rows: coloured `+A −R`. Group summaries, like Amp: grey brackets, plain `(+A −R)`. */
+  private editSummary(rows: readonly ToolRow[], group = false): string {
     let added = 0,
       removed = 0;
     for (const row of rows) {
@@ -239,6 +283,9 @@ export class ToolGroupView implements Component {
       added += counts.added;
       removed += counts.removed;
     }
+    const parts = [added ? `+${added}` : "", removed ? `−${removed}` : ""].filter(Boolean);
+    if (!parts.length) return "";
+    if (group) return ` ${this.theme.fg("dim", "(")}${parts.join(" ")}${this.theme.fg("dim", ")")}`;
     return (
       (added ? ` ${paint(this.theme, "green", `+${added}`)}` : "") +
       (removed ? ` ${paint(this.theme, "red", `−${removed}`)}` : "")
@@ -260,7 +307,7 @@ export class ToolGroupView implements Component {
     const bodyWidth = Math.max(1, width - indent);
     const imageLines =
       row.hasImages && getCapabilities().images && this.showImages
-        ? this.actions.renderImages(bodyWidth)
+        ? this.actions.renderImages(row, bodyWidth)
         : [];
     let cached = this.bodies.get(row.id);
     if (!cached || cached.revision !== row.revision) {

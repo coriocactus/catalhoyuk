@@ -37,6 +37,7 @@ writeFileSync(
     theme: "dark",
     tuiMode: "fullscreen",
     quietStartup: true,
+    hideThinkingBlock: true,
     outputPad: 1,
     terminal: { hyperlinks: true, images: "kitty", imageWidthCells: 8, trueColor: true },
     enableInstallTelemetry: false,
@@ -96,6 +97,31 @@ const archive = Array.from(
     },
   }),
 );
+// A tool run split by the first page boundary (76..125 | 26..75): one group.
+archive[74].message.content = [
+  { type: "toolCall", id: "archive-seam-read", name: "read", arguments: { path: "seam.txt" } },
+];
+archive[76].message.content = [
+  {
+    type: "toolCall",
+    id: "archive-seam-bash",
+    name: "bash",
+    arguments: { command: "echo ARCHIVED_SEAM" },
+  },
+];
+for (const [i, id, name] of [
+  [75, "archive-seam-read", "read"],
+  [77, "archive-seam-bash", "bash"],
+] as const)
+  archive[i].message = {
+    role: "toolResult",
+    toolCallId: id,
+    toolName: name,
+    content: [{ type: "text", text: "ARCHIVED_SEAM_RESULT" }],
+    isError: false,
+    timestamp: Date.now(),
+  };
+const seamHeader = "Read 1 file, ran 1 command";
 archive[80].message.content = [
   { type: "toolCall", id: "archive-read-a", name: "read", arguments: { path: "archived.txt" } },
   { type: "toolCall", id: "archive-read-b", name: "read", arguments: { path: "b.txt" } },
@@ -279,7 +305,7 @@ async function setOutputPadding(padding: number) {
 }
 async function owners(label: string, count = 1) {
   terminal.send(`\x15/fixture-owners ${label}\r`);
-  const marker = `OWNERS_${label}_H${count}_I1_P1_R${count === 0 ? 1 : 0}`;
+  const marker = `OWNERS_${label}_H${count}_I1_P1_T1_R${count === 0 ? 1 : 0}`;
   await terminal.waitFor((s) => s.includes(marker), marker);
 }
 async function replace(command: string, reason: string) {
@@ -330,25 +356,33 @@ try {
   await terminal.waitFor((s) => !s.includes("ECHO_EDITOR_DRAFT"), "clear combined unsent draft");
   assert.equal(readFileSync(fixture, "utf8"), beforeEcho, "echo never submits to the model");
   terminal.send("Run the fixture\r");
+  // The second read's arguments are still streaming: it belongs to its group at once.
   let screen = await terminal.waitFor(
+    (s) => /… Explore 2 files ▸/.test(s),
+    "a loading call joins its group",
+  );
+  assert(!/… Read/.test(screen), "no loading call outside its group");
+  writeFileSync(join(root, "release-pending"), "release");
+  screen = await terminal.waitFor(
     (s) =>
       s.includes("Explored 2 files") &&
       s.includes("Running 2 commands") &&
-      s.includes("Edited 2 files +3 −2"),
+      s.includes("Edited 2 files (+3 −2)"),
     "live groups and completed edits",
   );
   assert(!screen.includes("VIM_BUSY_TARGET") && !screen.includes("READ_B_RESULT"));
-  assert(screen.includes("picture.png (image)"));
-  assert(!terminal.rawSince().includes("\x1b_Ga=T"), "images start hidden");
   terminal.assertColour("✓", colours.green);
-  terminal.assertColour("+3", colours.green);
-  terminal.assertColour("−2", colours.red);
-  terminal.assertColour("picture.png", colours.blue);
-  assert(terminal.locate("picture.png").cell.style.underline, "clickable filenames are underlined");
-  assert(!terminal.locate("(image)").cell.style.underline, "underline ends at the filename");
+  // Group summaries, like Amp: grey brackets (the caret's colour) around plain counts.
+  const edits = terminal.locate("Edited 2 files (+3 −2)");
+  const fg = (x: number) => edits.row.cells.find((cell) => cell.x === x)?.style.foreground;
+  const open = edits.x + "Edited 2 files ".length;
+  const caret = edits.row.cells.findLast((cell) => cell.text === "▸")?.style.foreground;
+  assert.deepEqual(fg(open), caret, "grey summary brackets");
+  assert.deepEqual(fg(open + 1), edits.cell.style.foreground, "plain summary counts");
+  assert.notDeepEqual(fg(open), fg(open + 1));
   assert(!terminal.locate("+3").cell.style.underline, "diff counts are not underlined");
   assert(!screen.includes("edited.txt") && !screen.includes("edited-other.txt"));
-  for (const label of ["Explored 2 files", "Edited 2 files", "picture.png", "Running 2 commands"]) {
+  for (const label of ["Explored 2 files", "Edited 2 files", "Running 2 commands"]) {
     const row = terminal.locate(label).row;
     assert(row.text.trimEnd().endsWith(" ▸"), "tool carets trail the header text");
     assert(!row.cells.findLast((cell) => cell.text === "▸")?.style.underline);
@@ -381,7 +415,7 @@ try {
   const liveAnchor = terminal.locate("Explored 2 files").y;
   terminal.send("\x1b[H");
   await terminal.waitFor(
-    () => renderedArchive().size === 45,
+    () => renderedArchive().size === 43,
     "page history while tools are running",
   );
   assert.equal(terminal.locate("Explored 2 files").y, liveAnchor);
@@ -390,17 +424,6 @@ try {
     "paging does not disturb live pending tools",
   );
 
-  terminal.click("picture.png");
-  await terminal.waitFor(
-    () => terminal.rawSince().includes("\x1b_Ga=T"),
-    "expand image: Kitty transmission",
-  );
-  let mark = terminal.mark();
-  terminal.click("picture.png");
-  await terminal.waitFor(
-    () => terminal.rawSince(mark).includes("\x1b_Ga=d"),
-    "collapse image: Kitty deletion",
-  );
   terminal.click("Explored 2 files");
   await terminal.waitFor((s) => s.includes(filename) && s.includes("b.txt"), "expand read group");
   terminal.assertColour(filename, colours.blue);
@@ -431,17 +454,63 @@ try {
     "return to Pi preserves the newer draft and background results",
   );
   assert(readFileSync(join(root, filename), "utf8").includes("VIM_SAVED_WHILE_BUSY"));
-  assert(screen.includes("Ran 2 commands (1 failed)") && !screen.includes("ERROR_BODY_MARKER"));
-  assertCommandHeader("Ran 2 commands", "red");
-  assertCommandHeader("DISPLAY_FIXTURE_ERROR", "red");
-  terminal.assertColour("1 failed", colours.red);
+  const mixedHeader = "Wrote 1 file, read 1 file, ran 1 command";
+  assert(
+    screen.includes(mixedHeader),
+    "mixed tool types share one summary across hidden reasoning",
+  );
+  assert(!screen.includes("FIXTURE_REASONING") && !screen.includes("Thinking..."));
+  const beforeThinkingToggle = readFileSync(fixture, "utf8");
+  terminal.send("\x14");
+  await terminal.waitFor(
+    (s) => s.includes("FIXTURE_REASONING") && !s.includes(mixedHeader),
+    "visible thinking separates groups",
+  );
+  terminal.send("\x14");
+  await terminal.waitFor(
+    (s) => !s.includes("FIXTURE_REASONING") && s.includes(mixedHeader),
+    "hidden thinking regroups without placeholders",
+  );
+  assert(!terminal.screen.includes("Thinking..."));
+  assert.equal(
+    readFileSync(fixture, "utf8"),
+    beforeThinkingToggle,
+    "thinking toggles do not edit saved messages",
+  );
+  assert(!terminal.rawSince().includes("\x1b_Ga=T"), "grouped images start hidden");
+  terminal.click(mixedHeader);
+  await terminal.waitFor(
+    (s) =>
+      s.includes("mixed.txt") && s.includes("picture.png (image)") && s.includes("MIXED_COMMAND"),
+    "mixed group expands into individual calls, including the image",
+  );
+  terminal.assertColour("picture.png", colours.blue);
+  assert(terminal.locate("picture.png").cell.style.underline, "clickable filenames are underlined");
+  assert(!terminal.locate("(image)").cell.style.underline, "underline ends at the filename");
+  assert(terminal.locate("picture.png").row.text.trimEnd().endsWith(" ▸"));
+  let mark = terminal.mark();
+  terminal.click("picture.png");
+  await terminal.waitFor(
+    () => terminal.rawSince(mark).includes("\x1b_Ga=T"),
+    "expand a grouped image: Kitty transmission",
+  );
+  mark = terminal.mark();
+  terminal.click("picture.png");
+  await terminal.waitFor(
+    () => terminal.rawSince(mark).includes("\x1b_Ga=d"),
+    "collapse a grouped image: Kitty deletion",
+  );
+  terminal.click(mixedHeader);
+  await terminal.waitFor((s) => !s.includes("mixed.txt"), "mixed group collapses");
+  assert(screen.includes("Ran 2 commands") && !screen.includes("ERROR_BODY_MARKER"));
+  assert(!screen.includes("failed"), "no failure count in summaries");
+  assert(!screen.includes("DISPLAY_FIXTURE_ERROR"), "closed groups hide failed calls");
+  assertCommandHeader("Ran 2 commands", "green"); // Red only when every call failed.
   terminal.click("Ran 2 commands");
   await terminal.waitFor((s) => s.includes("DISPLAY_FIXTURE_PREFIX"), "expand command group");
-  assertCommandHeader("Ran 2 commands", "red", "▾");
+  assertCommandHeader("Ran 2 commands", "green", "▾");
   assertCommandHeader("DISPLAY_FIXTURE_PREFIX", "green");
   assertCommandHeader("DISPLAY_FIXTURE_ERROR", "red");
-  terminal.click("Ran 2 commands");
-  await terminal.waitFor((s) => !s.includes("DISPLAY_FIXTURE_PREFIX"), "collapse command group");
   terminal.click("DISPLAY_FIXTURE_ERROR");
   await terminal.waitFor(
     (s) => s.includes("ERROR_BODY_MARKER") && s.includes("Command exited with code 1"),
@@ -450,9 +519,16 @@ try {
   terminal.assertColour("ERROR_BODY_MARKER", colours.red);
   terminal.click("DISPLAY_FIXTURE_ERROR");
   await terminal.waitFor((s) => !s.includes("ERROR_BODY_MARKER"), "collapse error");
+  terminal.click("Ran 2 commands");
+  await terminal.waitFor(
+    (s) => !s.includes("DISPLAY_FIXTURE_PREFIX") && !s.includes("DISPLAY_FIXTURE_ERROR"),
+    "collapse command group, including its failed call",
+  );
   await expandEditGroup();
   assert(terminal.locate("edited.txt").cell.style.underline);
   assert(terminal.locate("edited-other.txt").row.text.includes("+2 −1 ▸"));
+  terminal.assertColour("+2 −1", colours.green); // Rows keep coloured counts.
+  terminal.assertColour("−1 ▸", colours.red);
   assert(!terminal.screen.includes("-1 before"), "file rows start with closed diffs");
   terminal.click("edited.txt");
   await terminal.waitFor(
@@ -495,7 +571,7 @@ try {
       terminal.rawSince(mark).includes("\x1b_Ga=d"),
     "Ctrl+O collapses text and images",
   );
-  assert(terminal.screen.includes("DISPLAY_FIXTURE_ERROR"));
+  assert(!terminal.screen.includes("DISPLAY_FIXTURE_ERROR"), "failed calls collapse too");
   terminal.send("\x15"); // Clear the already-verified draft without arming double-Ctrl+C exit.
   await setOutputPadding(0);
   await setOutputPadding(1); // Idle changes rebuild the transcript; keep the same padding.
@@ -505,16 +581,15 @@ try {
   terminal.resize(120, 60);
   await terminal.waitFor(
     (s) =>
-      terminal.mark() > mark &&
-      s.includes("Ran 2 commands (1 failed)") &&
-      s.includes("BACKGROUND_FINISHED"),
+      terminal.mark() > mark && s.includes("Ran 2 commands") && s.includes("BACKGROUND_FINISHED"),
     "resize",
   );
   terminal.send("\x03/reload\r");
   screen = await terminal.waitFor((s) => s.includes("Reloaded"), "reload");
   assert(screen.includes("Explored 2 files") && !screen.includes("ERROR_BODY_MARKER"));
+  assert(screen.includes(mixedHeader) && !screen.includes("Thinking..."));
   assertOutputPadding(1);
-  assert(screen.includes("Edited 2 files +3 −2") && !screen.includes("edited.txt"));
+  assert(screen.includes("Edited 2 files (+3 −2)") && !screen.includes("edited.txt"));
   await expandEditGroup();
   terminal.click("edited.txt", true);
   await terminal.waitFor(
@@ -540,20 +615,30 @@ try {
     name: "resume",
   });
   screen = await terminal.waitFor(
-    (s) => s.includes("BACKGROUND_FINISHED") && s.includes("Ran 2 commands (1 failed)"),
+    (s) => s.includes("BACKGROUND_FINISHED") && s.includes("Ran 2 commands"),
     "resume saved session",
   );
   assert(screen.includes("Explored 2 files") && !screen.includes("ERROR_BODY_MARKER"));
-  assert(screen.includes("Edited 2 files +3 −2") && !screen.includes("edited.txt"));
+  assert(screen.includes("Edited 2 files (+3 −2)") && !screen.includes("edited.txt"));
+  assert(screen.includes(mixedHeader) && !screen.includes("Thinking..."));
   assert(!terminal.rawSince().includes("\x1b_Ga=T"), "resumed images start hidden");
   assertOutputPadding(1);
+  terminal.click(mixedHeader);
+  await terminal.waitFor((s) => s.includes("picture.png"), "resumed mixed group expands");
   terminal.click("picture.png");
   await terminal.waitFor(() => terminal.rawSince().includes("\x1b_Ga=T"), "resumed image expands");
+  terminal.click("Ran 2 commands");
+  await terminal.waitFor((s) => s.includes("DISPLAY_FIXTURE_ERROR"), "resumed command group");
   terminal.click("DISPLAY_FIXTURE_ERROR");
   await terminal.waitFor((s) => s.includes("ERROR_BODY_MARKER"), "resumed error expands");
-  terminal.click("picture.png");
   terminal.click("DISPLAY_FIXTURE_ERROR");
-  await terminal.waitFor((s) => !s.includes("ERROR_BODY_MARKER"), "collapse before paging");
+  await terminal.waitFor((s) => !s.includes("ERROR_BODY_MARKER"), "resumed error collapses");
+  terminal.click("Ran 2 commands");
+  terminal.click(mixedHeader);
+  await terminal.waitFor(
+    (s) => !s.includes("DISPLAY_FIXTURE_ERROR") && !s.includes("picture.png"),
+    "collapse before paging",
+  );
   assert.equal(renderedArchive().size, 0, "reload/resume still leave archives unrendered");
   terminal.send("/fixture-state before\r");
   await terminal.waitFor(
@@ -565,28 +650,37 @@ try {
   await terminal.waitFor((s) => s.includes("HISTORY_DRAFT_KEEP"), "paging draft");
   const anchorY = terminal.locate("Fixture ready").y;
   terminal.send("\x1b[H");
-  await terminal.waitFor(() => renderedArchive().size === 45, "first older batch");
+  await terminal.waitFor(() => renderedArchive().size === 43, "first older batch");
   assert.equal(terminal.locate("Fixture ready").y, anchorY, "prepend keeps the viewport anchor");
-  assert(renderedArchive().has("ARCHIVE_076") && !renderedArchive().has("ARCHIVE_075"));
+  assert(renderedArchive().has("ARCHIVE_078") && !renderedArchive().has("ARCHIVE_073"));
   mark = terminal.mark();
   terminal.resize(120, 68);
   await terminal.waitFor(() => terminal.mark() > mark, "resize a paged transcript");
-  assert.equal(renderedArchive().size, 45, "resize must not fetch another batch");
+  assert.equal(renderedArchive().size, 43, "resize must not fetch another batch");
   terminal.send("\x1b[5~");
   await terminal.waitFor((s) => s.includes("ARCHIVE_"), "scroll within the loaded batch");
-  assert.equal(renderedArchive().size, 45, "one Page Up does not reach the new top");
+  assert.equal(renderedArchive().size, 43, "one Page Up does not reach the new top");
   terminal.send("\x1b[H");
   await terminal.waitFor(
-    (s) => renderedArchive().size === 95 && s.includes("ARCHIVE_076"),
-    "second batch, anchored at the previous top",
+    (s) => renderedArchive().size === 91 && s.includes(seamHeader),
+    "second batch joins the run split by the page boundary",
   );
-  assert(
-    terminal.screen.includes("Explored 2 files"),
-    "historical tool groups render independently",
+  assert(!terminal.screen.includes("echo ARCHIVED_SEAM"), "the seam call moved into its group");
+  // Home showed the seam call at the top; its merged header keeps that place.
+  // The message just before it, from the new page, must remain above the viewport.
+  assert(terminal.locate(seamHeader).y <= 2, "the merged group stays at the previous top");
+  assert(!terminal.screen.includes("ARCHIVE_073"), "the viewport did not jump into older rows");
+  terminal.click(seamHeader);
+  await terminal.waitFor(
+    (s) => s.includes("seam.txt") && s.includes("echo ARCHIVED_SEAM"),
+    "calls from both pages expand under one header",
   );
+  terminal.click(seamHeader);
+  await terminal.waitFor((s) => !s.includes("seam.txt"), "seam group collapses");
+  assert(terminal.screen.includes("Explored 3 files"), "historical images group with their reads");
   assert(!terminal.screen.includes("ARCHIVED_READ_RESULT"), "historical results start collapsed");
-  assert.equal(terminal.locate("✓ Explored 2 files").x, 1, "history also honors output padding");
-  terminal.click("Explored 2 files");
+  assert.equal(terminal.locate("✓ Explored 3 files").x, 1, "history also honors output padding");
+  terminal.click("Explored 3 files");
   await terminal.waitFor((s) => s.includes("archived.txt"), "historical filenames expand");
   assert(terminal.locate("archived.txt").cell.style.underline);
   assert.equal(terminal.locate("archived.txt").row.text.indexOf("✓"), 3);
@@ -594,7 +688,7 @@ try {
   await terminal.waitFor((s) => s.includes("ARCHIVED_VIM_TARGET"), "historical filename opens Vim");
   terminal.send(":q\r");
   await terminal.waitFor(
-    (s) => s.includes("ARCHIVE_076") && s.includes("HISTORY_DRAFT_KEEP"),
+    (s) => s.includes(seamHeader) && s.includes("HISTORY_DRAFT_KEEP"),
     "return to the historical viewport and draft",
   );
   mark = terminal.mark();
@@ -610,7 +704,7 @@ try {
   );
   terminal.send("\x1b[H");
   await terminal.waitFor(
-    (s) => renderedArchive().size === 121 && s.includes("ARCHIVE_026"),
+    (s) => renderedArchive().size === 117 && s.includes("ARCHIVE_026"),
     "final older batch",
   );
   terminal.send("\x1b[H");
@@ -619,7 +713,7 @@ try {
   await delay(150);
   assert.equal(
     renderedArchive().size,
-    121,
+    117,
     "exhaustion never duplicates or drains further entries",
   );
   assert.equal(

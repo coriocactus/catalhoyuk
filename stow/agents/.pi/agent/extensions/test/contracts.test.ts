@@ -2,6 +2,7 @@
 // and global symbol keys even when loaded from separate module roots.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { ROW_ANCHOR } from "../shared/anchors.ts";
 import { HISTORY_PAGE } from "../shared/history.ts";
 import { isOpenFileRequest, OPEN_FILE_EVENT } from "../shared/protocol.ts";
 import { isTranscriptView, TRANSCRIPT_VIEW } from "../shared/transcript.ts";
@@ -10,6 +11,7 @@ test("shared presentation identifiers use the owning extensions' namespaces", ()
   assert.equal(OPEN_FILE_EVENT, "inspector:open");
   assert.equal(TRANSCRIPT_VIEW, "rearview:transcript-view");
   assert.equal(Symbol.keyFor(HISTORY_PAGE), "rearview.history-page.v1");
+  assert.equal(Symbol.keyFor(ROW_ANCHOR), "rearview.row-anchor.v1");
 });
 
 test("payload guards accept well-formed messages and reject malformed ones", () => {
@@ -25,6 +27,16 @@ test("payload guards accept well-formed messages and reject malformed ones", () 
     assert(!isOpenFileRequest(invalid));
   const view = { sessionId: "s", cwd: "/tmp", expanded: false, entries: [{ id: "e", type: "x" }] };
   assert(isTranscriptView(view));
-  for (const invalid of [undefined, { ...view, expanded: 1 }, { ...view, entries: [{ id: 1 }] }])
+  const scope = {};
+  assert(isTranscriptView({ ...view, scope, history: [], prepend: true }));
+  for (const invalid of [
+    undefined,
+    { ...view, expanded: 1 },
+    { ...view, entries: [{ id: 1 }] },
+    { ...view, scope: "not-an-object" },
+    { ...view, scope: null },
+    { ...view, history: {} },
+    { ...view, prepend: "yes" },
+  ])
     assert(!isTranscriptView(invalid));
 });

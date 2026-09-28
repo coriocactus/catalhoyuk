@@ -5,7 +5,11 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
-import type { AgentToolResult, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+  AgentToolResult,
+  ExtensionContext,
+  ExtensionToolContext,
+} from "@earendil-works/pi-coding-agent";
 import type { EditorComponent } from "@earendil-works/pi-tui";
 import { type FileToolName, OPEN_FILE_EVENT, type OpenFileRequest } from "../../shared/protocol.ts";
 import { fake, fakePi } from "../../test/fake-pi.ts";
@@ -57,7 +61,13 @@ test("filename resolution matches Pi, including Unicode spaces, URLs, and macOS 
   writeFileSync(join(dir, "a\u00a0b.txt"), "NBSP");
   const args = { path: "a\u00a0b.txt" };
   const read = core.createReadToolDefinition(dir);
-  const ctx = fake<ExtensionContext>({ cwd: dir });
+  const ctx = fake<ExtensionToolContext>({
+    cwd: dir,
+    tools: [],
+    async executeTool() {
+      throw new Error("Unexpected nested execution in path fixture.");
+    },
+  });
   assert.equal(firstText(await read.execute("read", args, undefined, undefined, ctx)), "ASCII");
   for (const tool of ["read", "edit", "write"] as const) {
     const target = await resolveToolFile({ ...args, cwd: dir, tool });
