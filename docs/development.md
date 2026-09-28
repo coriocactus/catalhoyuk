@@ -18,7 +18,8 @@ npm --prefix stow/agents/.pi/agent/extensions run verify
 
 - Shell suites need Bash 3.2+, Stow, Zsh, Git, JJ, prek, Vim, tmux: `brew install stow zsh git jj prek vim tmux`.
 - Tests isolate `HOME`, config, repositories, and tmux sockets. They do not install plugins or touch live profiles.
-- `tests/stow.sh` and `tests/config.sh` run `bin/stow` into the isolated `HOME` and test the result.
+- `tests/stow.sh` tests the installer mechanism (linking, folding, conflicts, pruning, `track`, `untrack`) against a synthetic checkout, so it never changes when dotfiles are added or removed.
+- `tests/config.sh` installs the real packages into the isolated `HOME` and tests the configs themselves.
 - Pi extension setup: [extension README](../stow/agents/.pi/agent/extensions/README.md#development). `bin/check` does not install dependencies.
 
 ## Installer
@@ -27,12 +28,19 @@ npm --prefix stow/agents/.pi/agent/extensions run verify
 
 - `home` and `xdg` use `--no-folding`: real directories, one link per file.
 - `agents` folds: `~/.agents` and `~/.pi/agent/extensions` become directory links. `~/.pi/agent` is created first so Pi's own state stays out of the checkout. A real `~/.pi/agent/extensions` directory is refused.
-- Unselected `tmux-*` and `vim-ssh` packages are unstowed on every run.
+- `vim-ssh` is unstowed on every run without `--ssh`.
 - `agents/.agents/.skill-lock.json` is installed at `$HOME/.agents/.skill-lock.json`.
 - `--ignore` keeps `identities.example` out of the targets.
 - `--repo4` preflights `repo4 init` before linking and runs it after.
 
 Each `stow` invocation checks all its conflicts before changing anything, but the run as a whole is not a transaction.
+
+### track and untrack
+
+- Paths are validated as a batch before anything moves; one bad path refuses them all.
+- `track` moves each file to `stow/PACKAGE/RELATIVE-PATH`, then runs `stow -S` for the affected packages. If Stow fails, every file is moved back. A file Stow silently skips (its default ignore list, e.g. a root `README.*`) is moved back and reported.
+- A directory argument expands to its regular files; files already linked into the checkout are skipped, other symlinks are refused.
+- `untrack` accepts only links at the exact place Stow would put them, including folded directory links such as `~/.agents`. It moves the file back over the link and removes directories left empty in the package.
 
 ### Renaming and removing files
 
@@ -44,7 +52,7 @@ It does not visit directories the package no longer has, and it refuses links in
 
 ### Tmux
 
-- Profiles hold colours and an include of `~/.config/tmux/common.conf`.
+- One `~/.tmux.conf` in the `home` package; its `run-shell` calls `$XDG_CONFIG_HOME/tmux/brew-zsh.sh` (default `~/.config`).
 - `brew-zsh.sh` picks Homebrew Zsh via `brew --prefix`, else `$HOMEBREW_PREFIX`, `/opt/homebrew`, `/home/linuxbrew/.linuxbrew`, `/usr/local`. Falls back to tmux's default shell.
 - Applies to new panes only.
 
