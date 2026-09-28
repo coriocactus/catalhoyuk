@@ -2,34 +2,253 @@
 # GNU Stow wrapper. Every directory under stow/ is a package.
 set -eu
 
-usage() { printf '%s\n' 'Usage: ./bin/stow [--ssh] [--tmux PROFILE] [--repo4] [--dry-run] [--delete]'; }
-error() { printf 'error: %s\n' "$*" >&2; exit 1; }
+usage() {
+    printf '%s\n' \
+        'Usage: ./bin/stow [--ssh] [--repo4] [--dry-run] [--delete]' \
+        '       ./bin/stow [--dry-run] track|untrack PATH...'
+}
+warn() { printf 'error: %s\n' "$*" >&2; }
+error() { warn "$@"; exit 1; }
+misuse() { usage >&2; exit 2; }
 
 root=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-profile=home ssh= repo4= dry= delete=
+ssh= repo4= dry= delete= action= paths=()
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --ssh) ssh=1 ;;
         --repo4) repo4=1 ;;
         --dry-run) dry=1 ;;
         --delete) delete=1 ;;
-        --tmux)
-            [ "$#" -ge 2 ] && [ -d "$root/stow/tmux-${2:-}" ] || error "--tmux needs a profile from stow/tmux-*: ${2:-}"
-            profile=$2; shift ;;
         -h|--help) usage; exit 0 ;;
-        *) usage >&2; exit 2 ;;
+        --) [ -n "$action" ] || misuse; shift; paths+=("$@"); break ;;
+        -*) misuse ;;
+        track|untrack) if [ -n "$action" ]; then paths+=("$1"); else action=$1; fi ;;
+        *) [ -n "$action" ] || misuse; paths+=("$1") ;;
     esac
     shift
 done
+if [ -n "$action" ]; then [ "${#paths[@]}" -gt 0 ] && [ -z "$ssh$repo4$delete" ] || misuse; fi
 
 command -v stow >/dev/null 2>&1 || error 'GNU Stow is required: brew install stow'
 config=${XDG_CONFIG_HOME:-$HOME/.config}
-tmux_profiles=()
-for dir in "$root"/stow/tmux-*/; do dir=${dir%/}; tmux_profiles+=("${dir##*/}"); done
 run() { stow -d "$root/stow" -v ${dry:+-n} "$@"; }
 
+# Pi writes sessions under ~/.pi/agent, so link its files individually rather than the directory.
+# The extensions directory must fold into one link; a real directory there would be linked file by file.
+check_extensions() {
+    if [ -d "$HOME/.pi/agent/extensions" ] && [ ! -L "$HOME/.pi/agent/extensions" ]; then
+        error "move aside the existing directory: $HOME/.pi/agent/extensions"
+    fi
+}
+
+# Target and options per package. vim-ssh is opt-in, so track never chooses it.
+stow_package() { # OPERATION PACKAGE
+    case "$2" in
+        home) run -t "$HOME" --no-folding "$1" home ;;
+        xdg) run -t "$config" --no-folding --ignore='identities\.example' "$1" xdg ;;
+        agents) run -t "$HOME" "$1" agents ;;
+    esac
+}
+
+# ---- track / untrack -------------------------------------------------------
+
+physical_dir() { CDPATH= cd -P -- "$1" 2>/dev/null && pwd -P; }
+# Path $1 is strictly inside directory $2; $1 is $2 or inside it.
+under() { [ -n "$2" ] && case "$1" in "$2"/*) return 0 ;; esac; return 1; }
+within() { [ "$1" = "$2" ] || under "$1" "$2"; }
+
+# Absolute path $1 with its directories resolved and the last component kept, so a symlink
+# names itself rather than its destination. Fails if the directory is missing.
+physical_path() {
+    local dir
+    # The trailing slash keeps a root-level path's empty directory part meaning "/";
+    # only pwd -P of "/" ends in a slash, which ${dir%/} drops.
+    dir=$(physical_dir "${1%/*}/") || return 1
+    printf '%s\n' "${dir%/}/${1##*/}"
+}
+
+# Sets $located from a user-supplied path: absolute, directories resolved, last component kept.
+locate() {
+    local path=$1
+    while [ "$path" != / ] && [ "${path%/}" != "$path" ]; do path=${path%/}; done
+    case "$path" in /*) ;; *) path=$PWD/$path ;; esac
+    case "${path##*/}" in ''|.|..) error "not a file path: $1" ;; esac
+    located=$(physical_path "$path") || error "no such directory: ${path%/*}"
+}
+
+# Sets $resolved: the physical path symlink $1 points to, or empty if its directory is missing.
+resolve_link() {
+    local link
+    link=$(readlink -- "$1")
+    case "$link" in /*) ;; *) link=${1%/*}/$link ;; esac
+    resolved=$(physical_path "$link") || resolved=
+}
+
+# Sets $package and $rel for a path under a stow target. Files under $XDG_CONFIG_HOME belong
+# to xdg; elsewhere in $HOME, to the package already holding the deepest parent directory, else home.
+choose_package() {
+    local candidate dir best=0
+    if [ -n "$config_dir" ] && under "$1" "$config_dir"; then
+        package=xdg rel=${1#"$config_dir"/}
+        return
+    fi
+    under "$1" "$home_dir" || error "not under \$HOME or \$XDG_CONFIG_HOME: $2"
+    package=home rel=${1#"$home_dir"/}
+    for candidate in home agents; do
+        dir=$(dirname -- "$rel")
+        while [ "$dir" != . ] && [ ! -d "$root/stow/$candidate/$dir" ]; do dir=$(dirname -- "$dir"); done
+        if [ "$dir" != . ] && [ "${#dir}" -gt "$best" ]; then best=${#dir} package=$candidate; fi
+    done
+}
+
+# Planned items, filled by plan_track or plan_untrack.
+sources=() packages=() rels=() links=()
+planned() { case " ${packages[*]} " in *" $1 "*) return 0 ;; esac; return 1; }
+
+plan_track() { # PATH ARGUMENT [nested]
+    local path=$1 nested=${3:-} file before dest
+    if [ -L "$path" ]; then
+        resolve_link "$path"
+        if [ -n "$resolved" ] && under "$resolved" "$root"; then
+            [ -n "$nested" ] || error "already tracked: $2"
+            return 0
+        fi
+        error "a symlink; track what it points to instead: $2"
+    fi
+    [ -e "$path" ] || error "no such file: $2"
+    if within "$path" "$root"; then error "already inside the checkout: $2"; fi
+    if [ -d "$path" ]; then
+        if within "$home_dir" "$path" || within "$config_dir" "$path" || within "$root" "$path"; then
+            error "refusing to track a directory containing \$HOME, \$XDG_CONFIG_HOME, or the checkout: $2"
+        fi
+        before=${#sources[@]}
+        while IFS= read -r -d '' file; do
+            plan_track "$file" "$file" nested
+        done < <(find "$path" -mindepth 1 ! -type d -print0)
+        [ "${#sources[@]}" -gt "$before" ] || error "nothing untracked in: $2"
+        return 0
+    fi
+    [ -f "$path" ] || error "not a regular file: $2"
+    choose_package "$path" "$2"
+    dest=$root/stow/$package/$rel
+    if [ -e "$dest" ] || [ -L "$dest" ]; then error "already exists in the checkout: stow/$package/$rel"; fi
+    if command -v git >/dev/null 2>&1 && git -C "$root" check-ignore -q -- "$dest" 2>/dev/null; then
+        error "ignored by git, so it would never be committed: stow/$package/$rel"
+    fi
+    sources+=("$path") packages+=("$package") rels+=("$rel")
+}
+
+plan_untrack() { # PATH ARGUMENT
+    local path=$1 rest target
+    if [ ! -L "$path" ]; then
+        [ -e "$path" ] || error "no such file: $2"
+        if under "$path" "$root"; then error "inside a linked directory; untrack that directory: $2"; fi
+        error "not tracked: $2"
+    fi
+    resolve_link "$path"
+    case "$resolved" in "$root/stow/"?*/?*) ;; *) error "not tracked, links outside stow/: $2" ;; esac
+    rest=${resolved#"$root/stow/"}
+    package=${rest%%/*} rel=${rest#*/}
+    [ -e "$resolved" ] || [ -L "$resolved" ] || error "dangling link, delete it instead: $2"
+    if [ "$package" = xdg ]; then target=$config_dir; else target=$home_dir; fi
+    [ "$path" = "$target/$rel" ] || error "not the link stow makes for stow/$package/$rel: $2"
+    sources+=("$path") packages+=("$package") rels+=("$rel") links+=("$(readlink -- "$path")")
+}
+
+# Print "VERB ~/path ARROW stow/package/rel" for planned item $3.
+report() {
+    local path=${sources[$3]}
+    if under "$path" "$home_dir"; then path="~/${path#"$home_dir"/}"; fi
+    printf '%s %s %s stow/%s/%s\n' "$1" "$path" "$2" "${packages[$3]}" "${rels[$3]}"
+}
+
+# Remove directories left empty in a package, from $1 up to the package root.
+prune() {
+    local dir=$1
+    while under "$dir" "$2" && rmdir -- "$dir" 2>/dev/null; do dir=${dir%/*}; done
+}
+
+# Put a tracked file back: drop any link stow made, then move the file home again.
+restore() {
+    local path=${sources[$1]} base="$root/stow/${packages[$1]}"
+    if [ -L "$path" ]; then rm -f -- "$path"; fi
+    mv -- "$base/${rels[$1]}" "$path"
+    prune "$(dirname -- "$base/${rels[$1]}")" "$base"
+}
+
+track() {
+    local i j count dest package failed=
+    count=${#sources[@]}
+    if planned agents; then check_extensions; fi
+    if [ -n "$dry" ]; then
+        for ((i = 0; i < count; i++)); do report '[dry-run] track' '->' "$i"; done
+        return 0
+    fi
+    for ((i = 0; i < count; i++)); do
+        dest=$root/stow/${packages[i]}/${rels[i]}
+        if ! mkdir -p -- "$(dirname -- "$dest")" || ! mv -- "${sources[i]}" "$dest"; then
+            prune "$(dirname -- "$dest")" "$root/stow/${packages[i]}"
+            for ((j = 0; j < i; j++)); do restore "$j"; done
+            error "could not move ${sources[i]} into the checkout; nothing changed"
+        fi
+    done
+    for package in home xdg agents; do
+        planned "$package" || continue
+        if ! stow_package -S "$package"; then
+            for ((i = 0; i < count; i++)); do restore "$i"; done
+            error "stow failed; files moved back, nothing changed"
+        fi
+    done
+    for ((i = 0; i < count; i++)); do
+        dest=$root/stow/${packages[i]}/${rels[i]}
+        if [ -L "${sources[i]}" ] && [ "${sources[i]}" -ef "$dest" ]; then
+            report tracked '->' "$i"
+        else
+            restore "$i"
+            warn "stow ignores this name, left in place: ${sources[i]}"
+            failed=1
+        fi
+    done
+    [ -z "$failed" ]
+}
+
+untrack() {
+    local i count base
+    count=${#sources[@]}
+    for ((i = 0; i < count; i++)); do
+        base="$root/stow/${packages[i]}"
+        if [ -n "$dry" ]; then
+            report '[dry-run] untrack' '<-' "$i"
+            continue
+        fi
+        [ -L "${sources[i]}" ] || error "no longer a link: ${sources[i]}"
+        rm -f -- "${sources[i]}"
+        if ! mv -- "$base/${rels[i]}" "${sources[i]}"; then
+            ln -s -- "${links[i]}" "${sources[i]}"
+            error "could not move stow/${packages[i]}/${rels[i]} back to ${sources[i]}"
+        fi
+        prune "$(dirname -- "$base/${rels[i]}")" "$base"
+        report untracked '<-' "$i"
+    done
+}
+
+if [ -n "$action" ]; then
+    home_dir=$(physical_dir "$HOME") || error "HOME is not a directory: $HOME"
+    config_dir=$(physical_dir "$config") || config_dir=
+    for path in "${paths[@]}"; do
+        locate "$path"
+        "plan_$action" "$located" "$path"
+    done
+    duplicate=$(printf '%s\n' "${sources[@]}" | sort | uniq -d | head -n 1)
+    [ -z "$duplicate" ] || error "given more than once: $duplicate"
+    "$action"
+    exit
+fi
+
+# ---- install ---------------------------------------------------------------
+
 if [ -n "$delete" ]; then
-    run -t "$HOME" -D home agents vim-ssh "${tmux_profiles[@]}"
+    run -t "$HOME" -D home agents vim-ssh
     run -t "$config" -D xdg
     exit 0
 fi
@@ -40,22 +259,16 @@ if [ -n "$repo4" ]; then
     REPO4_CHECK_ONLY=1 "${repo4_init[@]}"
 fi
 
-# Pi writes sessions under ~/.pi/agent, so link its files individually rather than the directory.
-# The extensions directory must fold into one link; a real directory there would be linked file by file.
-if [ -d "$HOME/.pi/agent/extensions" ] && [ ! -L "$HOME/.pi/agent/extensions" ]; then
-    error "move aside the existing directory: $HOME/.pi/agent/extensions"
-fi
+check_extensions
 [ -n "$dry" ] || mkdir -p "$HOME/.pi/agent" "$config"
 
-run -t "$HOME" --no-folding -R home
+stow_package -R home
 if [ -d "$config" ]; then
-    run -t "$config" --no-folding --ignore='identities\.example' -R xdg
+    stow_package -R xdg
 else
     printf '%s\n' "[dry-run] mkdir $config and stow xdg"
 fi
-run -t "$HOME" \
-    -D "${tmux_profiles[@]}" vim-ssh \
-    -R agents "tmux-$profile" ${ssh:+vim-ssh}
+run -t "$HOME" -D vim-ssh -R agents ${ssh:+vim-ssh}
 
 if [ -n "$repo4" ]; then
     if [ -n "$dry" ]; then printf '%s\n' '[dry-run] repo4 init'; else "${repo4_init[@]}"; fi

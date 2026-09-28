@@ -418,12 +418,11 @@ stow_integration() {
 }
 
 stow_init_dry_run() {
-    bash "$repo_root/bin/stow" --repo4 --ssh --tmux work --dry-run > "$output" 2>&1
+    bash "$repo_root/bin/stow" --repo4 --ssh --dry-run > "$output" 2>&1
     contains '[dry-run] repo4 init'
     [[ ! -e $XDG_CONFIG_HOME && ! -e $XDG_STATE_HOME && ! -e $HOME/.vimrc ]] || fail 'dry run created files'
-    bash "$repo_root/bin/stow" --repo4 --ssh --tmux work > "$output" 2>&1
+    bash "$repo_root/bin/stow" --repo4 --ssh > "$output" 2>&1
     [[ -f $profiles && -L $HOME/.vimrc-ssh ]] || fail '--repo4 did not compose with --ssh'
-    [[ $HOME/.tmux.conf -ef $repo_root/stow/tmux-work/.tmux.conf ]] || fail '--repo4 ignored tmux selection'
     local before=$(cksum "$profiles"; ls -di "$profiles")
     bash "$repo_root/bin/stow" --repo4 --dry-run > "$output" 2>&1
     [[ $(cksum "$profiles"; ls -di "$profiles") == $before ]] || fail 'dry run changed existing profiles'
@@ -443,7 +442,7 @@ stow_init_conflict() {
 
 stow_missing_template() {
     local checkout=${source_dir:h:h:h}
-    mkdir -p "$checkout/bin" "$checkout/stow/home" "$checkout/stow/agents" "$checkout/stow/tmux-home"
+    mkdir -p "$checkout/bin" "$checkout/stow/home" "$checkout/stow/agents"
     cp "$repo_root/bin/stow" "$checkout/bin/stow"
     rm "$source_dir/identities.example"
     if bash "$checkout/bin/stow" --repo4 > "$output" 2>&1; then fail 'stow accepted a missing init template'; fi

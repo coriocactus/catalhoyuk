@@ -6,15 +6,14 @@ Dotfiles, installed with [GNU Stow](https://www.gnu.org/software/stow/).
 
 ```sh
 brew install stow
-./bin/stow                    # home + XDG configs, home tmux
-./bin/stow --ssh --tmux work   # also SSH vimrc, work tmux
-./bin/stow --tmux remote      # remote tmux
-./bin/stow --repo4            # also repo4 identity profiles
-./bin/stow --dry-run          # report only
-./bin/stow --delete           # remove all links
+./bin/stow             # home + XDG configs
+./bin/stow --ssh       # also SSH vimrc
+./bin/stow --repo4     # also repo4 identity profiles
+./bin/stow --dry-run   # report only
+./bin/stow --delete    # remove all links
 ```
 
-Rerunning applies the current flags: a profile or `--ssh` you drop is unlinked.
+Rerunning applies the current flags: dropping `--ssh` unlinks the SSH vimrc.
 Then start a new shell. Run `:BootstrapPlugins` in Vim to install plugins, then restart Vim.
 
 ## Layout
@@ -35,10 +34,8 @@ Packages:
 | `home` | `~` | Leaf files linked; directories created |
 | `xdg` | `~/.config` | Same; `repo4/identities.example` is not linked |
 | `agents` | `~` | `.agents` and `.pi/agent/extensions` linked as directories |
-| `tmux-*` | `~` | `home` (default), `work`, or `remote`, selected by `--tmux`; differ only in colour |
 | `vim-ssh` | `~` | Selected by `--ssh` |
 
-To add a file, place it in a package at its home-relative path and rerun.
 Existing files and foreign symlinks are never replaced; Stow reports a conflict.
 
 Rerunning also removes dangling links, except in directories a package no longer has
@@ -48,6 +45,22 @@ the checkout (drop `-print`, add `-delete` to remove, then rerun `./bin/stow`):
 ```sh
 find ~ -maxdepth 3 -type l -lname '*/catalhoyuk/*' ! -exec test -e {} \; -print 2>/dev/null
 ```
+
+## Tracking files
+
+```sh
+./bin/stow track ~/.some-file        # move into the checkout, link back
+./bin/stow track ~/.config/app       # every untracked file in a directory
+./bin/stow untrack ~/.some-file      # replace the link with the file again
+./bin/stow --dry-run track ~/.x      # report only
+```
+
+`track` picks the package: `xdg` under `$XDG_CONFIG_HOME`, otherwise the package that
+already holds the deepest parent directory (`agents` for `~/.pi/agent/…`), else `home`.
+It refuses links, git-ignored destinations, and names Stow ignores, and moves files
+back if Stow fails. Commit the result as usual.
+
+Adding a file by hand works too: place it in a package at its target-relative path and rerun.
 
 ## Node, Bun, Yarn
 
