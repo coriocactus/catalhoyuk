@@ -13,27 +13,34 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
+import { type AnchorState, ROW_ANCHOR } from "../shared/anchors.ts";
 import { HISTORY_PAGE, type HistoryPage, type HistoryRenderState } from "../shared/history.ts";
 import { type FileReference, OPEN_FILE_EVENT, type OpenFileRequest } from "../shared/protocol.ts";
 import { isTranscriptView, TRANSCRIPT_VIEW, type TranscriptView } from "../shared/transcript.ts";
 import { ToolGroups, type ToolName } from "./model.ts";
 import { installNativeImageSlot, ownImageRendering, renderNativeImages } from "./native-images.ts";
 import { installNativeOutputPadding, outputPadding, ownOutputPadding } from "./native-padding.ts";
+import { installNativeThinking } from "./native-thinking.ts";
 import { ToolGroupView } from "./view.ts";
 
 const EMPTY: Component = { render: () => [], invalidate() {} };
 type DisplayState = { view?: ToolGroupView };
 
-function installNativeRendering(report: (error: Error) => void): () => void {
-  const releaseImages = installNativeImageSlot(report);
+function installNativeRendering(
+  report: (error: Error) => void,
+  visibility: (hidden: boolean) => void,
+): () => void {
+  const releases: (() => void)[] = [];
+  const release = () => {
+    for (const dispose of releases.reverse()) dispose();
+  };
   try {
-    const releasePadding = installNativeOutputPadding(report);
-    return () => {
-      releasePadding();
-      releaseImages();
-    };
+    releases.push(installNativeImageSlot(report));
+    releases.push(installNativeOutputPadding(report));
+    releases.push(installNativeThinking(report, visibility));
+    return release;
   } catch (error) {
-    releaseImages();
+    release();
     throw error;
   }
 }
@@ -41,6 +48,18 @@ function installNativeRendering(report: (error: Error) => void): () => void {
 export default function (pi: ExtensionAPI) {
   const groups = new ToolGroups();
   let historyGroups = new WeakMap<HistoryPage, ToolGroups>();
+  const images = new WeakMap<ToolGroupView["row"], (width: number) => string[]>();
+  const models = new Set([new WeakRef(groups)]);
+  let thinkingHidden = false;
+  const visibility = (hidden: boolean) => {
+    if (hidden === thinkingHidden) return;
+    thinkingHidden = hidden;
+    for (const reference of models) {
+      const model = reference.deref();
+      if (model) model.setThinkingHidden(hidden);
+      else models.delete(reference);
+    }
+  };
   let transcript: TranscriptView | undefined;
   let sessionContext: ExtensionContext | undefined;
   const warnings: string[] = [];
@@ -52,13 +71,32 @@ export default function (pi: ExtensionAPI) {
     warnings.push(`Mirage: ${error.message}`);
     queueMicrotask(flushWarnings); // Never add UI messages in the middle of a render.
   };
-  let releaseRendering: (() => void) | undefined = installNativeRendering(report);
+  let releaseRendering: (() => void) | undefined = installNativeRendering(report, visibility);
   const unsubscribeTranscript = pi.events.on(TRANSCRIPT_VIEW, (value) => {
     if (!isTranscriptView(value)) return;
+    if (value.prepend) {
+      if (
+        !value.scope ||
+        value.scope !== transcript?.scope ||
+        value.sessionId !== transcript.sessionId
+      )
+        return;
+      const staged = groups.stagePrepend(snapshot(value.entries, value.cwd));
+      const current = transcript;
+      value.transaction = {
+        commit() {
+          staged.commit();
+          current.history = [...value.entries, ...(current.history ?? [])];
+        },
+        rollback: staged.rollback,
+      };
+      return;
+    }
+    if (transcript?.scope !== value.scope || transcript?.sessionId !== value.sessionId)
+      groups.reset();
     transcript = value;
-    groups.reset();
     groups.setAllExpanded(value.expanded);
-    replay(groups, value.entries, value.cwd);
+    groups.replace(snapshot([...(value.history ?? []), ...value.entries], value.cwd));
   });
   let configuration: { cwd: string; trusted: boolean; settings: SettingsManager } | undefined;
 
@@ -75,7 +113,6 @@ export default function (pi: ExtensionAPI) {
   }
 
   function rebuild(ctx: ExtensionContext): void {
-    groups.reset();
     groups.setAllExpanded(ctx.ui.getToolsExpanded());
     let entries = ctx.sessionManager.buildContextEntries();
     if (transcript && transcript.sessionId === ctx.sessionManager.getSessionId()) {
@@ -90,7 +127,16 @@ export default function (pi: ExtensionAPI) {
           ...entries.slice(start),
         ];
     }
-    replay(groups, entries, ctx.cwd);
+    const history =
+      transcript?.sessionId === ctx.sessionManager.getSessionId() ? (transcript.history ?? []) : [];
+    groups.replace(snapshot([...history, ...entries], ctx.cwd));
+  }
+
+  function snapshot(entries: readonly SessionEntry[], cwd: string): ToolGroups {
+    const model = new ToolGroups();
+    model.setThinkingHidden(thinkingHidden);
+    replay(model, entries, cwd);
+    return model;
   }
 
   function replay(target: ToolGroups, entries: readonly SessionEntry[], cwd: string): void {
@@ -106,10 +152,12 @@ export default function (pi: ExtensionAPI) {
 
   function groupsFor(state: object): ToolGroups {
     const page = (state as HistoryRenderState)[HISTORY_PAGE];
-    if (!page) return groups;
+    if (!page || (page.scope && page.scope === transcript?.scope)) return groups;
     let archived = historyGroups.get(page);
     if (!archived) {
       archived = new ToolGroups();
+      archived.setThinkingHidden(thinkingHidden);
+      models.add(new WeakRef(archived));
       replay(archived, page.entries, page.cwd);
       historyGroups.set(page, archived);
     }
@@ -117,9 +165,9 @@ export default function (pi: ExtensionAPI) {
   }
 
   pi.on("session_start", (_event, ctx) => {
-    releaseRendering ??= installNativeRendering(report);
+    releaseRendering ??= installNativeRendering(report, visibility);
     configuration = undefined;
-    settingsFor(ctx);
+    visibility(settingsFor(ctx).getHideThinkingBlock());
     sessionContext = ctx.mode === "tui" ? ctx : undefined;
     flushWarnings();
     if (sessionContext) rebuild(ctx);
@@ -185,6 +233,7 @@ export default function (pi: ExtensionAPI) {
         const row = groups.addCall(context.toolCallId, name, args, context.cwd);
         if (!row) return EMPTY;
         if (context.executionStarted) groups.markStarted(row);
+        images.set(row, (width) => renderNativeImages(context.state, width));
         const view =
           context.state.view?.row === row
             ? context.state.view
@@ -195,9 +244,10 @@ export default function (pi: ExtensionAPI) {
                 },
                 openFile,
                 outputPad: () => outputPadding(context.state),
-                renderImages: (width) => renderNativeImages(context.state, width),
+                renderImages: (target, width) => images.get(target)?.(width) ?? [],
               });
         context.state.view = view;
+        (context.state as AnchorState)[ROW_ANCHOR] = view;
         view.configure(theme, context.showImages);
         return view;
       },

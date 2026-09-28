@@ -5,5 +5,6 @@ export const HISTORY_PAGE = Symbol.for("rearview.history-page.v1");
 export interface HistoryPage {
   readonly entries: readonly SessionEntry[];
   readonly cwd: string;
+  readonly scope?: object;
 }
 export type HistoryRenderState = { [HISTORY_PAGE]?: HistoryPage };

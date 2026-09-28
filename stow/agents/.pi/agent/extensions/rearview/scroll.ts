@@ -10,9 +10,11 @@ export function attachTopPaging(
     settled(): void;
     end(): void;
   },
-): { anchor(page: Component): void; reset(): void; dispose(): void } {
+): { anchor(page: Component | ((width: number) => number)): void; reset(): void; dispose(): void } {
   let closed = false;
-  let pending: { page: Component; top: number; moves: ((added: number) => void)[] } | undefined;
+  let pending:
+    | { measure: (width: number) => number; top: number; moves: ((added: number) => void)[] }
+    | undefined;
   let awaitingLayout = false;
   const originals = {
     scrollBy: scroll.scrollBy,
@@ -86,10 +88,10 @@ export function attachTopPaging(
       originals.updateLayout.call(this, height, viewport, requestRender);
       if (closed) return;
       const anchor = pending;
-      // Measure just the prepended page at the current width. Appended streaming
-      // output and concurrent resizes must not be counted as a prepend delta.
+      // Locate the captured row at the current width. Group merges can remove
+      // old headers, so the prepended page's height alone is not the delta.
       if (anchor) {
-        const added = anchor.page.render(scroll.getContentWidth(options.width())).length;
+        const added = anchor.measure(scroll.getContentWidth(options.width()));
         originals.scrollTo.call(this, anchor.top + added, { disableFollow: true });
         if (anchor.moves.length) {
           pending = undefined;
@@ -119,7 +121,11 @@ export function attachTopPaging(
   }
   return {
     anchor(page) {
-      pending = { page, top: scroll.scrollTop, moves: [] };
+      pending = {
+        measure: typeof page === "function" ? page : (width) => page.render(width).length,
+        top: scroll.scrollTop,
+        moves: [],
+      };
       awaitingLayout = true;
     },
     reset() {
