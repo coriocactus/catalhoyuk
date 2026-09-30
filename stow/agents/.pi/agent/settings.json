@@ -1,5 +1,5 @@
 {
-  "lastChangelogVersion": "0.99.1",
+  "lastChangelogVersion": "0.99.2",
   "theme": "dark",
   "tuiMode": "fullscreen",
   "fullscreenScrollbar": "auto",
@@ -12,6 +12,7 @@
   "hideThinkingBlock": true,
   "defaultProvider": "anthropic",
   "defaultModel": "claude-opus-5-5",
+  "defaultThinkingLevel": "xhigh",
   "enabledModels": [
     "openai/gpt-6-astra",
     "openai/gpt-6.1-sol",
@@ -19,7 +20,6 @@
     "anthropic/claude-opus-5-5",
     "anthropic/claude-sonnet-5-5"
   ],
-  "defaultThinkingLevel": "xhigh",
   "modelThinkingLevels": {
     "openai/gpt-6-astra": "xhigh",
     "openai/gpt-6.1-sol": "xhigh",
@@ -30,6 +30,9 @@
   "warnings": {
     "anthropicExtraUsage": false
   },
+  "defaultTools": [
+    "+codemode"
+  ],
   "packages": [
     "npm:pi-web-access",
     "npm:@gotgenes/pi-anthropic-auth",
