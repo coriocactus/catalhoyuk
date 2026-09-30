@@ -84,16 +84,22 @@ resolve_link() {
     resolved=$(physical_path "$link") || resolved=
 }
 
-# Sets $package and $rel for a path under a stow target. Files under $XDG_CONFIG_HOME belong
-# to xdg; elsewhere in $HOME, to the package already holding the deepest parent directory, else home.
+# Sets $rel: path $1 relative to the stow target it is under. Sets $package to xdg under
+# $XDG_CONFIG_HOME, or empty under $HOME, where two packages share the target.
+target_rel() {
+    if [ -n "$config_dir" ] && under "$1" "$config_dir"; then package=xdg rel=${1#"$config_dir"/}
+    elif under "$1" "$home_dir"; then package= rel=${1#"$home_dir"/}
+    else error "not under \$HOME or \$XDG_CONFIG_HOME: $2"
+    fi
+}
+
+# Sets $package and $rel for a new item. Under $HOME it goes to the package already holding
+# the deepest parent directory, else home.
 choose_package() {
     local candidate dir best=0
-    if [ -n "$config_dir" ] && under "$1" "$config_dir"; then
-        package=xdg rel=${1#"$config_dir"/}
-        return
-    fi
-    under "$1" "$home_dir" || error "not under \$HOME or \$XDG_CONFIG_HOME: $2"
-    package=home rel=${1#"$home_dir"/}
+    target_rel "$1" "$2"
+    [ -z "$package" ] || return 0
+    package=home
     for candidate in home agents; do
         dir=$(dirname -- "$rel")
         while [ "$dir" != . ] && [ ! -d "$root/stow/$candidate/$dir" ]; do dir=$(dirname -- "$dir"); done
@@ -101,18 +107,45 @@ choose_package() {
     done
 }
 
-# Planned items, filled by plan_track or plan_untrack.
-sources=() packages=() rels=() links=()
+# Real directory $1 holds nothing but links to the matching entries under $2, possibly in subdirectories.
+mirrors() {
+    local entry name
+    for entry in "$1"/* "$1"/.[!.]* "$1"/..?*; do
+        [ -e "$entry" ] || [ -L "$entry" ] || continue
+        name=${entry##*/}
+        if [ -L "$entry" ]; then [ "$entry" -ef "$2/$name" ] || return 1
+        elif [ -d "$entry" ]; then [ -d "$2/$name" ] && mirrors "$entry" "$2/$name" || return 1
+        else return 1
+        fi
+    done
+}
+
+# Stow placed $1 for package entry $2: a link to it, or a real directory it descended into (--no-folding).
+placed() {
+    if [ -L "$1" ]; then [ "$1" -ef "$2" ]
+    else [ -d "$1" ] && [ -d "$2" ]
+    fi
+}
+
+# Remove what stow placed at $1: a link, or a --no-folding directory holding only links.
+remove_placed() {
+    if [ -L "$1" ]; then rm -f -- "$1"
+    elif [ -d "$1" ]; then
+        find "$1" -type l -exec rm -f -- {} +
+        find "$1" -depth -type d -exec rmdir -- {} + 2>/dev/null || :
+    fi
+    [ ! -e "$1" ] && [ ! -L "$1" ]
+}
+
+# Planned items, filled by plan_track or plan_untrack. A file or directory is one item.
+sources=() packages=() rels=()
 planned() { case " ${packages[*]} " in *" $1 "*) return 0 ;; esac; return 1; }
 
-plan_track() { # PATH ARGUMENT [nested]
-    local path=$1 nested=${3:-} file before dest
+plan_track() { # PATH ARGUMENT
+    local path=$1 dest
     if [ -L "$path" ]; then
         resolve_link "$path"
-        if [ -n "$resolved" ] && under "$resolved" "$root"; then
-            [ -n "$nested" ] || error "already tracked: $2"
-            return 0
-        fi
+        if [ -n "$resolved" ] && under "$resolved" "$root"; then error "already tracked: $2"; fi
         error "a symlink; track what it points to instead: $2"
     fi
     [ -e "$path" ] || error "no such file: $2"
@@ -121,17 +154,12 @@ plan_track() { # PATH ARGUMENT [nested]
         if within "$home_dir" "$path" || within "$config_dir" "$path" || within "$root" "$path"; then
             error "refusing to track a directory containing \$HOME, \$XDG_CONFIG_HOME, or the checkout: $2"
         fi
-        before=${#sources[@]}
-        while IFS= read -r -d '' file; do
-            plan_track "$file" "$file" nested
-        done < <(find "$path" -mindepth 1 ! -type d -print0)
-        [ "${#sources[@]}" -gt "$before" ] || error "nothing untracked in: $2"
-        return 0
+    elif [ ! -f "$path" ]; then
+        error "not a regular file or directory: $2"
     fi
-    [ -f "$path" ] || error "not a regular file: $2"
     choose_package "$path" "$2"
     dest=$root/stow/$package/$rel
-    if [ -e "$dest" ] || [ -L "$dest" ]; then error "already exists in the checkout: stow/$package/$rel"; fi
+    if [ -e "$dest" ] || [ -L "$dest" ]; then error "already in the checkout, untrack it first: stow/$package/$rel"; fi
     if command -v git >/dev/null 2>&1 && git -C "$root" check-ignore -q -- "$dest" 2>/dev/null; then
         error "ignored by git, so it would never be committed: stow/$package/$rel"
     fi
@@ -139,20 +167,28 @@ plan_track() { # PATH ARGUMENT [nested]
 }
 
 plan_untrack() { # PATH ARGUMENT
-    local path=$1 rest target
-    if [ ! -L "$path" ]; then
+    local path=$1 rest target candidate
+    if [ -L "$path" ]; then
+        resolve_link "$path"
+        case "$resolved" in "$root/stow/"?*/?*) ;; *) error "not tracked, links outside stow/: $2" ;; esac
+        rest=${resolved#"$root/stow/"}
+        package=${rest%%/*} rel=${rest#*/}
+        [ -e "$resolved" ] || [ -L "$resolved" ] || error "dangling link, delete it instead: $2"
+        if [ "$package" = xdg ]; then target=$config_dir; else target=$home_dir; fi
+        [ "$path" = "$target/$rel" ] || error "not the link stow makes for stow/$package/$rel: $2"
+    else
         [ -e "$path" ] || error "no such file: $2"
         if under "$path" "$root"; then error "inside a linked directory; untrack that directory: $2"; fi
-        error "not tracked: $2"
+        [ -d "$path" ] || error "not tracked: $2"
+        # A directory of a --no-folding package: real, holding only links into it.
+        target_rel "$path" "$2"
+        if [ -z "$package" ]; then
+            for candidate in home agents; do [ ! -d "$root/stow/$candidate/$rel" ] || package=$candidate; done
+        fi
+        [ -n "$package" ] && [ -d "$root/stow/$package/$rel" ] || error "not tracked: $2"
+        mirrors "$path" "$root/stow/$package/$rel" || error "holds more than links into stow/$package/$rel: $2"
     fi
-    resolve_link "$path"
-    case "$resolved" in "$root/stow/"?*/?*) ;; *) error "not tracked, links outside stow/: $2" ;; esac
-    rest=${resolved#"$root/stow/"}
-    package=${rest%%/*} rel=${rest#*/}
-    [ -e "$resolved" ] || [ -L "$resolved" ] || error "dangling link, delete it instead: $2"
-    if [ "$package" = xdg ]; then target=$config_dir; else target=$home_dir; fi
-    [ "$path" = "$target/$rel" ] || error "not the link stow makes for stow/$package/$rel: $2"
-    sources+=("$path") packages+=("$package") rels+=("$rel") links+=("$(readlink -- "$path")")
+    sources+=("$path") packages+=("$package") rels+=("$rel")
 }
 
 # Print "VERB ~/path ARROW stow/package/rel" for planned item $3.
@@ -168,12 +204,12 @@ prune() {
     while under "$dir" "$2" && rmdir -- "$dir" 2>/dev/null; do dir=${dir%/*}; done
 }
 
-# Put a tracked file back: drop any link stow made, then move the file home again.
+# Put a tracked item back: drop what stow placed for it, then move it home again.
 restore() {
-    local path=${sources[$1]} base="$root/stow/${packages[$1]}"
-    if [ -L "$path" ]; then rm -f -- "$path"; fi
-    mv -- "$base/${rels[$1]}" "$path"
-    prune "$(dirname -- "$base/${rels[$1]}")" "$base"
+    local path=${sources[$1]} dest="$root/stow/${packages[$1]}/${rels[$1]}"
+    remove_placed "$path" || error "cannot restore, something is in the way: $path"
+    mv -- "$dest" "$path"
+    prune "$(dirname -- "$dest")" "$root/stow/${packages[$1]}"
 }
 
 track() {
@@ -201,11 +237,11 @@ track() {
     done
     for ((i = 0; i < count; i++)); do
         dest=$root/stow/${packages[i]}/${rels[i]}
-        if [ -L "${sources[i]}" ] && [ "${sources[i]}" -ef "$dest" ]; then
+        if placed "${sources[i]}" "$dest"; then
             report tracked '->' "$i"
         else
             restore "$i"
-            warn "stow ignores this name, left in place: ${sources[i]}"
+            warn "stow ignores this name, moved back: ${sources[i]}"
             failed=1
         fi
     done
@@ -213,21 +249,21 @@ track() {
 }
 
 untrack() {
-    local i count base
+    local i count dest
     count=${#sources[@]}
     for ((i = 0; i < count; i++)); do
-        base="$root/stow/${packages[i]}"
         if [ -n "$dry" ]; then
             report '[dry-run] untrack' '<-' "$i"
             continue
         fi
-        [ -L "${sources[i]}" ] || error "no longer a link: ${sources[i]}"
-        rm -f -- "${sources[i]}"
-        if ! mv -- "$base/${rels[i]}" "${sources[i]}"; then
-            ln -s -- "${links[i]}" "${sources[i]}"
+        dest=$root/stow/${packages[i]}/${rels[i]}
+        placed "${sources[i]}" "$dest" || error "changed since it was checked: ${sources[i]}"
+        remove_placed "${sources[i]}" || error "could not clear ${sources[i]}"
+        if ! mv -- "$dest" "${sources[i]}"; then
+            stow_package -S "${packages[i]}" > /dev/null || :
             error "could not move stow/${packages[i]}/${rels[i]} back to ${sources[i]}"
         fi
-        prune "$(dirname -- "$base/${rels[i]}")" "$base"
+        prune "$(dirname -- "$dest")" "$root/stow/${packages[i]}"
         report untracked '<-' "$i"
     done
 }
@@ -239,8 +275,14 @@ if [ -n "$action" ]; then
         locate "$path"
         "plan_$action" "$located" "$path"
     done
-    duplicate=$(printf '%s\n' "${sources[@]}" | sort | uniq -d | head -n 1)
-    [ -z "$duplicate" ] || error "given more than once: $duplicate"
+    # Items must not repeat or nest: moving one would move or break the other.
+    for ((i = 0; i < ${#sources[@]}; i++)); do
+        for ((j = 0; j < ${#sources[@]}; j++)); do
+            if [ "$i" != "$j" ] && within "${sources[i]}" "${sources[j]}"; then
+                error "overlapping paths: ${sources[j]} and ${sources[i]}"
+            fi
+        done
+    done
     "$action"
     exit
 fi

@@ -38,9 +38,9 @@ Each `stow` invocation checks all its conflicts before changing anything, but th
 ### track and untrack
 
 - Paths are validated as a batch before anything moves; one bad path refuses them all.
-- `track` moves each file to `stow/PACKAGE/RELATIVE-PATH`, then runs `stow -S` for the affected packages. If Stow fails, every file is moved back. A file Stow silently skips (its default ignore list, e.g. a root `README.*`) is moved back and reported.
-- A directory argument expands to its regular files; files already linked into the checkout are skipped, other symlinks are refused.
-- `untrack` accepts only links at the exact place Stow would put them, including folded directory links such as `~/.agents`. It moves the file back over the link and removes directories left empty in the package.
+- `track` moves each file or directory to `stow/PACKAGE/RELATIVE-PATH`, then runs `stow -S` for the affected packages. If Stow fails, every item is moved back. An item Stow silently skips (its default ignore list, e.g. a root `README.*`) is moved back and reported.
+- A directory is one item and its contents are not inspected: symlinks inside it move with it (relative ones pointing outside it break), git-ignored files inside it move along and stay uncommitted. A directory whose destination already exists is refused rather than merged. Paths in one batch may not repeat or nest.
+- `untrack` accepts a link at the exact place Stow puts one (including folded directory links such as `~/.agents`), or a real directory holding nothing but such links, which is what a `--no-folding` package leaves. It moves the file or directory back and removes directories left empty in the package.
 
 ### Renaming and removing files
 

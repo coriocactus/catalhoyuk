@@ -202,15 +202,28 @@ track_chooses_package() {
 
 track_directory() {
     install
+    # A folding package links the directory itself, so files written there later are in the checkout.
+    put "$HOME/.pi/agent/echo/one.md" one
+    install track "$HOME/.pi/agent/echo/"
+    contains 'tracked ~/.pi/agent/echo -> stow/agents/.pi/agent/echo'
+    linked "$HOME/.pi/agent/echo" "$checkout/stow/agents/.pi/agent/echo"
+    put "$HOME/.pi/agent/echo/two.md" two
+    real_file "$checkout/stow/agents/.pi/agent/echo/two.md" two
+    # A --no-folding package recreates the directory and links each file, empty subdirectories included.
+    put "$XDG_CONFIG_HOME/newapp/config" cfg
+    put "$XDG_CONFIG_HOME/newapp/sub dir/deep" deep
+    mkdir "$XDG_CONFIG_HOME/newapp/empty"
+    install track "$XDG_CONFIG_HOME/newapp"
+    real_dir "$XDG_CONFIG_HOME/newapp"
+    linked "$XDG_CONFIG_HOME/newapp/config" "$checkout/stow/xdg/newapp/config"
+    linked "$XDG_CONFIG_HOME/newapp/sub dir/deep" "$checkout/stow/xdg/newapp/sub dir/deep"
+    real_dir "$XDG_CONFIG_HOME/newapp/empty"
+    real_dir "$checkout/stow/xdg/newapp/empty"
+    # A directory already partly in the checkout is refused rather than merged.
     put "$XDG_CONFIG_HOME/app/extra.toml" extra
-    put "$XDG_CONFIG_HOME/app/sub dir/deep.toml" deep
-    install track "$XDG_CONFIG_HOME/app/"
-    linked "$XDG_CONFIG_HOME/app/extra.toml" "$checkout/stow/xdg/app/extra.toml"
-    linked "$XDG_CONFIG_HOME/app/sub dir/deep.toml" "$checkout/stow/xdg/app/sub dir/deep.toml"
-    linked "$XDG_CONFIG_HOME/app/config.toml" "$checkout/stow/xdg/app/config.toml"
-    real_dir "$XDG_CONFIG_HOME/app/sub dir"
     reject track "$XDG_CONFIG_HOME/app"
-    contains 'nothing untracked'
+    contains 'untrack it first'
+    real_file "$XDG_CONFIG_HOME/app/extra.toml" extra
 }
 
 track_refusals() {
@@ -220,6 +233,7 @@ track_refusals() {
     put "$case_dir/outside" outside
     put "$HOME/.dup" dup
     put "$checkout/stow/home/.dup" packaged
+    put "$HOME/.nest/inner/file" nested
     state > "$case_dir/before"
     local refused
     for refused in "$HOME/.homerc" "$HOME/.foreign" "$HOME/.missing" "$case_dir/outside" "$HOME/.dup" \
@@ -227,10 +241,12 @@ track_refusals() {
         reject track "$refused"
     done
     contains 'refusing to track a directory containing'
-    # One bad path refuses the whole batch.
+    # One bad path refuses the whole batch; so do repeated or nested paths.
     reject track "$HOME/.mine" "$HOME/.missing"
     reject track "$HOME/.mine" "$HOME/.mine"
-    contains 'more than once'
+    contains 'overlapping'
+    reject track "$HOME/.nest/inner/file" "$HOME/.nest"
+    contains 'overlapping'
     unchanged 'a refused track changed something'
 }
 
@@ -252,6 +268,16 @@ track_rolls_back() {
     linked "$HOME/.mine" "$checkout/stow/home/.mine"
     real_file "$HOME/README.md" readme
     absent "$checkout/stow/home/README.md"
+    # A directory already recreated for one package goes back whole when a later package fails.
+    put "$HOME/.newdir/a" a
+    put "$HOME/.newdir/deep/b" b
+    put "$checkout/stow/xdg/clash" packaged
+    put "$XDG_CONFIG_HOME/clash" local
+    put "$XDG_CONFIG_HOME/wanted" wanted
+    state > "$case_dir/before"
+    reject track "$HOME/.newdir" "$XDG_CONFIG_HOME/wanted"
+    contains 'nothing changed'
+    unchanged 'partly stowed batch was not rolled back'
 }
 
 track_git_ignored() {
@@ -267,15 +293,18 @@ track_git_ignored() {
 
 untrack_restores() {
     install
-    install untrack "$HOME/.homerc" "$HOME/.local/bin/tool" "$XDG_CONFIG_HOME/app/config.toml"
+    install untrack "$HOME/.homerc" "$HOME/.local/bin/tool"
     contains 'untracked ~/.homerc <- stow/home/.homerc'
     real_file "$HOME/.homerc" home
     real_file "$HOME/.local/bin/tool" tool
-    real_file "$XDG_CONFIG_HOME/app/config.toml" app
     absent "$checkout/stow/home/.homerc"
     absent "$checkout/stow/home/.local"
-    absent "$checkout/stow/xdg/app"
     real_dir "$checkout/stow/home"
+    # A directory of a --no-folding package: its links give way to the directory itself.
+    install untrack "$XDG_CONFIG_HOME/app"
+    real_dir "$XDG_CONFIG_HOME/app"
+    real_file "$XDG_CONFIG_HOME/app/config.toml" app
+    absent "$checkout/stow/xdg/app"
     # A folded directory comes back whole.
     install untrack "$HOME/.agents"
     real_file "$HOME/.agents/skills/demo/SKILL.md" skill
@@ -291,14 +320,20 @@ untrack_refusals() {
     mkdir -p "$case_dir/elsewhere"
     ln -s "$checkout/stow/home/.homerc" "$case_dir/elsewhere/.homerc"
     printf 'mine\n' > "$HOME/.mine"
+    put "$XDG_CONFIG_HOME/app/notes" mine
+    mkdir "$HOME/.pi/agent/sessions"
     state > "$case_dir/before"
     local refused
     for refused in "$HOME/.mine" "$HOME/.foreign" "$HOME/.dangling" "$HOME/.missing" \
-        "$HOME/.agents/skills/demo/SKILL.md" "$case_dir/elsewhere/.homerc"; do
+        "$HOME/.agents/skills/demo/SKILL.md" "$case_dir/elsewhere/.homerc" "$HOME" "$XDG_CONFIG_HOME" \
+        "$XDG_CONFIG_HOME/app" "$HOME/.pi/agent"; do
         reject untrack "$refused"
     done
+    contains 'holds more than links'
     reject untrack "$HOME/.homerc" "$HOME/.homerc"
-    contains 'more than once'
+    contains 'overlapping'
+    reject untrack "$HOME/.local/bin" "$HOME/.local/bin/tool"
+    contains 'overlapping'
     unchanged 'a refused untrack changed something'
 }
 
@@ -311,10 +346,12 @@ round_trip() {
     contains '[dry-run] track ~/.newrc -> stow/home/.newrc'
     unchanged 'dry-run track changed something'
     install track "$HOME/.newrc" "$XDG_CONFIG_HOME/newapp"
-    install --dry-run untrack "$HOME/.newrc"
+    install --dry-run untrack "$HOME/.newrc" "$XDG_CONFIG_HOME/newapp"
     contains '[dry-run] untrack ~/.newrc <- stow/home/.newrc'
+    contains '<- stow/xdg/newapp'
     linked "$HOME/.newrc" "$checkout/stow/home/.newrc"
-    install untrack "$HOME/.newrc" "$XDG_CONFIG_HOME/newapp/a"
+    linked "$XDG_CONFIG_HOME/newapp/a" "$checkout/stow/xdg/newapp/a"
+    install untrack "$HOME/.newrc" "$XDG_CONFIG_HOME/newapp"
     unchanged 'track then untrack did not restore the original state'
 }
 
@@ -328,11 +365,11 @@ run_test 'existing directories are descended, not replaced' coexists_with_real_d
 run_test '--delete removes links and keeps private state' delete
 run_test 'track moves a file into its package and links it back' track_moves_and_links
 run_test 'track picks xdg, home, or the package already holding the directory' track_chooses_package
-run_test 'track of a directory tracks each untracked file in it' track_directory
+run_test 'track moves a directory as one unit; the package decides whether it folds' track_directory
 run_test 'track refuses tracked, foreign, missing, outside, and whole-target paths' track_refusals
 run_test 'track moves files back when stow fails or ignores them' track_rolls_back
 run_test 'track refuses git-ignored destinations' track_git_ignored
-run_test 'untrack replaces links with files and prunes empty directories' untrack_restores
-run_test 'untrack refuses anything that is not a stow link' untrack_refusals
+run_test 'untrack replaces links, or a directory of links, with the originals' untrack_restores
+run_test 'untrack refuses anything that is not what stow placed' untrack_refusals
 run_test 'dry runs change nothing; track then untrack is a round trip' round_trip
 printf '\nAll %s stow tests passed (bash %s).\n' "$test_count" "$BASH_VERSION"
