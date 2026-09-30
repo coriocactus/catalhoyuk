@@ -25,14 +25,13 @@
     "openai/gpt-6.1-sol": "xhigh",
     "anthropic/claude-fable-5-1": "xhigh",
     "anthropic/claude-opus-5-5": "xhigh",
-    "anthropic/claude-sonnet-5-5": "max"
+    "anthropic/claude-sonnet-5-5": "xhigh"
   },
   "warnings": {
     "anthropicExtraUsage": false
   },
   "packages": [
     "npm:pi-web-access",
-    "npm:@everyx/pi-subagent",
     "npm:@gotgenes/pi-anthropic-auth",
     "npm:@narumitw/pi-btw"
   ],
