@@ -50,15 +50,17 @@ find ~ -maxdepth 3 -type l -lname '*/catalhoyuk/*' ! -exec test -e {} \; -print 
 
 ```sh
 ./bin/stow track ~/.some-file        # move into the checkout, link back
-./bin/stow track ~/.config/app       # every untracked file in a directory
+./bin/stow track ~/.config/app       # a directory moves as one unit
 ./bin/stow untrack ~/.some-file      # replace the link with the file again
 ./bin/stow --dry-run track ~/.x      # report only
 ```
 
 `track` picks the package: `xdg` under `$XDG_CONFIG_HOME`, otherwise the package that
 already holds the deepest parent directory (`agents` for `~/.pi/agent/…`), else `home`.
-It refuses links, git-ignored destinations, and names Stow ignores, and moves files
-back if Stow fails. Commit the result as usual.
+A directory then takes the package's shape: `agents` links the directory itself, so files
+written there later are in the checkout; `home` and `xdg` recreate it and link each file.
+`track` refuses links, git-ignored destinations, names Stow ignores, and directories already
+partly in the checkout, and moves everything back if Stow fails. Commit the result as usual.
 
 Adding a file by hand works too: place it in a package at its target-relative path and rerun.
 
