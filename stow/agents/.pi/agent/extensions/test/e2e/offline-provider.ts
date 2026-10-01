@@ -149,7 +149,7 @@ export default function (pi: ExtensionAPI) {
             .filter((message) => message.role === "toolResult")
             .map((message) => message.toolCallId),
         );
-        if (completed.has("live-8")) {
+        if (completed.has("live-10")) {
           output.content.push({ type: "text", text: "BACKGROUND_FINISHED" });
           stream.push({ type: "text_start", contentIndex: 0, partial: structuredClone(output) });
           stream.push({
@@ -164,13 +164,15 @@ export default function (pi: ExtensionAPI) {
           // Commentary before a turn's calls separates groups; hidden reasoning does not.
           const text = !completed.has("live-0")
             ? "LIVE_WORK_STARTED"
-            : completed.has("live-5") && !completed.has("live-7")
-              ? "MIXED_WORK"
-              : completed.has("live-3") && !completed.has("live-5")
-                ? "COMMAND_WORK"
-                : completed.has("live-1") && !completed.has("live-3")
-                  ? "EDIT_WORK"
-                  : undefined;
+            : completed.has("live-8") && !completed.has("live-9")
+              ? "SCRIPT_WORK"
+              : completed.has("live-5") && !completed.has("live-7")
+                ? "MIXED_WORK"
+                : completed.has("live-3") && !completed.has("live-5")
+                  ? "COMMAND_WORK"
+                  : completed.has("live-1") && !completed.has("live-3")
+                    ? "EDIT_WORK"
+                    : undefined;
           if (text) {
             const contentIndex = output.content.push({ type: "text", text }) - 1;
             stream.push({ type: "text_start", contentIndex, partial: structuredClone(output) });
@@ -226,18 +228,41 @@ export default function (pi: ExtensionAPI) {
             },
             { name: "read", arguments: { path: join(root, "picture.png") } },
             { name: "bash", arguments: { command: "printf MIXED_COMMAND" } },
+            // Pi's codemode tool runs this script. Its calls go through Pi's nested tool
+            // pipeline, and store() writes a session entry between the script's call and its
+            // result.
+            {
+              name: "codemode",
+              arguments: {
+                code: [
+                  'store("fixture", 1);',
+                  `await tools.read({ path: ${JSON.stringify(join(root, "b.txt"))} });`,
+                  'const run = await tools.bash({ command: "printf SCRIPT_COMMAND" });',
+                  `await tools.edit({ path: ${JSON.stringify(join(root, "scripted.txt"))}, edits: [{ oldText: "one", newText: "two" }] });`,
+                  'return "SCRIPT_RESULT " + run.output;',
+                ].join("\n"),
+              },
+            },
+            {
+              name: "write",
+              arguments: { path: join(root, "after-script.txt"), content: "AFTER_SCRIPT\n" },
+            },
           ];
-          const indices = completed.has("live-7")
-            ? [8]
-            : completed.has("live-5")
-              ? [6, 7]
-              : completed.has("live-3")
-                ? [4, 5]
-                : completed.has("live-1")
-                  ? [2, 3]
-                  : completed.has("live-0")
-                    ? [1]
-                    : [0];
+          const indices = completed.has("live-9")
+            ? [10]
+            : completed.has("live-8")
+              ? [9]
+              : completed.has("live-7")
+                ? [8]
+                : completed.has("live-5")
+                  ? [6, 7]
+                  : completed.has("live-3")
+                    ? [4, 5]
+                    : completed.has("live-1")
+                      ? [2, 3]
+                      : completed.has("live-0")
+                        ? [1]
+                        : [0];
           for (const index of indices) {
             const call = calls[index];
             const block = {

@@ -1,7 +1,9 @@
 # pi-catalhoyuk
 
 - `rearview`: recent rows first; prepend older batches on reaching the top.
-- `mirage`: grouped tool rows, collapsible output/images, configurable colours.
+- `mirage`: grouped tool rows, including codemode scripts and their calls, with
+  collapsible output/images and configurable colours. It draws Pi's tools and never replaces
+  them.
 - `inspector`: same-terminal filename opening, including while Pi is working.
 - `interupt`: first Esc arms interruption; second within 1.5s stops the running response.
 - `echo`: `@@name` inserts Markdown snippets at the cursor.
@@ -29,9 +31,10 @@ One package manifest and lockfile here own all development dependencies. No
 per-test packages or runtime dependency installation.
 
 Requires Node 22.19+ (Pi's own minimum; `devEngines` makes npm enforce it), Pi on
-`PATH` (or `PI_PACKAGE_DIR`), `/usr/bin/vim`, and native build tools (Xcode Command
-Line Tools on macOS). Build `node-pty` from source to avoid its 1.1.0 macOS
-prebuilt-helper permissions defect; no permission patches:
+`PATH` (its managed launcher or a package install) or `PI_PACKAGE_DIR`,
+`/usr/bin/vim`, and native build tools (Xcode Command Line Tools on macOS). Build
+`node-pty` from source to avoid its 1.1.0 macOS prebuilt-helper permissions defect;
+no permission patches:
 
 ```sh
 cd ~/.pi/agent/extensions
@@ -49,6 +52,7 @@ Tests are TypeScript run directly by Node (type stripping, no build step):
 - `<extension>/tests/*.test.ts`: that extension alone. They import only their own
   extension, `shared/`, and `test/`, so deleting an extension never breaks another
   extension's tests (only the cross-extension files in `test/` need updating).
+- `<extension>/tests/*.ts` without `.test`: that extension's shared test fixtures.
 - `test/*.test.ts`: `shared/` contracts, mirage × rearview integration, and a guard
   that Pi autoloads exactly the five extensions (never `test/` or `shared/`, which
   must not contain an `index.ts`).
@@ -69,7 +73,8 @@ and gates background work rather than racing a fixed sleep. Real Pi/Vim run with
 isolated settings and an offline fixture provider. Vim syntax stays on; personal
 configuration, Ghostty settings, and installed Pi files are untouched.
 
-Coverage includes grouping, live output padding, errors/diffs/images, clicks/Ctrl+O,
+Coverage includes grouping, codemode scripts run by Pi's codemode tool (live calls, saved
+calls after resume, and `store()` entries), live output padding, errors/diffs/images, clicks/Ctrl+O,
 background work while Vim owns the terminal, newer/replacement drafts, editor failures,
 saves, resizing, new/resume/fork/reload cleanup, disabling history, rapid scrolling
 between prepend and layout, bounded paging, archived filenames/images, unchanged model

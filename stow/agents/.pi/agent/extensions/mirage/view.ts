@@ -16,24 +16,52 @@ import {
 } from "@earendil-works/pi-tui";
 import type { RowAnchor } from "../shared/anchors.ts";
 import type { FileReference } from "../shared/protocol.ts";
-import { isComplete, type ToolGroup, type ToolGroups, type ToolRow } from "./model.ts";
+import {
+  type Expandable,
+  isComplete,
+  isFailed,
+  type ToolGroup,
+  type ToolGroups,
+  type ToolKind,
+  type ToolRow,
+  toolCalls,
+} from "./model.ts";
+import { scriptOutput } from "./nested.ts";
 
 import { colouredDiff, paint } from "./style.ts";
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: OSC 8 links use ESC/BEL delimiters.
 const FILE_LINK_OPEN = /\x1b\]8;[^;\x07\x1b]*;mirage:file:[^\x07\x1b]*(?:\x07|\x1b\\)/g;
 const FILE_VERBS = {
-  read: { pending: "Read", running: "Reading", success: "Read", error: "Read" },
-  edit: { pending: "Edit", running: "Editing", success: "Edited", error: "Edit" },
-  write: { pending: "Write", running: "Writing", success: "Wrote", error: "Write" },
+  read: { pending: "Read", running: "Reading", success: "Read", error: "Read", cancelled: "Read" },
+  edit: {
+    pending: "Edit",
+    running: "Editing",
+    success: "Edited",
+    error: "Edit",
+    cancelled: "Edit",
+  },
+  write: {
+    pending: "Write",
+    running: "Writing",
+    success: "Wrote",
+    error: "Write",
+    cancelled: "Write",
+  },
 };
-const GROUP_VERBS = {
+const GROUP_VERBS: Record<
+  Exclude<ToolKind, "model">,
+  { pending: string; running: string; success: string; error?: string }
+> = {
   read: { pending: "Explore", running: "Exploring", success: "Explored" },
   bash: { pending: "Run", running: "Running", success: "Ran" },
   edit: FILE_VERBS.edit,
   write: FILE_VERBS.write,
+  codemode: { pending: "Run", running: "Running", success: "Ran" },
+  tool: { pending: "Call", running: "Calling", success: "Called" },
 };
-export type ToggleTarget = ToolGroup | ToolRow;
+const NOUNS = { bash: "command", codemode: "script", tool: "tool" } as const;
+export type ToggleTarget = Expandable;
 type GroupState = Pick<ToolGroups, "epoch" | "expanded"> & { rows: ReadonlyMap<string, ToolRow> };
 interface ViewActions {
   toggle(target: ToggleTarget): void;
@@ -56,9 +84,46 @@ function clean(value: string): string {
     .replace(UNSAFE_CONTROLS, "");
 }
 
+function oneLine(value: string): string {
+  return clean(value).replace(/\s+/g, " ").trim();
+}
+
+function details(row: ToolRow): Record<string, unknown> | undefined {
+  const value = row.result?.details;
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
+}
+
 function diff(row: ToolRow): string {
-  const details = row.result?.details;
-  return details && typeof details === "object" && "diff" in details ? text(details.diff) : "";
+  return text(details(row)?.diff);
+}
+
+function json(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/** What a call inside a script shows when Pi did not keep its arguments. */
+function argumentsNote(row: ToolRow): string {
+  if (row.preview) return oneLine(row.preview);
+  return row.omittedBytes === undefined ? "" : `${row.omittedBytes} bytes of arguments`;
+}
+
+/** Formats a cost as Pi does: cents from one cent up, two significant digits below a cent. */
+function formatCost(cost: number): string {
+  return `$${cost >= 0.01 ? cost.toFixed(2) : cost.toPrecision(2)}`;
+}
+
+/**
+ * Counts the lines in a write's content. Pi reports no diff for writes, and an overwrite's old
+ * content is unknown.
+ */
+export function writtenLines(content: string): number {
+  if (!content) return 0;
+  const lines = content.split("\n").length;
+  return content.endsWith("\n") ? lines - 1 : lines;
 }
 
 export function diffCounts(value: string): { added: number; removed: number } {
@@ -69,6 +134,15 @@ export function diffCounts(value: string): { added: number; removed: number } {
     else if (/^-\s*\d+ /.test(line)) removed++;
   }
   return { added, removed };
+}
+
+/** What a group's summary counts: a script's tool calls, or the script when it made none. */
+function leaves(rows: readonly ToolRow[]): ToolRow[] {
+  return rows.flatMap((row) => {
+    if (row.kind !== "codemode") return [row];
+    const calls = toolCalls(row);
+    return calls.length ? calls : [row];
+  });
 }
 
 /** A cached projection. Rendering never mutates group membership or expansion state. */
@@ -128,30 +202,18 @@ export class ToolGroupView implements Component {
     this.targets.clear();
     this.files.clear();
     if (group.rows.length === 1) {
-      const expanded = this.model.expanded(this.row);
-      this.header(this.rowLabel(this.row), this.row, contentWidth);
-      if (expanded) this.body(this.row, contentWidth);
+      this.entry(this.row, 0, contentWidth);
     } else {
       const expanded = this.model.expanded(group);
-      const completed = group.rows.every(isComplete);
-      const commandsOnly = group.rows.every((row) => row.name === "bash");
+      const commandsOnly = group.rows.every((row) => row.kind === "bash");
       // Like Amp: a group is red only when every call failed. Individual failures
       // show on their own rows once the group is opened.
-      const status = this.status(
-        !completed
-          ? "pending"
-          : group.rows.every((row) => row.status === "error")
-            ? "error"
-            : "success",
-        commandsOnly,
-      );
-      this.header(`${status} ${this.groupLabel(group)}`, group, contentWidth);
-      if (expanded)
-        for (const row of group.rows) {
-          const detailExpanded = this.model.expanded(row);
-          this.header(`  ${this.rowLabel(row)}`, row, contentWidth);
-          if (detailExpanded) this.body(row, contentWidth, 4);
-        }
+      let state: ToolRow["status"] = "success";
+      if (!group.rows.every(isComplete)) state = "pending";
+      else if (group.rows.every(isFailed)) state = "error";
+      const status = this.status(state, commandsOnly);
+      this.header(`${status} ${this.summary(leaves(group.rows))}`, group, contentWidth);
+      if (expanded) for (const row of group.rows) this.entry(row, 2, contentWidth);
     }
     // Hit testing uses these padded lines, including after invalidation until
     // the next render. Reserve the same inset on the right as Pi.
@@ -174,13 +236,20 @@ export class ToolGroupView implements Component {
     if (line <= 0) return { key: this.row, offset: line, top: true };
     const target = this.targets.get(line);
     if (!target) return undefined;
-    const key = "group" in target ? target : this.row;
+    let key: object = target;
+    if ("rows" in target) key = this.row;
+    else if ("script" in target) key = target.script;
     const start = [...this.targets].find(([, value]) => value === target)?.[0] ?? 0;
     return { key, offset: line - start };
   }
 
   locate(anchor: RowAnchor, width: number): number | undefined {
-    if (!this.render(width).length || !this.row.group.rows.includes(anchor.key as ToolRow))
+    if (
+      !this.render(width).length ||
+      !this.row.group.rows.some(
+        (row) => row === anchor.key || row.calls?.includes(anchor.key as ToolRow),
+      )
+    )
       return undefined;
     if (anchor.top) return anchor.offset;
     const lines = [...this.targets]
@@ -205,24 +274,44 @@ export class ToolGroupView implements Component {
     return { handled: true };
   }
 
+  /** One call: its header, then its output or, for a script, its calls and output. */
+  private entry(row: ToolRow, indent: number, width: number): void {
+    this.header(`${" ".repeat(indent)}${this.rowLabel(row)}`, row, width);
+    if (!this.model.expanded(row)) return;
+    if (row.kind === "codemode") this.script(row, indent + 2, width);
+    else this.body(row, width, indent + 2);
+  }
+
   private arrow(expanded: boolean): string {
     return this.theme.fg("dim", expanded ? "▾" : "▸");
   }
 
   private status(status: ToolRow["status"], command = false): string {
-    return status === "error"
-      ? paint(this.theme, "red", command ? "$" : "✗")
-      : status === "success"
-        ? paint(this.theme, "green", command ? "$" : "✓")
-        : this.theme.fg("muted", command ? "$" : "…");
+    if (status === "error") return paint(this.theme, "red", command ? "$" : "✗");
+    if (status === "success") return paint(this.theme, "green", command ? "$" : "✓");
+    if (command) return this.theme.fg("muted", "$");
+    return this.theme.fg("muted", status === "cancelled" ? "✗" : "…");
   }
 
   private rowLabel(row: ToolRow): string {
     let label: string;
-    if (row.name === "bash") {
-      label = clean(text(row.args.command)).replace(/\s+/g, " ").trim() || "…";
+    if (row.kind === "bash") {
+      label = oneLine(text(row.args.command)) || argumentsNote(row) || "…";
+    } else if (row.kind === "codemode") {
+      const summary = this.summary(toolCalls(row), true);
+      label = summary ? `Script: ${summary}` : "Script";
+    } else if (row.kind === "tool" || row.kind === "model") {
+      // Headers truncate anyway: clean only what one line can show.
+      const args =
+        row.kind === "model" || !Object.keys(row.args).length
+          ? argumentsNote(row)
+          : oneLine(json(row.args).slice(0, 400));
+      label = oneLine(row.name);
+      if (args) label += ` ${this.theme.fg("dim", args)}`;
+      if (row.cost) label += ` ${this.theme.fg("dim", formatCost(row.cost))}`;
     } else {
-      let filename = "…";
+      const note = argumentsNote(row);
+      let filename = note ? this.theme.fg("dim", note) : "…";
       if (row.file) {
         const path = row.file.path;
         const home = homedir();
@@ -234,54 +323,59 @@ export class ToolGroupView implements Component {
           url,
         );
       }
-      label = `${FILE_VERBS[row.name][row.status]} ${filename}`;
-      if (row.name === "read" && typeof row.args.offset === "number")
+      label = `${FILE_VERBS[row.kind][row.status]} ${filename}`;
+      if (row.kind === "read" && typeof row.args.offset === "number")
         label += this.theme.fg("dim", `:${row.args.offset}`);
       if (row.hasImages) label += this.theme.fg("dim", " (image)");
-      if (row.name === "edit") label += this.editSummary([row]);
+      if (row.kind === "edit" || row.kind === "write") label += this.changeSummary([row]);
     }
-    return `${this.status(row.status, row.name === "bash")} ${label}`;
+    return `${this.status(row.status, row.kind === "bash")} ${label}`;
   }
 
-  private groupLabel(group: ToolGroup): string {
-    const names = [...new Set(group.rows.map((row) => row.name))];
-    return names
-      .map((name, index) => {
-        const rows = group.rows.filter((row) => row.name === name);
-        const state = rows.every(isComplete)
-          ? "success"
-          : rows.some((row) => row.status === "running")
-            ? "running"
-            : "pending";
-        const verbs = name === "read" && names.length > 1 ? FILE_VERBS.read : GROUP_VERBS[name];
+  /** `Read 2 files, ran 1 command`: counts per kind, in first-call order. */
+  private summary(rows: readonly ToolRow[], lower = false): string {
+    const kinds = [...new Set(rows.flatMap((row) => (row.kind === "model" ? [] : [row.kind])))];
+    return kinds
+      .map((kind, index) => {
+        const members = rows.filter((row) => row.kind === kind);
+        let state: "pending" | "running" | "success" = "pending";
+        if (members.every(isComplete)) state = "success";
+        else if (members.some((row) => row.status === "running")) state = "running";
+        const verbs = kind === "read" && kinds.length > 1 ? FILE_VERBS.read : GROUP_VERBS[kind];
         // All-failed edits/writes did not happen: use the failed-row verb.
-        const failedVerb = (verbs as { error?: string }).error;
-        const word =
-          failedVerb && rows.every((row) => row.status === "error") ? failedVerb : verbs[state];
-        const verb = index ? word.toLowerCase() : word;
-        const count =
-          name === "bash"
-            ? rows.length
-            : new Set(
-                rows.map((row) =>
-                  row.file ? JSON.stringify([row.file.cwd, row.file.path]) : row.id,
-                ),
-              ).size;
-        const noun = name === "bash" ? "command" : "file";
-        return `${verb} ${count} ${noun}${count === 1 ? "" : "s"}${this.editSummary(rows, true)}`;
+        const word = verbs.error && members.every(isFailed) ? verbs.error : verbs[state];
+        const verb = index || lower ? word.toLowerCase() : word;
+        // Commands, scripts and other tools count per call. File tools count distinct files.
+        const counted = kind === "bash" || kind === "codemode" || kind === "tool";
+        const count = counted
+          ? members.length
+          : new Set(
+              members.map((row) =>
+                row.file ? JSON.stringify([row.file.cwd, row.file.path]) : row.id,
+              ),
+            ).size;
+        const noun = counted ? NOUNS[kind] : "file";
+        return `${verb} ${count} ${noun}${count === 1 ? "" : "s"}${this.changeSummary(members, true)}`;
       })
       .join(", ");
   }
 
-  /** Rows: coloured `+A −R`. Group summaries, like Amp: grey brackets, plain `(+A −R)`. */
-  private editSummary(rows: readonly ToolRow[], group = false): string {
+  /**
+   * Sums successful edits' diffs and writes' lines. Rows show coloured `+A −R`. Group
+   * summaries, like Amp, show plain `(+A −R)` in grey brackets.
+   */
+  private changeSummary(rows: readonly ToolRow[], group = false): string {
     let added = 0,
       removed = 0;
     for (const row of rows) {
-      if (row.name !== "edit" || row.status !== "success") continue;
-      const counts = diffCounts(diff(row));
-      added += counts.added;
-      removed += counts.removed;
+      if (row.status !== "success") continue;
+      if (row.kind === "edit") {
+        const counts = diffCounts(diff(row));
+        added += counts.added;
+        removed += counts.removed;
+      } else if (row.kind === "write") {
+        added += writtenLines(text(row.args.content));
+      }
     }
     const parts = [added ? `+${added}` : "", removed ? `−${removed}` : ""].filter(Boolean);
     if (!parts.length) return "";
@@ -301,6 +395,30 @@ export class ToolGroupView implements Component {
     );
   }
 
+  /** A script: its source behind its own toggle, the calls it made, then its output. */
+  private script(row: ToolRow, indent: number, width: number): void {
+    const source = clean(text(row.args.code)).trimEnd();
+    if (source && row.source) {
+      const count = source.split("\n").length;
+      this.header(
+        `${" ".repeat(indent)}${this.theme.fg("dim", `JavaScript, ${count} line${count === 1 ? "" : "s"}`)}`,
+        row.source,
+        width,
+      );
+      if (this.model.expanded(row.source))
+        this.block(
+          `${row.id}\0source`,
+          row.revision,
+          () => highlightCode(source, "javascript").join("\n"),
+          row.source,
+          width,
+          indent + 2,
+        );
+    }
+    for (const call of row.calls ?? []) this.entry(call, indent, width);
+    this.body(row, width, indent);
+  }
+
   private body(row: ToolRow, width: number, padding = 2): void {
     if (width <= 0) return;
     const indent = Math.min(padding, Math.max(0, width - 1));
@@ -309,26 +427,43 @@ export class ToolGroupView implements Component {
       row.hasImages && getCapabilities().images && this.showImages
         ? this.actions.renderImages(row, bodyWidth)
         : [];
-    let cached = this.bodies.get(row.id);
-    if (!cached || cached.revision !== row.revision) {
-      let output = clean(
-        row.result?.content
-          .filter((part) => part.type === "text")
-          .map((part) => text(part.text))
-          .join("\n") ?? "",
-      );
+    const component = this.cachedText(row.id, row.revision, () => {
+      let output =
+        row.kind === "codemode"
+          ? clean(scriptOutput(row.result))
+          : clean(
+              row.result?.content
+                .filter((part) => part.type === "text")
+                .map((part) => text(part.text))
+                .join("\n") ?? "",
+            );
+      // Pi gives the output of a script's calls only to the script, and the session keeps
+      // none of it.
+      const missing = row.saved && !output && !isFailed(row);
+      const unkept = this.theme.fg("dim", "Output not kept in session.");
       if (row.status === "error") {
         output = paint(this.theme, "red", output || "Tool failed.");
-      } else if (row.name === "edit" && diff(row)) {
+      } else if (row.status === "cancelled") {
+        output = this.theme.fg("muted", output || "Cancelled when the script ended.");
+      } else if (row.kind === "edit" && diff(row)) {
         output = colouredDiff(this.theme, clean(diff(row)));
-      } else if (row.name === "write") {
+        if (details(row)?.rebuilt)
+          output += `\n${this.theme.fg("dim", "Rebuilt from saved arguments, with line numbers relative to the replaced text.")}`;
+      } else if (row.kind === "write") {
         output = this.code(clean(text(row.args.content)), row.file?.path);
-      } else if (row.name === "read") {
-        output = this.code(output, row.file?.path);
-      } else if (row.name === "bash") {
+      } else if (row.kind === "bash") {
         output =
           this.theme.fg("dim", `$ ${clean(text(row.args.command))}`) +
-          (output ? `\n${this.theme.fg("toolOutput", output)}` : "");
+          (output ? `\n${this.theme.fg("toolOutput", output)}` : "") +
+          (missing ? `\n${unkept}` : "");
+      } else if (row.kind === "model") {
+        output = this.theme.fg("dim", "Result returned to the script.");
+      } else if (missing) {
+        output = unkept;
+      } else if (row.kind === "read") {
+        output = this.code(output, row.file?.path);
+      } else if (row.kind === "codemode" || row.kind === "tool") {
+        output = this.theme.fg("toolOutput", output);
       }
       if (imageLines.length === 0) {
         for (const part of row.result?.content ?? []) {
@@ -336,11 +471,37 @@ export class ToolGroupView implements Component {
             output += `\n${imageFallback(part.mimeType, getImageDimensions(part.data, part.mimeType) ?? undefined)}`;
         }
       }
-      cached = { revision: row.revision, component: new Text(output, 0, 0) };
-      this.bodies.set(row.id, cached);
+      return output;
+    });
+    this.addLines([...component.render(bodyWidth), ...imageLines], row, indent);
+  }
+
+  private block(
+    key: string,
+    revision: number,
+    build: () => string,
+    target: ToggleTarget,
+    width: number,
+    padding: number,
+  ): void {
+    if (width <= 0) return;
+    const indent = Math.min(padding, Math.max(0, width - 1));
+    const component = this.cachedText(key, revision, build);
+    this.addLines(component.render(Math.max(1, width - indent)), target, indent);
+  }
+
+  private cachedText(key: string, revision: number, build: () => string): Text {
+    let cached = this.bodies.get(key);
+    if (!cached || cached.revision !== revision) {
+      cached = { revision, component: new Text(build(), 0, 0) };
+      this.bodies.set(key, cached);
     }
-    for (const line of [...cached.component.render(bodyWidth), ...imageLines]) {
-      this.targets.set(this.rawLines.length, row);
+    return cached.component;
+  }
+
+  private addLines(lines: readonly string[], target: ToggleTarget, indent: number): void {
+    for (const line of lines) {
+      this.targets.set(this.rawLines.length, target);
       this.rawLines.push(" ".repeat(indent) + line);
     }
   }

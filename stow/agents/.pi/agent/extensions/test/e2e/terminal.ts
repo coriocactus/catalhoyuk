@@ -43,6 +43,7 @@ writeFileSync(
     enableInstallTelemetry: false,
     showCacheMissNotices: false,
     shellPath: shell,
+    defaultTools: ["+codemode"],
     shellCommandPrefix:
       "export DISPLAY_FIXTURE_PREFIX=prefix-kept DISPLAY_FIXTURE_ERROR=ERROR_BODY_MARKER",
   }),
@@ -53,6 +54,7 @@ writeFileSync(join(root, "b.txt"), "READ_B_RESULT\n");
 writeFileSync(join(root, "archived.txt"), "ARCHIVED_VIM_TARGET\n");
 writeFileSync(join(root, "edited.txt"), "before\n");
 writeFileSync(join(root, "edited-other.txt"), "before-second\n");
+writeFileSync(join(root, "scripted.txt"), "one\n");
 writeFileSync(
   join(root, "picture.png"),
   Buffer.from(
@@ -218,6 +220,9 @@ const args = [
   "--session",
   fixture,
   "--no-extensions",
+  // Pi's own codemode tool, which --no-extensions also disables.
+  "-e",
+  "builtin:codemode",
   // Match the directories' discovery order: echo, inspector, interupt, mirage, rearview.
   "-e",
   join(extensions, "echo/index.ts"),
@@ -254,6 +259,11 @@ const env: Record<string, string | undefined> = {
 };
 delete env.TMUX;
 delete env.TMUX_PANE;
+
+// Kitty displays an image by transmitting it (a=T) or by placing one already uploaded (a=p).
+// biome-ignore lint/suspicious/noControlCharactersInRegex: Kitty graphics commands start with ESC _ G.
+const IMAGE_SHOWN = /\x1b_Ga=[Tp],/;
+const shown = (raw: string) => IMAGE_SHOWN.test(raw);
 
 function cpuSeconds(pid: number): number {
   return execFileSync("ps", ["-o", "time=", "-p", String(pid)], { encoding: "utf8" })
@@ -302,6 +312,26 @@ async function setOutputPadding(padding: number) {
     "close settings",
   );
   assertOutputPadding(padding);
+}
+const scriptHeader = "Read 1 file, ran 1 command, edited 1 file (+1 −1), wrote 1 file (+1)";
+async function expandScript() {
+  terminal.click(scriptHeader);
+  await terminal.waitFor(
+    (s) =>
+      s.includes("Script: read 1 file, ran 1 command, edited 1 file") &&
+      s.includes("after-script.txt"),
+    "expand the run containing the script",
+  );
+  terminal.click("Script: read 1 file");
+  await terminal.waitFor(
+    (s) =>
+      s.includes("JavaScript, 5 lines") &&
+      s.includes("printf SCRIPT_COMMAND") &&
+      s.includes("scripted.txt +1 −1") &&
+      s.includes("SCRIPT_RESULT SCRIPT_COMMAND") &&
+      !s.includes("Script completed"),
+    "a script lists its calls, then its output",
+  );
 }
 async function owners(label: string, count = 1) {
   terminal.send(`\x15/fixture-owners ${label}\r`);
@@ -454,7 +484,25 @@ try {
     "return to Pi preserves the newer draft and background results",
   );
   assert(readFileSync(join(root, filename), "utf8").includes("VIM_SAVED_WHILE_BUSY"));
-  const mixedHeader = "Wrote 1 file, read 1 file, ran 1 command";
+  assert.equal(readFileSync(join(root, "scripted.txt"), "utf8"), "two\n", "the script ran");
+  assert(screen.includes(scriptHeader), "a script's calls count in its run's summary");
+  assert(!screen.includes("SCRIPT_RESULT"), "script output starts hidden");
+  await expandScript();
+  assert(
+    terminal.locate("scripted.txt").cell.style.underline,
+    "filenames inside scripts are links",
+  );
+  terminal.assertColour("scripted.txt", colours.blue);
+  assertCommandHeader("printf SCRIPT_COMMAND", "green");
+  terminal.click("printf SCRIPT_COMMAND");
+  await terminal.waitFor(
+    (s) => /^\s*SCRIPT_COMMAND\s*$/m.test(s),
+    "a call inside a script expands to its live output",
+  );
+  terminal.click("printf SCRIPT_COMMAND");
+  terminal.click(scriptHeader);
+  await terminal.waitFor((s) => !s.includes("SCRIPT_RESULT"), "collapse script group");
+  const mixedHeader = "Wrote 1 file (+1), read 1 file, ran 1 command";
   assert(
     screen.includes(mixedHeader),
     "mixed tool types share one summary across hidden reasoning",
@@ -477,7 +525,7 @@ try {
     beforeThinkingToggle,
     "thinking toggles do not edit saved messages",
   );
-  assert(!terminal.rawSince().includes("\x1b_Ga=T"), "grouped images start hidden");
+  assert(!shown(terminal.rawSince()), "grouped images start hidden");
   terminal.click(mixedHeader);
   await terminal.waitFor(
     (s) =>
@@ -485,13 +533,14 @@ try {
     "mixed group expands into individual calls, including the image",
   );
   terminal.assertColour("picture.png", colours.blue);
+  assert(terminal.locate("mixed.txt").row.text.trimEnd().endsWith(" +1 ▸"), "writes count lines");
   assert(terminal.locate("picture.png").cell.style.underline, "clickable filenames are underlined");
   assert(!terminal.locate("(image)").cell.style.underline, "underline ends at the filename");
   assert(terminal.locate("picture.png").row.text.trimEnd().endsWith(" ▸"));
   let mark = terminal.mark();
   terminal.click("picture.png");
   await terminal.waitFor(
-    () => terminal.rawSince(mark).includes("\x1b_Ga=T"),
+    () => shown(terminal.rawSince(mark)),
     "expand a grouped image: Kitty transmission",
   );
   mark = terminal.mark();
@@ -557,7 +606,7 @@ try {
       s.includes("+2 extra") &&
       s.includes("STREAM_TWO") &&
       s.includes("ERROR_BODY_MARKER") &&
-      terminal.rawSince(mark).includes("\x1b_Ga=T"),
+      shown(terminal.rawSince(mark)),
     "Ctrl+O expands text and images",
   );
   assert(screen.includes("prefix-kept/shell-kept"));
@@ -590,6 +639,7 @@ try {
   assert(screen.includes(mixedHeader) && !screen.includes("Thinking..."));
   assertOutputPadding(1);
   assert(screen.includes("Edited 2 files (+3 −2)") && !screen.includes("edited.txt"));
+  assert(screen.includes(scriptHeader), "reload rebuilds script groups from saved calls");
   await expandEditGroup();
   terminal.click("edited.txt", true);
   await terminal.waitFor(
@@ -621,12 +671,22 @@ try {
   assert(screen.includes("Explored 2 files") && !screen.includes("ERROR_BODY_MARKER"));
   assert(screen.includes("Edited 2 files (+3 −2)") && !screen.includes("edited.txt"));
   assert(screen.includes(mixedHeader) && !screen.includes("Thinking..."));
-  assert(!terminal.rawSince().includes("\x1b_Ga=T"), "resumed images start hidden");
+  assert(!shown(terminal.rawSince()), "resumed images start hidden");
+  assert(screen.includes(scriptHeader), "store() entries do not split a resumed run");
+  await expandScript();
+  terminal.click("b.txt");
+  await terminal.waitFor(
+    (s) => s.includes("Output not kept in session."),
+    "resumed calls inside scripts explain their missing output",
+  );
+  terminal.click("b.txt");
+  terminal.click(scriptHeader);
+  await terminal.waitFor((s) => !s.includes("SCRIPT_RESULT"), "collapse resumed script group");
   assertOutputPadding(1);
   terminal.click(mixedHeader);
   await terminal.waitFor((s) => s.includes("picture.png"), "resumed mixed group expands");
   terminal.click("picture.png");
-  await terminal.waitFor(() => terminal.rawSince().includes("\x1b_Ga=T"), "resumed image expands");
+  await terminal.waitFor(() => shown(terminal.rawSince()), "resumed image expands");
   terminal.click("Ran 2 commands");
   await terminal.waitFor((s) => s.includes("DISPLAY_FIXTURE_ERROR"), "resumed command group");
   terminal.click("DISPLAY_FIXTURE_ERROR");
@@ -694,7 +754,7 @@ try {
   mark = terminal.mark();
   terminal.send("\x0f");
   await terminal.waitFor(
-    (s) => s.includes("ARCHIVED_READ_RESULT") && terminal.rawSince(mark).includes("\x1b_Ga=T"),
+    (s) => s.includes("ARCHIVED_READ_RESULT") && shown(terminal.rawSince(mark)),
     "Ctrl+O expands historical bodies and image",
   );
   terminal.send("\x0f");
@@ -784,7 +844,7 @@ try {
   await owners("DISABLED", 0);
   terminal.save();
   console.log(
-    `PASS: xterm.js VT + real Pi/Vim; inline snippet composition without submission, groups, output padding, Unicode clicks, colours/underlines, interrupt hint without layout shifts, gated background work, newer/replacement drafts, saves, images, errors, Ctrl+O, resize, new/resume/fork/reload ownership and disable cleanup, bounded top paging/anchors, archived Vim/images, unchanged context. Pi idle CPU ${cpu.toFixed(2)}s/2s. Artifacts: ${root}`,
+    `PASS: xterm.js VT + real Pi/Vim; inline snippet composition without submission, groups, codemode scripts live/reloaded/resumed, output padding, Unicode clicks, colours/underlines, interrupt hint without layout shifts, gated background work, newer/replacement drafts, saves, images, errors, Ctrl+O, resize, new/resume/fork/reload ownership and disable cleanup, bounded top paging/anchors, archived Vim/images, unchanged context. Pi idle CPU ${cpu.toFixed(2)}s/2s. Artifacts: ${root}`,
   );
 } catch (error) {
   running?.save();

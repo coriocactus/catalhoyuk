@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { TUI } from "@earendil-works/pi-tui";
 import { TRANSCRIPT_VIEW } from "../shared/transcript.ts";
-import { fakePi, type Tool } from "./fake-pi.ts";
+import { fakePi } from "./fake-pi.ts";
 import { core, load, tui } from "./pi.ts";
 import { assistant, bindTools, nativeRenderEntries, text, tick, transcript } from "./transcript.ts";
 
@@ -22,24 +22,13 @@ type NativeRender = Parameters<typeof renderHistoryPage>[2];
 test("bounded pages share one growing group, preserving loaded rows and global expansion", async () => {
   const pi = fakePi(),
     errors: unknown[] = [];
-  let executions = 0;
   installDisplay(pi.api);
-  const tools = new Map<string, Tool>(
-    [...pi.tools].map(([name, tool]) => [
-      name,
-      {
-        ...tool,
-        async execute() {
-          executions++;
-          throw new Error("History must never execute tools.");
-        },
-      },
-    ]),
-  );
+  // Mirage only draws: Pi keeps executing its own tools, and history never executes any.
+  assert.equal(pi.tools.size, 0);
   const f = transcript(0),
     sm = core.SessionManager.inMemory(process.cwd());
   f.host.sessionManager = sm;
-  bindTools(f.host, tools);
+  bindTools(f.host, pi.renderers);
   for (let i = 0; i < 30; i++) {
     const id = `read-${i}`;
     sm.appendMessage(
@@ -108,7 +97,6 @@ test("bounded pages share one growing group, preserving loaded rows and global e
       30,
       "reconstruction retains loaded pages",
     );
-    assert.equal(executions, 0);
     assert.deepEqual(errors, []);
   } finally {
     adapter.dispose();
@@ -123,7 +111,7 @@ test("a merge across pages keeps its header at the viewport top through expansio
   const f = transcript(0),
     sm = core.SessionManager.inMemory(process.cwd());
   f.host.sessionManager = sm;
-  bindTools(f.host, pi.tools);
+  bindTools(f.host, pi.renderers);
   for (let i = 0; i < 12; i++) sm.appendMessage(assistant(`BEFORE_${i}`));
   // One run of 8 calls; pages of 10 split it 4 | 4.
   for (let i = 0; i < 8; i++) {
@@ -202,12 +190,10 @@ test("a failed page construction rolls back its staged rows and leaves mounted g
     sm = core.SessionManager.inMemory(process.cwd());
   f.host.sessionManager = sm;
   let fail = false;
-  bindTools(f.host, {
-    get(name: string) {
-      if (fail) throw new Error("PAGE_CONSTRUCTION_FAILED");
-      return pi.tools.get(name);
-    },
-  } as ReadonlyMap<string, Tool>);
+  bindTools(f.host, (name, base) => {
+    if (fail) throw new Error("PAGE_CONSTRUCTION_FAILED");
+    return pi.renderers(name, base);
+  });
   for (let i = 0; i < 12; i++) sm.appendMessage(assistant(`BEFORE_${i}`));
   for (let i = 0; i < 8; i++) {
     const id = `run-${i}`;
@@ -261,7 +247,7 @@ test("archived mixed groups follow thinking visibility without moving commentary
   const pi = fakePi();
   installDisplay(pi.api);
   const f = transcript(0);
-  bindTools(f.host, pi.tools);
+  bindTools(f.host, pi.renderers);
   const archive = core.SessionManager.inMemory(process.cwd());
   for (const [id, name, prefix] of [
     ["a", "read", { type: "thinking", thinking: "ARCHIVED_REASONING_A" }],
@@ -318,13 +304,13 @@ for (const name of ["read", "edit"]) {
     const pi = fakePi();
     installDisplay(pi.api);
     const f = transcript(0);
-    bindTools(f.host, pi.tools);
+    bindTools(f.host, pi.renderers);
     const live = new core.ToolExecutionComponent(
       name,
       "live-tool",
       { path: "live.txt" },
       {},
-      pi.tools.get(name),
+      pi.renderers(name),
       f.host.ui as unknown as TUI,
       process.cwd(),
     );
@@ -365,3 +351,63 @@ for (const name of ["read", "edit"]) {
     }
   });
 }
+
+test("archived scripts list their saved calls and keep their run across store() entries", () => {
+  const pi = fakePi();
+  installDisplay(pi.api);
+  const f = transcript(0);
+  bindTools(f.host, pi.renderers);
+  const archive = core.SessionManager.inMemory(process.cwd());
+  archive.appendMessage(
+    assistant("", [
+      { type: "toolCall", id: "script", name: "codemode", arguments: { code: "return 1;" } },
+    ]),
+  );
+  archive.appendCustomEntry("codemode-store", { set: { key: 1 }, delete: [] });
+  archive.appendMessage({
+    role: "toolResult",
+    toolCallId: "script",
+    toolName: "codemode",
+    content: [
+      { type: "text", text: "Script completed\nWall time 0.1 seconds\nOutput:\n" },
+      { type: "text", text: "ARCHIVED_SCRIPT_OUTPUT" },
+    ],
+    details: { calls: [] },
+    nestedCalls: {
+      complete: true,
+      calls: [
+        { id: "script/1", name: "read", arguments: { path: "inside.txt" }, status: "ok" },
+        { id: "script/2", name: "bash", arguments: { command: "echo inside" }, status: "ok" },
+      ],
+    },
+    isError: false,
+    timestamp: 1,
+  });
+  archive.appendMessage(
+    assistant("", [
+      { type: "toolCall", id: "after", name: "read", arguments: { path: "after.txt" } },
+    ]),
+  );
+  archive.appendMessage({
+    role: "toolResult",
+    toolCallId: "after",
+    toolName: "read",
+    content: [{ type: "text", text: "AFTER" }],
+    isError: false,
+    timestamp: 1,
+  });
+  const entries = archive.getEntries();
+  const snapshot = JSON.stringify(entries);
+  try {
+    const page = renderHistoryPage(
+      f.host as unknown as NativeHost,
+      entries,
+      nativeRenderEntries as NativeRender,
+    );
+    assert.match(text(page), /✓ Read 2 files, ran 1 command ▸/);
+    assert(!text(page).includes("ARCHIVED_SCRIPT_OUTPUT"), "archived scripts start collapsed");
+    assert.equal(JSON.stringify(entries), snapshot, "history pages never edit entries");
+  } finally {
+    pi.emit("session_shutdown");
+  }
+});
