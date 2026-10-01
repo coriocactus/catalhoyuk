@@ -1,23 +1,19 @@
 import {
-  createBashToolDefinition,
-  createEditToolDefinition,
-  createReadToolDefinition,
-  createWriteToolDefinition,
   type ExtensionAPI,
   type ExtensionContext,
   getAgentDir,
   type SessionEntry,
   SettingsManager,
   sessionEntryToContextMessages,
-  type ToolDefinition,
+  type ToolRenderers,
+  VERSION,
 } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
-import type { TSchema } from "typebox";
 import { type AnchorState, ROW_ANCHOR } from "../shared/anchors.ts";
 import { HISTORY_PAGE, type HistoryPage, type HistoryRenderState } from "../shared/history.ts";
 import { type FileReference, OPEN_FILE_EVENT, type OpenFileRequest } from "../shared/protocol.ts";
 import { isTranscriptView, TRANSCRIPT_VIEW, type TranscriptView } from "../shared/transcript.ts";
-import { ToolGroups, type ToolName } from "./model.ts";
+import { TOOL_NAMES, ToolGroups, type ToolName, type ToolRow } from "./model.ts";
 import { installNativeImageSlot, ownImageRendering, renderNativeImages } from "./native-images.ts";
 import { installNativeOutputPadding, outputPadding, ownOutputPadding } from "./native-padding.ts";
 import { installNativeThinking } from "./native-thinking.ts";
@@ -25,6 +21,8 @@ import { ToolGroupView } from "./view.ts";
 
 const EMPTY: Component = { render: () => [], invalidate() {} };
 type DisplayState = { view?: ToolGroupView };
+type RenderCall = NonNullable<ToolRenderers["renderCall"]>;
+type RenderResult = NonNullable<ToolRenderers["renderResult"]>;
 
 function installNativeRendering(
   report: (error: Error) => void,
@@ -46,9 +44,28 @@ function installNativeRendering(
 }
 
 export default function (pi: ExtensionAPI) {
-  const groups = new ToolGroups();
+  if (typeof pi.registerToolRenderer !== "function")
+    throw new Error(`Pi ${VERSION}: tool renderer API is unavailable.`);
+  // Pi executes its own tools, and mirage only draws them. A tool that another extension
+  // registered under the same name keeps that extension's rendering.
+  const claims = (name: string): boolean => {
+    if (!TOOL_NAMES.has(name)) return false;
+    try {
+      const tool = pi.getAllTools().find((candidate) => candidate.name === name);
+      return !tool || tool.sourceInfo.source === "builtin";
+    } catch {
+      // Test fakes have no getAllTools, so the call always throws there. In Pi it throws only
+      // before the runtime is initialised, or once a reload or session replacement makes
+      // this extension stale. Either way, draw the tool as Pi's own.
+      return true;
+    }
+  };
+  const groups = new ToolGroups(claims);
   let historyGroups = new WeakMap<HistoryPage, ToolGroups>();
-  const images = new WeakMap<ToolGroupView["row"], (width: number) => string[]>();
+  const images = new WeakMap<ToolRow, (width: number) => string[]>();
+  // Pi redraws a script's calls only when it redraws the script's row, so keep each script
+  // row's redraw callback.
+  const redraws = new WeakMap<ToolRow, () => void>();
   const models = new Set([new WeakRef(groups)]);
   let thinkingHidden = false;
   const visibility = (hidden: boolean) => {
@@ -98,20 +115,6 @@ export default function (pi: ExtensionAPI) {
     groups.setAllExpanded(value.expanded);
     groups.replace(snapshot([...(value.history ?? []), ...value.entries], value.cwd));
   });
-  let configuration: { cwd: string; trusted: boolean; settings: SettingsManager } | undefined;
-
-  function settingsFor(ctx: ExtensionContext): SettingsManager {
-    const trusted = ctx.isProjectTrusted();
-    if (!configuration || configuration.cwd !== ctx.cwd || configuration.trusted !== trusted) {
-      configuration = {
-        cwd: ctx.cwd,
-        trusted,
-        settings: SettingsManager.create(ctx.cwd, getAgentDir(), { projectTrusted: trusted }),
-      };
-    }
-    return configuration.settings;
-  }
-
   function rebuild(ctx: ExtensionContext): void {
     groups.setAllExpanded(ctx.ui.getToolsExpanded());
     let entries = ctx.sessionManager.buildContextEntries();
@@ -133,7 +136,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   function snapshot(entries: readonly SessionEntry[], cwd: string): ToolGroups {
-    const model = new ToolGroups();
+    const model = new ToolGroups(claims);
     model.setThinkingHidden(thinkingHidden);
     replay(model, entries, cwd);
     return model;
@@ -141,6 +144,10 @@ export default function (pi: ExtensionAPI) {
 
   function replay(target: ToolGroups, entries: readonly SessionEntry[], cwd: string): void {
     for (const entry of entries) {
+      // Custom entries store extension data, such as codemode's store() writes between a
+      // script's call and its result. Live events never include custom entries, so they are
+      // never boundaries.
+      if (entry.type === "custom") continue;
       const messages = sessionEntryToContextMessages(entry);
       if (!messages.length) target.boundary();
       for (const message of messages) {
@@ -155,7 +162,7 @@ export default function (pi: ExtensionAPI) {
     if (!page || (page.scope && page.scope === transcript?.scope)) return groups;
     let archived = historyGroups.get(page);
     if (!archived) {
-      archived = new ToolGroups();
+      archived = new ToolGroups(claims);
       archived.setThinkingHidden(thinkingHidden);
       models.add(new WeakRef(archived));
       replay(archived, page.entries, page.cwd);
@@ -166,8 +173,10 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", (_event, ctx) => {
     releaseRendering ??= installNativeRendering(report, visibility);
-    configuration = undefined;
-    visibility(settingsFor(ctx).getHideThinkingBlock());
+    const settings = SettingsManager.create(ctx.cwd, getAgentDir(), {
+      projectTrusted: ctx.isProjectTrusted(),
+    });
+    visibility(settings.getHideThinkingBlock());
     sessionContext = ctx.mode === "tui" ? ctx : undefined;
     flushWarnings();
     if (sessionContext) rebuild(ctx);
@@ -184,7 +193,6 @@ export default function (pi: ExtensionAPI) {
     releaseRendering?.();
     releaseRendering = undefined;
     sessionContext = undefined;
-    configuration = undefined;
     groups.reset();
     historyGroups = new WeakMap();
   });
@@ -198,6 +206,31 @@ export default function (pi: ExtensionAPI) {
     if (sessionContext) groups.finishMessage(message, ctx.cwd);
   });
   pi.on("user_bash", () => groups.boundary());
+  // Pi reports calls inside scripts only as tool_execution_* events whose parentToolCallId
+  // names the calling script or call.
+  const redraw = (script: ToolRow | undefined) => {
+    if (script) redraws.get(script)?.();
+  };
+  pi.on("tool_execution_start", (event, ctx) => {
+    if (sessionContext && event.parentToolCallId)
+      redraw(
+        groups.startNested(
+          event.parentToolCallId,
+          event.toolCallId,
+          event.toolName,
+          event.args,
+          ctx.cwd,
+        ),
+      );
+  });
+  pi.on("tool_execution_update", (event) => {
+    if (sessionContext && event.parentToolCallId)
+      redraw(groups.updateNested(event.toolCallId, event.partialResult, true, false));
+  });
+  pi.on("tool_execution_end", (event) => {
+    if (sessionContext && event.parentToolCallId)
+      redraw(groups.updateNested(event.toolCallId, event.result, false, event.isError));
+  });
 
   function openFile(file: FileReference): void {
     const request: OpenFileRequest = { ...file, accepted: false };
@@ -209,67 +242,45 @@ export default function (pi: ExtensionAPI) {
       );
   }
 
-  function register<P extends TSchema, D, S>(
-    name: ToolName,
-    create: (cwd: string, settings?: SettingsManager) => ToolDefinition<P, D, S>,
-  ): void {
-    const original = create(process.cwd());
-    let executor: { settings: SettingsManager; definition: ToolDefinition<P, D, S> } | undefined;
-    // Pi rebuilds transcript components BEFORE session_start on /reload. Renderer
-    // definitions must exist at load time; trusted execution settings must wait.
-    const definition: ToolDefinition<P, D, DisplayState> = {
-      ...original,
-      renderShell: "self",
-      execute(id, args, signal, onUpdate, ctx) {
-        const settings = settingsFor(ctx);
-        if (executor?.settings !== settings)
-          executor = { settings, definition: create(ctx.cwd, settings) };
-        return executor.definition.execute(id, args, signal, onUpdate, ctx);
-      },
-      renderCall(args, theme, context) {
-        const groups = groupsFor(context.state);
-        // Observe global expansion during Pi's update callback, never during render().
-        groups.setAllExpanded(sessionContext?.ui.getToolsExpanded() ?? context.expanded);
-        const row = groups.addCall(context.toolCallId, name, args, context.cwd);
-        if (!row) return EMPTY;
-        if (context.executionStarted) groups.markStarted(row);
-        images.set(row, (width) => renderNativeImages(context.state, width));
-        const view =
-          context.state.view?.row === row
-            ? context.state.view
-            : new ToolGroupView(row, groups, {
-                toggle(target) {
-                  groups.toggle(target);
-                  context.invalidate();
-                },
-                openFile,
-                outputPad: () => outputPadding(context.state),
-                renderImages: (target, width) => images.get(target)?.(width) ?? [],
-              });
-        context.state.view = view;
-        (context.state as AnchorState)[ROW_ANCHOR] = view;
-        view.configure(theme, context.showImages);
-        return view;
-      },
-      renderResult(result, options, _theme, context) {
-        const groups = groupsFor(context.state);
-        const row = groups.rows.get(context.toolCallId);
-        if (row) groups.updateResult(row, result, options.isPartial, context.isError);
-        return EMPTY;
-      },
+  function renderers(name: ToolName): ToolRenderers {
+    const renderCall: RenderCall = (args, theme, context) => {
+      const state = context.state as DisplayState & AnchorState;
+      const groups = groupsFor(state);
+      // Observe global expansion during Pi's update callback, never during render().
+      groups.setAllExpanded(sessionContext?.ui.getToolsExpanded() ?? context.expanded);
+      const row = groups.addCall(context.toolCallId, name, args, context.cwd);
+      if (!row) return EMPTY;
+      if (context.executionStarted) groups.markStarted(row);
+      images.set(row, (width) => renderNativeImages(state, width));
+      if (row.kind === "codemode") redraws.set(row, context.invalidate);
+      const view =
+        state.view?.row === row
+          ? state.view
+          : new ToolGroupView(row, groups, {
+              toggle(target) {
+                groups.toggle(target);
+                context.invalidate();
+              },
+              openFile,
+              outputPad: () => outputPadding(state),
+              renderImages: (target, width) => images.get(target)?.(width) ?? [],
+            });
+      state.view = view;
+      state[ROW_ANCHOR] = view;
+      view.configure(theme, context.showImages);
+      return view;
     };
-    pi.registerTool(ownOutputPadding(ownImageRendering(definition)));
+    const renderResult: RenderResult = (result, options, _theme, context) => {
+      const groups = groupsFor(context.state);
+      const row = groups.rows.get(context.toolCallId);
+      if (row) groups.updateResult(row, result, options.isPartial, context.isError);
+      return EMPTY;
+    };
+    // The renderers must exist at load time, because Pi rebuilds the transcript before
+    // session_start.
+    return ownOutputPadding(ownImageRendering({ renderShell: "self", renderCall, renderResult }));
   }
 
-  register("read", (cwd, settings) =>
-    createReadToolDefinition(cwd, { autoResizeImages: settings?.getImageAutoResize() }),
-  );
-  register("bash", (cwd, settings) =>
-    createBashToolDefinition(cwd, {
-      shellPath: settings?.getShellPath(),
-      commandPrefix: settings?.getShellCommandPrefix(),
-    }),
-  );
-  register("edit", (cwd) => createEditToolDefinition(cwd));
-  register("write", (cwd) => createWriteToolDefinition(cwd));
+  const drawn = new Map([...TOOL_NAMES].map((name) => [name, renderers(name as ToolName)]));
+  pi.registerToolRenderer((name, next) => (claims(name) ? drawn.get(name) : undefined) ?? next());
 }

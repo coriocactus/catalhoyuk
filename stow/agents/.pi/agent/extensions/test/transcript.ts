@@ -1,9 +1,9 @@
 // A real InteractiveMode prototype with only the transcript fields Pi's native
 // renderer reads. Shared by history unit tests and cross-extension tests.
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { SessionEntry, SessionManager } from "@earendil-works/pi-coding-agent";
+import type { SessionEntry, SessionManager, ToolRenderers } from "@earendil-works/pi-coding-agent";
 import type { Component, Container, ScrollView } from "@earendil-works/pi-tui";
-import type { Tool } from "./fake-pi.ts";
+import type { BaseRenderers } from "./fake-pi.ts";
 import { core, tui } from "./pi.ts";
 
 type RenderOptions = { updateFooter?: boolean; populateHistory?: boolean };
@@ -122,11 +122,19 @@ export function transcript(count = 130) {
   };
 }
 
+/** Pi's renderer resolution for one session: extension resolvers, then the registered tool. */
+export type Resolve = (name: string, base: BaseRenderers) => ToolRenderers | undefined;
+
+/** The private session members that Pi's tool lookup uses. */
+export function toolSession(resolve: Resolve) {
+  return {
+    getToolDefinition: () => undefined,
+    extensionRunner: { resolveToolRenderers: resolve, getEntryRenderer: () => undefined },
+  };
+}
+
 /** Route tool rendering through Pi's real lookup and any installed adapters. */
-export function bindTools(host: TranscriptHost, tools: ReadonlyMap<string, Tool>): void {
-  Object.defineProperty(host, "session", {
-    configurable: true,
-    value: { getToolDefinition: (name: string) => tools.get(name) },
-  });
+export function bindTools(host: TranscriptHost, resolve: Resolve): void {
+  Object.defineProperty(host, "session", { configurable: true, value: toolSession(resolve) });
   delete (host as { getRegisteredToolDefinition?: unknown }).getRegisteredToolDefinition;
 }
