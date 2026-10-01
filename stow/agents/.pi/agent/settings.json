@@ -20,13 +20,6 @@
     "anthropic/claude-opus-5-5",
     "anthropic/claude-sonnet-5-5"
   ],
-  "modelThinkingLevels": {
-    "openai/gpt-6-astra": "xhigh",
-    "openai/gpt-6.1-sol": "xhigh",
-    "anthropic/claude-fable-5-1": "xhigh",
-    "anthropic/claude-opus-5-5": "xhigh",
-    "anthropic/claude-sonnet-5-5": "xhigh"
-  },
   "warnings": {
     "anthropicExtraUsage": false
   },
