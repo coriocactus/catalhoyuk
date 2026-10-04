@@ -10,6 +10,21 @@ import {
   ToolExecutionComponent,
 } from "@earendil-works/pi-coding-agent";
 
+/**
+ * The fixture's tool turns. A turn starts once the call named by `after` has a result.
+ * Commentary (`text`) before a turn's calls separates groups, and hidden reasoning does not.
+ */
+const TURNS: { after?: string; text?: string; calls: number[] }[] = [
+  { text: "LIVE_WORK_STARTED", calls: [0] },
+  { after: "live-0", calls: [1] },
+  { after: "live-1", text: "EDIT_WORK", calls: [2, 3] },
+  { after: "live-3", text: "COMMAND_WORK", calls: [4, 5] },
+  { after: "live-5", text: "MIXED_WORK", calls: [6, 7] },
+  { after: "live-7", calls: [8] },
+  { after: "live-8", text: "SCRIPT_WORK", calls: [9] },
+  { after: "live-9", calls: [10] },
+];
+
 export default function (pi: ExtensionAPI) {
   const root = process.env.DISPLAY_FIXTURE_DIR;
   if (!root) throw new Error("DISPLAY_FIXTURE_DIR must point to the isolated test directory.");
@@ -161,18 +176,9 @@ export default function (pi: ExtensionAPI) {
           output.stopReason = "stop";
           writeFileSync(join(root, "background-done"), "done");
         } else {
-          // Commentary before a turn's calls separates groups; hidden reasoning does not.
-          const text = !completed.has("live-0")
-            ? "LIVE_WORK_STARTED"
-            : completed.has("live-8") && !completed.has("live-9")
-              ? "SCRIPT_WORK"
-              : completed.has("live-5") && !completed.has("live-7")
-                ? "MIXED_WORK"
-                : completed.has("live-3") && !completed.has("live-5")
-                  ? "COMMAND_WORK"
-                  : completed.has("live-1") && !completed.has("live-3")
-                    ? "EDIT_WORK"
-                    : undefined;
+          // The first turn has no `after`, so a turn always matches.
+          const turn = TURNS.findLast(({ after }) => !after || completed.has(after)) ?? TURNS[0];
+          const { text } = turn;
           if (text) {
             const contentIndex = output.content.push({ type: "text", text }) - 1;
             stream.push({ type: "text_start", contentIndex, partial: structuredClone(output) });
@@ -248,22 +254,7 @@ export default function (pi: ExtensionAPI) {
               arguments: { path: join(root, "after-script.txt"), content: "AFTER_SCRIPT\n" },
             },
           ];
-          const indices = completed.has("live-9")
-            ? [10]
-            : completed.has("live-8")
-              ? [9]
-              : completed.has("live-7")
-                ? [8]
-                : completed.has("live-5")
-                  ? [6, 7]
-                  : completed.has("live-3")
-                    ? [4, 5]
-                    : completed.has("live-1")
-                      ? [2, 3]
-                      : completed.has("live-0")
-                        ? [1]
-                        : [0];
-          for (const index of indices) {
+          for (const index of turn.calls) {
             const call = calls[index];
             const block = {
               type: "toolCall" as const,

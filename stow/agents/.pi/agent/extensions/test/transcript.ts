@@ -133,7 +133,7 @@ export function toolSession(resolve: Resolve) {
   };
 }
 
-/** Route tool rendering through Pi's real lookup and any installed adapters. */
+/** Route tool rendering through Pi's own lookup and any installed adapters. */
 export function bindTools(host: TranscriptHost, resolve: Resolve): void {
   Object.defineProperty(host, "session", { configurable: true, value: toolSession(resolve) });
   delete (host as { getRegisteredToolDefinition?: unknown }).getRegisteredToolDefinition;
