@@ -33,8 +33,8 @@ per-test packages or runtime dependency installation.
 Requires Node 22.19+ (Pi's own minimum; `devEngines` makes npm enforce it), Pi on
 `PATH` (its managed launcher or a package install) or `PI_PACKAGE_DIR`,
 `/usr/bin/vim`, and native build tools (Xcode Command Line Tools on macOS). Build
-`node-pty` from source to avoid its 1.1.0 macOS prebuilt-helper permissions defect;
-no permission patches:
+`node-pty` from source to avoid its 1.1.0 macOS prebuilt-helper permissions defect,
+with no permission patches:
 
 ```sh
 cd ~/.pi/agent/extensions
