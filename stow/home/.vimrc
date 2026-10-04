@@ -223,6 +223,7 @@ if s:has_ale
   call ale#linter#Define('typescript', {
         \ 'name': 'tsgo',
         \ 'lsp': 'stdio',
+        \ 'language': {buffer -> getbufvar(buffer, '&filetype')},
         \ 'executable': {buffer -> ale#path#FindExecutable(
         \   buffer,
         \   'typescript_tsgo',
