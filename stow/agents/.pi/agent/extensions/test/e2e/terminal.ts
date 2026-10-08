@@ -264,6 +264,9 @@ delete env.TMUX_PANE;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: Kitty graphics commands start with ESC _ G.
 const IMAGE_SHOWN = /\x1b_Ga=[Tp],/;
 const shown = (raw: string) => IMAGE_SHOWN.test(raw);
+// Fullscreen transcript top/bottom (Pi 1.0.3+); plain Home/End move the editor cursor.
+const TOP = "\x1b[1;5H"; // Ctrl+Home
+const BOTTOM = "\x1b[1;5F"; // Ctrl+End
 
 function cpuSeconds(pid: number): number {
   return execFileSync("ps", ["-o", "time=", "-p", String(pid)], { encoding: "utf8" })
@@ -335,7 +338,7 @@ async function expandScript() {
 }
 async function owners(label: string, count = 1) {
   terminal.send(`\x15/fixture-owners ${label}\r`);
-  const marker = `OWNERS_${label}_H${count}_I1_P1_T1_R${count === 0 ? 1 : 0}`;
+  const marker = `OWNERS_${label}_H${count}_I1_T1_R${count === 0 ? 1 : 0}`;
   await terminal.waitFor((s) => s.includes(marker), marker);
 }
 async function replace(command: string, reason: string) {
@@ -443,7 +446,7 @@ try {
   await setOutputPadding(0);
   await setOutputPadding(1); // Changes while a tool is running do not rebuild its rows.
   const liveAnchor = terminal.locate("Explored 2 files").y;
-  terminal.send("\x1b[H");
+  terminal.send(TOP);
   await terminal.waitFor(
     () => renderedArchive().size === 43,
     "page history while tools are running",
@@ -562,8 +565,11 @@ try {
   assertCommandHeader("DISPLAY_FIXTURE_ERROR", "red");
   terminal.click("DISPLAY_FIXTURE_ERROR");
   await terminal.waitFor(
-    (s) => s.includes("ERROR_BODY_MARKER") && s.includes("Command exited with code 1"),
-    "expand error",
+    (s) =>
+      s.includes("ERROR_BODY_MARKER") &&
+      s.includes("Command exited with code 1") &&
+      /Took \d+\.\ds/.test(s),
+    "expand error, ending with its recorded execution time",
   );
   terminal.assertColour("ERROR_BODY_MARKER", colours.red);
   terminal.click("DISPLAY_FIXTURE_ERROR");
@@ -690,7 +696,10 @@ try {
   terminal.click("Ran 2 commands");
   await terminal.waitFor((s) => s.includes("DISPLAY_FIXTURE_ERROR"), "resumed command group");
   terminal.click("DISPLAY_FIXTURE_ERROR");
-  await terminal.waitFor((s) => s.includes("ERROR_BODY_MARKER"), "resumed error expands");
+  await terminal.waitFor(
+    (s) => s.includes("ERROR_BODY_MARKER") && /Took \d+\.\ds/.test(s),
+    "resumed error expands with its saved execution time",
+  );
   terminal.click("DISPLAY_FIXTURE_ERROR");
   await terminal.waitFor((s) => !s.includes("ERROR_BODY_MARKER"), "resumed error collapses");
   terminal.click("Ran 2 commands");
@@ -709,7 +718,7 @@ try {
   terminal.send("HISTORY_DRAFT_KEEP");
   await terminal.waitFor((s) => s.includes("HISTORY_DRAFT_KEEP"), "paging draft");
   const anchorY = terminal.locate("Fixture ready").y;
-  terminal.send("\x1b[H");
+  terminal.send(TOP);
   await terminal.waitFor(() => renderedArchive().size === 43, "first older batch");
   assert.equal(terminal.locate("Fixture ready").y, anchorY, "prepend keeps the viewport anchor");
   assert(renderedArchive().has("ARCHIVE_078") && !renderedArchive().has("ARCHIVE_073"));
@@ -720,13 +729,13 @@ try {
   terminal.send("\x1b[5~");
   await terminal.waitFor((s) => s.includes("ARCHIVE_"), "scroll within the loaded batch");
   assert.equal(renderedArchive().size, 43, "one Page Up does not reach the new top");
-  terminal.send("\x1b[H");
+  terminal.send(TOP);
   await terminal.waitFor(
     (s) => renderedArchive().size === 91 && s.includes(seamHeader),
     "second batch joins the run split by the page boundary",
   );
   assert(!terminal.screen.includes("echo ARCHIVED_SEAM"), "the seam call moved into its group");
-  // Home showed the seam call at the top; its merged header keeps that place.
+  // Ctrl+Home showed the seam call at the top; its merged header keeps that place.
   // The message just before it, from the new page, must remain above the viewport.
   assert(terminal.locate(seamHeader).y <= 2, "the merged group stays at the previous top");
   assert(!terminal.screen.includes("ARCHIVE_073"), "the viewport did not jump into older rows");
@@ -762,14 +771,14 @@ try {
     (s) => !s.includes("ARCHIVED_READ_RESULT"),
     "Ctrl+O collapses historical bodies",
   );
-  terminal.send("\x1b[H");
+  terminal.send(TOP);
   await terminal.waitFor(
     (s) => renderedArchive().size === 117 && s.includes("ARCHIVE_026"),
     "final older batch",
   );
-  terminal.send("\x1b[H");
+  terminal.send(TOP);
   await terminal.waitFor((s) => s.includes("ARCHIVE_000"), "beginning of the session");
-  terminal.send("\x1b[H\x1b[5~\x1b[<64;10;10M");
+  terminal.send(`${TOP}\x1b[5~\x1b[<64;10;10M`);
   await delay(150);
   assert.equal(
     renderedArchive().size,
@@ -781,7 +790,7 @@ try {
     persistedBeforePaging,
     "paging never writes session history",
   );
-  terminal.send("\x1b[F");
+  terminal.send(BOTTOM);
   await terminal.waitFor(
     (s) => s.includes("BACKGROUND_FINISHED") && s.includes("HISTORY_DRAFT_KEEP"),
     "return to live messages",
@@ -797,9 +806,9 @@ try {
     readFileSync(join(root, "before.state.json"), "utf8"),
     "model context and branch are unchanged",
   );
-  terminal.send("\x1b[H");
+  terminal.send(TOP);
   await terminal.waitFor((s) => s.includes("ARCHIVE_000"), "loaded pages remain accessible");
-  terminal.send("\x1b[F");
+  terminal.send(BOTTOM);
   await terminal.waitFor(
     (s) => s.includes("BACKGROUND_FINISHED"),
     "live view before lifecycle checks",

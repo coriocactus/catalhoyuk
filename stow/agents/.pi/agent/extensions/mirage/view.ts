@@ -111,6 +111,16 @@ function argumentsNote(row: ToolRow): string {
   return row.omittedBytes === undefined ? "" : `${row.omittedBytes} bytes of arguments`;
 }
 
+/** Formats a duration as Pi's bash rows do: `1.2s`, `2m 5s`, `1h 2m 5s`. */
+export function formatDuration(ms: number): string {
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const total = Math.floor(seconds);
+  const minutes = Math.floor(total / 60);
+  if (minutes < 60) return `${minutes}m ${total % 60}s`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m ${total % 60}s`;
+}
+
 /** Formats a cost as Pi does: cents from one cent up, two significant digits below a cent. */
 function formatCost(cost: number): string {
   return `$${cost >= 0.01 ? cost.toFixed(2) : cost.toPrecision(2)}`;
@@ -471,6 +481,9 @@ export class ToolGroupView implements Component {
             output += `\n${imageFallback(part.mimeType, getImageDimensions(part.data, part.mimeType) ?? undefined)}`;
         }
       }
+      // Like Pi's bash rows: the recorded execution time, which survives reloads.
+      if (row.kind === "bash" && row.durationMs !== undefined && isComplete(row))
+        output += `\n${this.theme.fg("muted", `Took ${formatDuration(row.durationMs)}`)}`;
       return output;
     });
     this.addLines([...component.render(bodyWidth), ...imageLines], row, indent);

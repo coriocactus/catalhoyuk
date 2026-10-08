@@ -64,7 +64,7 @@ after(async () => {
   assert.equal(
     interactive.getRegisteredToolDefinition,
     nativeLookup,
-    "last owner restores Pi's tool lookup on shutdown",
+    "mirage never replaces Pi's tool lookup",
   );
   if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
   else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
@@ -109,8 +109,17 @@ export const component = (
   args: unknown,
   definition: Renderers | undefined,
   cwd: string,
-  options: { showImages?: boolean } = {},
-) => new core.ToolExecutionComponent(name, id, args, options, definition, ui, cwd);
+  options: { showImages?: boolean; outputPad?: number } = {},
+) =>
+  new core.ToolExecutionComponent(
+    name,
+    id,
+    args,
+    { outputPad: 0, ...options },
+    definition,
+    ui,
+    cwd,
+  );
 
 export interface Slot {
   definition: ToolRenderers;
@@ -168,6 +177,7 @@ export async function fixture({ global = {} }: { global?: object } = {}) {
       expanded: false,
       showImages: false,
       isError: false,
+      outputPad: 0,
       invalidate() {
         invalidations++;
       },

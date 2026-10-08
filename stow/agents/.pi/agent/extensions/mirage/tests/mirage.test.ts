@@ -4,9 +4,9 @@ import { test } from "node:test";
 import type { Theme, ToolInfo, ToolRenderers } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 import { OPEN_FILE_EVENT, type OpenFileRequest } from "../../shared/protocol.ts";
-import { fake, fakePi, type Tool } from "../../test/fake-pi.ts";
+import { fake, fakePi } from "../../test/fake-pi.ts";
 import { core, loadFuture, themes, tui } from "../../test/pi.ts";
-import { assistant as assistantMessage, toolSession } from "../../test/transcript.ts";
+import { assistant as assistantMessage } from "../../test/transcript.ts";
 import { colours } from "../colours.ts";
 import {
   assistantStart,
@@ -16,7 +16,6 @@ import {
   firstText,
   fixture,
   installDisplay,
-  interactive,
   internals,
   isImageLine,
   type Message,
@@ -24,7 +23,6 @@ import {
   PIXEL_PNG,
   paint,
   plain,
-  type RenderContext,
   type Result,
   result,
   root,
@@ -37,19 +35,10 @@ test("compatibility checks capabilities, not a version allowlist, and warns befo
     "../native-images.ts",
     import.meta.url,
   );
-  const padding = await loadFuture<typeof import("../native-padding.ts")>(
-    "../native-padding.ts",
-    import.meta.url,
-  );
   t.mock.method(core.ToolExecutionComponent.prototype, "render", () => ["native fallback"]);
-  t.mock.method(interactive, "getRegisteredToolDefinition", function (this: { definition?: Tool }) {
-    return this.definition;
-  });
-  const notices: string[] = [],
-    releases: (() => void)[] = [];
+  const notices: string[] = [];
+  const release = images.installNativeImageSlot((error) => notices.push(error.message));
   try {
-    releases.push(images.installNativeImageSlot((error) => notices.push(error.message)));
-    releases.push(padding.installNativeOutputPadding((error) => notices.push(error.message)));
     const broken = {
       toolDefinition: images.ownImageRendering({ renderShell: "self" }),
       rendererState: {},
@@ -60,28 +49,8 @@ test("compatibility checks capabilities, not a version allowlist, and warns befo
       ]);
     assert.equal(notices.length, 1, "one warning, not one per paint");
     assert.match(notices[0], /Pi 999\.0\.0: image adapter API changed/);
-    const state = {};
-    const host: { outputPad?: number; definition: Tool } = {
-      outputPad: 2,
-      definition: padding.ownOutputPadding(
-        fake<Tool>({
-          renderCall() {
-            return fake<Component>({});
-          },
-        }),
-      ),
-    };
-    interactive.getRegisteredToolDefinition
-      .call(host, "read")
-      ?.renderCall?.({}, themes.theme, fake<RenderContext>({ state }));
-    assert.equal(padding.outputPadding(state), 2, "nonnegative integer padding remains compatible");
-    delete host.outputPad;
-    assert.equal(padding.outputPadding(state), 0);
-    assert.equal(padding.outputPadding(state), 0);
-    assert.equal(notices.length, 2);
-    assert.match(notices[1], /Pi 999\.0\.0: output padding API changed/);
   } finally {
-    for (const release of releases.reverse()) release();
+    release();
   }
   const prototype = core.ToolExecutionComponent.prototype as { render?: unknown };
   const imageRender = prototype.render;
@@ -91,6 +60,24 @@ test("compatibility checks capabilities, not a version allowlist, and warns befo
   } finally {
     prototype.render = imageRender;
   }
+});
+
+test("without Pi's outputPad, rows render unpadded and warn once", async () => {
+  const f = await fixture();
+  const slot = f.call("read", "unpadded", { path: "a.txt" });
+  slot.context.outputPad = 2;
+  slot.redraw();
+  assert.match(plain(slot.view), /^ {2}… Reading a\.txt ▸$/);
+  // Pi before 1.1.0 left outputPad out of render contexts.
+  delete (slot.context as { outputPad?: number }).outputPad;
+  for (let i = 0; i < 2; i++) {
+    slot.redraw();
+    assert.match(plain(slot.view), /^… Reading a\.txt ▸$/);
+  }
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(f.notices.length, 1, "one warning, not one per render");
+  assert.match(String(f.notices[0][0]), /tool render contexts lack outputPad/);
+  assert.equal(f.notices[0][1], "warning");
 });
 
 test("palette supplies RGB and indexed colours without losing diff word highlights", (t) => {
@@ -777,15 +764,10 @@ test("failed edits are hidden in closed groups, red only when all failed, and ad
   assert(a.view.render(160)[0].startsWith(paint(themes.theme, "red", "✗")));
 });
 
-test("output padding follows the live host for cached headers, bodies, clicks and images", async (t) => {
+test("output padding follows Pi's live setting for cached headers, bodies, clicks and images", async (t) => {
   const f = await fixture();
-  const host = {
-    outputPad: 0,
-    session: toolSession((name, base) => f.pi.renderers(name, base)),
-  };
-  const lookup = (name: string) => interactive.getRegisteredToolDefinition.call(host, name);
   const row = (name: string, id: string, args: unknown) =>
-    component(name, id, args, lookup(name), f.dir, {});
+    component(name, id, args, f.tool(name), f.dir);
   const opened: string[] = [];
   f.pi.events.on(OPEN_FILE_EVENT, (data) => {
     const request = data as OpenFileRequest;
@@ -800,8 +782,7 @@ test("output padding follows the live host for cached headers, bodies, clicks an
   // The view keeps the old hit targets until it is rendered with the new inset.
   const view = internals(read).rendererState.view;
   assert(view, "mirage view");
-  host.outputPad = 1;
-  view.invalidate();
+  read.setOutputPad(1); // As Pi does when the setting changes.
   view.handleMouse(mouse(tui.visibleWidth("✓ Read ")));
   assert.deepEqual(opened, [path]);
   view.handleMouse(mouse(tui.visibleWidth(unpadded) - 1));
@@ -824,8 +805,8 @@ test("output padding follows the live host for cached headers, bodies, clicks an
     components.push(next);
   }
   for (const padding of [1, 0, 1]) {
-    host.outputPad = padding; // No updateDisplay/invalidate: exercise the render-cache key.
     for (const item of components) {
+      item.setOutputPad(padding); // Same width: the render cache must still follow padding.
       const lines = item.render(30).slice(1).map(tui.stripTerminalSequences);
       assert.equal(lines[0].match(/^ */)?.[0].length, padding);
       assert(lines[0].endsWith(" ▾"));
@@ -839,30 +820,6 @@ test("output padding follows the live host for cached headers, bodies, clicks an
       item.render(30); // Leave the same width cached before changing only outputPad.
     }
   }
-
-  // Binding is host-local, scoped to our definitions, and never mutates the originals.
-  const otherHost = { ...host, outputPad: 0 };
-  const other = interactive.getRegisteredToolDefinition.call(otherHost, "write");
-  await f.pi.event("user_bash");
-  const otherRow = component(
-    "write",
-    "other-host",
-    { path: "other.txt", content: "OTHER" },
-    other,
-    f.dir,
-    {},
-  );
-  otherRow.updateResult({ ...result("written"), isError: false });
-  assert(tui.stripTerminalSequences(otherRow.render(30)[1]).startsWith("✓ Wrote "));
-  const original = f.pi.renderers("write");
-  assert.notEqual(other?.renderCall, original?.renderCall);
-  assert.equal(f.pi.renderers("write"), original);
-  const unmanaged = core.createReadToolDefinition(f.dir);
-  const plainHost = { outputPad: 1, session: toolSession(() => unmanaged as ToolRenderers) };
-  assert.equal(
-    interactive.getRegisteredToolDefinition.call(plainHost, "read")?.renderCall,
-    unmanaged.renderCall,
-  );
 
   tui.setCapabilityOverrides({ images: "kitty" });
   try {
@@ -882,7 +839,7 @@ test("output padding follows the live host for cached headers, bodies, clicks an
       return render(width);
     });
     for (const padding of [0, 1]) {
-      host.outputPad = padding;
+      image.setOutputPad(padding);
       const lines = image.render(40);
       assert.equal(widths.at(-1), 40 - padding * 2 - 2);
       assert(lines.find(isImageLine)?.startsWith(" ".repeat(padding + 2)));

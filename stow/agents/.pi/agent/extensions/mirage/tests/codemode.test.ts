@@ -30,8 +30,8 @@ function events(f: Fixture, parent: string) {
       send("start", { toolCallId: `${parent}/${id}`, toolName, args }),
     update: (id: string, toolName: string, partialResult: Result) =>
       send("update", { toolCallId: `${parent}/${id}`, toolName, args: {}, partialResult }),
-    end: (id: string, toolName: string, output: Result, isError = false) =>
-      send("end", { toolCallId: `${parent}/${id}`, toolName, result: output, isError }),
+    end: (id: string, toolName: string, output: Result, isError = false, durationMs?: number) =>
+      send("end", { toolCallId: `${parent}/${id}`, toolName, result: output, isError, durationMs }),
   };
 }
 
@@ -279,6 +279,83 @@ test("saved scripts rebuild calls from Pi's record, without a store() boundary",
   assert.equal(JSON.stringify(entries), before, "grouping is presentation-only");
 });
 
+test("commands end with the execution time Pi recorded, live, in scripts, and after reload", async () => {
+  const f = await fixture();
+  const direct = f.call("bash", "timed", { command: "make" });
+  direct.result(result("BUILDING"), false, true);
+  plain(direct.view);
+  direct.view.handleMouse(mouse(0));
+  assert(!plain(direct.view).includes("Took"), "no time while running");
+  direct.context.durationMs = 1234;
+  direct.result(result("BUILT"));
+  assert.match(plain(direct.view), /\n {2}BUILT\n {2}Took 1\.2s$/);
+  const took = direct.view.render(160).at(-1) ?? "";
+  assert(took.includes(themes.theme.fg("muted", "Took 1.2s")), "muted, like Pi's bash rows");
+
+  await f.pi.event("user_bash");
+  const run = f.call("codemode", "timed-script", { code: CODE });
+  const nested = events(f, "timed-script");
+  await nested.start("1", "bash", { command: "npm test" });
+  await nested.end("1", "bash", result("FAILED_TESTS"), true, 61_000);
+  await nested.start("2", "bash", { command: "npm run lint" });
+  await nested.end("2", "bash", result("LINTED"));
+  await nested.start("3", "read", { path: "a.txt" });
+  await nested.end("3", "read", result("READ_BODY"), false, 5);
+  run.result(
+    script("OUT", [
+      { id: "timed-script/1", name: "bash", args: "{}", status: "error", durationMs: 99 },
+      { id: "timed-script/2", name: "bash", args: "{}", status: "ok", durationMs: 450 },
+      { id: "timed-script/3", name: "read", args: "{}", status: "ok", durationMs: 5 },
+    ]),
+  );
+  f.expand(true);
+  const open = plain(run.view);
+  assert.match(open, /FAILED_TESTS\n *Took 1m 1s/, "failed commands keep their time");
+  assert.match(open, /LINTED\n *Took 0\.5s/, "details.calls fill in a time events lacked");
+  assert.equal(open.match(/Took/g)?.length, 2, "only commands show a time");
+  f.expand(false);
+
+  const message = (value: object) => ({ type: "message", message: value });
+  const call = (id: string, name: string, args: Record<string, string>) =>
+    message(assistant("", [{ type: "toolCall", id, name, arguments: args }]));
+  await f.rebuild("session_start", [
+    call("saved-bash", "bash", { command: "make" }),
+    message({
+      role: "toolResult",
+      toolCallId: "saved-bash",
+      toolName: "bash",
+      ...result("MADE"),
+      isError: false,
+      durationMs: 2500,
+    }),
+    call("saved-timed", "codemode", { code: CODE }),
+    message({
+      role: "toolResult",
+      toolCallId: "saved-timed",
+      toolName: "codemode",
+      ...script("OUT"),
+      isError: false,
+      nestedCalls: {
+        complete: true,
+        calls: [
+          {
+            id: "saved-timed/1",
+            name: "bash",
+            arguments: { command: "make test" },
+            status: "ok",
+            durationMs: 3_725_000,
+          },
+        ],
+      },
+    }),
+  ]);
+  const view = f.call("bash", "saved-bash", { command: "make" }).view;
+  f.expand(true);
+  const saved = plain(view);
+  assert.match(saved, /MADE\n *Took 2\.5s/);
+  assert.match(saved, /Output not kept in session\.\n *Took 1h 2m 5s/);
+});
+
 test("rebuilds keep outputs and expansion of calls seen running", async () => {
   const f = await fixture();
   const run = f.call("codemode", "live", { code: CODE });
@@ -360,8 +437,10 @@ test("calls inside scripts follow their script through regrouping, prepends and 
   const old = older.addCall("old", "codemode", {}, root);
   assert(old);
   older.updateResult(old, script("", []), false, false, {
-    complete: true,
-    calls: [{ id: "old/1", name: "read", arguments: { path: "o" }, status: "ok" }],
+    nestedCalls: {
+      complete: true,
+      calls: [{ id: "old/1", name: "read", arguments: { path: "o" }, status: "ok" }],
+    },
   });
   const staged = model.stagePrepend(older);
   staged.rollback();

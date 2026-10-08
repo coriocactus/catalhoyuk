@@ -52,7 +52,6 @@ export default function (pi: ExtensionAPI) {
         ToolExecutionComponent.prototype,
         Symbol.for("mirage.native-images.patch.v1"),
       );
-      const padding = Reflect.get(host, Symbol.for("mirage.native-padding.patch.v1"));
       const thinking = Reflect.get(
         AssistantMessageComponent.prototype,
         Symbol.for("mirage.native-thinking.patch.v1"),
@@ -61,7 +60,7 @@ export default function (pi: ExtensionAPI) {
         Reflect.get(host, "renderSessionEntries") ===
         Reflect.get(host, Symbol.for("fixture.original-history"));
       ctx.ui.notify(
-        `OWNERS_${label}_H${history?.owners.size ?? 0}_I${images?.users ?? 0}_P${padding?.users ?? 0}_T${thinking?.owners.size ?? 0}_R${Number(restored)}`,
+        `OWNERS_${label}_H${history?.owners.size ?? 0}_I${images?.users ?? 0}_T${thinking?.owners.size ?? 0}_R${Number(restored)}`,
         "info",
       );
     },

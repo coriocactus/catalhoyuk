@@ -39,6 +39,8 @@ export interface ToolRow {
   source?: ScriptSource;
   result?: AgentToolResult<unknown>;
   status: ToolStatus;
+  /** Execution time Pi recorded for the final result. */
+  durationMs?: number;
   hasImages: boolean;
   revision: number;
   expansion?: Expansion;
@@ -66,6 +68,13 @@ export interface ScriptSource {
 }
 
 export type Expandable = ToolGroup | ToolRow | ScriptSource;
+
+/** What Pi records with a final result besides its content. */
+export interface ResultRecord {
+  durationMs?: number;
+  /** A script's saved `nestedCalls`. */
+  nestedCalls?: unknown;
+}
 
 export const TOOL_NAMES: ReadonlySet<string> = new Set([
   "read",
@@ -100,6 +109,10 @@ function kindOf(name: string): ToolKind {
   if (isModelCall(name)) return "model";
   if (BUILT_IN_KINDS.has(name)) return name as ToolName;
   return "tool";
+}
+
+function duration(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
 /** Keeps the content and details that rendering uses, never `structuredContent` or usage. */
@@ -281,10 +294,11 @@ export class ToolGroups {
     result: AgentToolResult<unknown>,
     partial: boolean,
     failed: boolean,
-    record?: unknown,
+    recorded: ResultRecord = {},
   ): void {
-    this.applyResult(row, result, partial, failed);
-    if (row.kind === "codemode") this.updateScript(row, row.result?.details, record, !partial);
+    this.applyResult(row, result, partial, failed, recorded.durationMs);
+    if (row.kind === "codemode")
+      this.updateScript(row, row.result?.details, recorded.nestedCalls, !partial);
     this.changed(row);
   }
 
@@ -293,11 +307,13 @@ export class ToolGroups {
     result: AgentToolResult<unknown>,
     partial: boolean,
     failed: boolean,
+    durationMs: number | undefined,
   ): void {
     row.result = retained(result);
     if (failed) row.status = "error";
     else if (partial) row.status = "running";
     else row.status = "success";
+    row.durationMs = partial ? undefined : duration(durationMs);
     row.hasImages = row.result.content.some((part) => part.type === "image");
   }
 
@@ -326,11 +342,12 @@ export class ToolGroups {
     result: AgentToolResult<unknown>,
     partial: boolean,
     failed: boolean,
+    durationMs?: number,
   ): ToolRow | undefined {
     const row = this.nested.get(id);
     if (!row?.parent) return undefined;
     row.saved = false;
-    this.applyResult(row, result, partial, failed);
+    this.applyResult(row, result, partial, failed, durationMs);
     this.changed(row);
     return row.parent;
   }
@@ -371,7 +388,7 @@ export class ToolGroups {
           row.cost = call.cost;
           this.changed(row);
         }
-        this.settle(row, call.status, call.error);
+        this.settle(row, call.status, call.error, call.durationMs);
         continue;
       }
       let match = saved.get(call.id);
@@ -390,16 +407,16 @@ export class ToolGroups {
         if (args) this.updateCall(row, args, row.cwd);
         else row.preview = call.preview;
       }
-      this.settle(row, call.status, call.error);
+      this.settle(row, call.status, call.error, call.durationMs ?? match?.durationMs);
     }
     for (const call of remaining.values()) {
       const row = this.nestedRow(script, call.id, call.name, script.cwd);
       this.restore(row, call);
-      this.settle(row, call.status, call.error);
+      this.settle(row, call.status, call.error, call.durationMs);
     }
     if (final)
       for (const row of script.calls ?? [])
-        if (!isComplete(row)) this.settle(row, "cancelled", undefined);
+        if (!isComplete(row)) this.settle(row, "cancelled", undefined, undefined);
   }
 
   /** Restores the saved arguments of a call this runtime did not see run. */
@@ -416,10 +433,20 @@ export class ToolGroups {
 
   /**
    * Applies a final status from `details.calls` or `nestedCalls`. Statuses and outputs seen
-   * live stay.
+   * live stay; a saved duration fills in one the live events did not report.
    */
-  private settle(row: ToolRow, status: CallStatus, error: string | undefined): void {
+  private settle(
+    row: ToolRow,
+    status: CallStatus,
+    error: string | undefined,
+    durationMs: number | undefined,
+  ): void {
     if (status === "running") return; // Live events report progress.
+    const recorded = duration(durationMs);
+    if (recorded !== undefined && row.durationMs === undefined) {
+      row.durationMs = recorded;
+      this.changed(row);
+    }
     if (row.saved === false && isComplete(row)) return; // A live final status stays.
     const unchanged = row.status === status && (!error || row.result !== undefined);
     if (unchanged) return;
@@ -443,7 +470,7 @@ export class ToolGroups {
           { content: message.content, details: message.details },
           false,
           message.isError,
-          message.nestedCalls,
+          { durationMs: message.durationMs, nestedCalls: message.nestedCalls },
         );
     }
   }
@@ -482,6 +509,7 @@ export class ToolGroups {
         row.file = snapshot.file;
         row.result = snapshot.result;
         row.status = snapshot.status;
+        row.durationMs = snapshot.durationMs;
         row.hasImages = snapshot.hasImages;
         if (snapshot.calls) row.calls = this.mergeCalls(row, snapshot.calls);
         row.revision++;
@@ -517,6 +545,7 @@ export class ToolGroups {
       }
       if (row.saved === false) {
         if (!isComplete(row)) row.status = snapshot.status;
+        row.durationMs ??= snapshot.durationMs;
       } else {
         row.args = snapshot.args;
         row.file = snapshot.file;
@@ -524,6 +553,7 @@ export class ToolGroups {
         row.omittedBytes = snapshot.omittedBytes;
         row.cost = snapshot.cost;
         row.status = snapshot.status;
+        row.durationMs = snapshot.durationMs;
         row.result = snapshot.result;
       }
       row.revision++;

@@ -14,6 +14,8 @@ $ npm test ▸
 - Click rows/trailing carets to expand or collapse; group members have their own toggles.
 - Command rows and command-only groups use **$**: green on success, red on failure,
   muted while pending/running. Mixed groups use **✓**, **✗**, or **…**.
+- A finished command's output ends with a muted `Took 1.2s`: the execution time Pi recorded,
+  as on Pi's own bash rows. It survives reload/resume, including for commands in scripts.
 - A closed group is one line. Its **✓**/**$** turns red only when every call failed;
   open it to see failed calls, red on their own rows. Error output stays hidden until expanded.
 - Images group like other reads. Previews start hidden; each image row's toggle and
@@ -46,7 +48,7 @@ failed/aborted/truncated assistant turns separate groups. Commentary that arrive
 after a call splits it off at once. Local expansion choices reset on reload/resume.
 
 A script's calls never reach the model as tool calls, so Pi saves only their arguments,
-status, and error text. Mirage takes their outputs from live `tool_execution_*` events and
+status, execution time, and error text. Mirage takes their outputs from live `tool_execution_*` events and
 keeps them until reload or resume. After that, read, command, and other tool rows say
 `Output not kept in session.`, and write rows show their saved content. Edit rows rebuild
 their diff and totals from the saved arguments, with line numbers relative to the replaced
@@ -63,12 +65,13 @@ batches, and archived calls are never executed.
 only renders it. `nested.ts` reads a script result's `details.calls` and the `nestedCalls`
 that Pi saves with it. `shared` connects the independent opener and optional
 history pager without putting presentation metadata in saved messages.
+Output padding and execution times come from Pi's tool render context (Pi 1.1+); without
+`outputPad`, rows render unpadded with one warning.
 `native-images.ts` moves each row's native previews into its collapsible body, binding
 them before the first paint, so a group leader can show any member's image;
-`native-padding.ts` supplies the live output padding omitted from tool render contexts;
 `native-thinking.ts` filters only assistant render inputs, retaining the original message
-for native visibility toggles. All three adapters check capabilities and patch ownership.
-Detected layout changes warn and fall back to native previews/thinking or unpadded rows.
+for native visibility toggles. Both adapters check capabilities and patch ownership.
+Detected layout changes warn and fall back to native previews/thinking.
 No installed Pi files, settings, or model image payloads are modified.
 
 Mirage draws tools and never runs them. It registers renderers through Pi's

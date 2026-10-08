@@ -59,7 +59,7 @@ test("bounded pages share one growing group, preserving loaded rows and global e
     assert.equal(text(f.document).match(/Explored 10 files/g)?.length, 1);
     assert(!text(f.document).includes("Explored 5 files"));
     for (const padding of [1, 0, 1]) {
-      f.host.outputPad = padding;
+      f.setOutputPad(padding); // The merged group's header is drawn by an archived row.
       const headers = text(f.document)
         .split("\n")
         .filter((line) => line.includes("Explored 10 files"));
@@ -73,7 +73,7 @@ test("bounded pages share one growing group, preserving loaded rows and global e
     f.layout();
     assert(text(f.document).includes("BODY_29") && text(f.document).includes("BODY_24"));
     for (const padding of [0, 1]) {
-      f.host.outputPad = padding;
+      f.setOutputPad(padding);
       const bodies = text(f.document)
         .split("\n")
         .filter((line) => line.includes("BODY_"));
