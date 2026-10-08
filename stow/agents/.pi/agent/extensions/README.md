@@ -74,7 +74,8 @@ isolated settings and an offline fixture provider. Vim syntax stays on; personal
 configuration, Ghostty settings, and installed Pi files are untouched.
 
 Coverage includes grouping, codemode scripts run by Pi's codemode tool (live calls, saved
-calls after resume, and `store()` entries), live output padding, errors/diffs/images, clicks/Ctrl+O,
+calls after resume, and `store()` entries), live output padding, command execution times
+(live and resumed), errors/diffs/images, clicks/Ctrl+O,
 background work while Vim owns the terminal, newer/replacement drafts, editor failures,
 saves, resizing, new/resume/fork/reload cleanup, disabling history, rapid scrolling
 between prepend and layout, bounded paging, archived filenames/images, unchanged model

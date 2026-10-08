@@ -93,6 +93,11 @@ function expand(component: Component, value: boolean): void {
     component.setExpanded(value);
 }
 
+function pad(component: Component, value: number): void {
+  if ("setOutputPad" in component && typeof component.setOutputPad === "function")
+    component.setOutputPad(value);
+}
+
 class HistoryPages extends Container {
   private readonly host: NativeHost;
 
@@ -106,6 +111,11 @@ class HistoryPages extends Container {
   setExpanded(value: boolean): void {
     for (const page of this.children as Container[])
       for (const child of page.children) expand(child, value);
+  }
+  /** Pi passes Output padding changes to each chat child, including this one. */
+  setOutputPad(value: number): void {
+    for (const page of this.children as Container[])
+      for (const child of page.children) pad(child, value);
   }
 }
 
@@ -275,8 +285,7 @@ export class HistoryController {
           child.setHideThinkingBlock(host.hideThinkingBlock);
           child.setHiddenThinkingLabel(host.hiddenThinkingLabel);
         }
-        if ("setOutputPad" in child && typeof child.setOutputPad === "function")
-          child.setOutputPad(host.outputPad);
+        pad(child, host.outputPad);
         if (child instanceof ToolExecutionComponent) {
           child.setShowImages(show);
           child.setImageWidthCells(width);

@@ -23,6 +23,7 @@ export interface ScriptCall {
   status: CallStatus;
   error?: string;
   cost?: number;
+  durationMs?: number;
 }
 
 /**
@@ -37,12 +38,15 @@ export interface SavedCall {
   omittedBytes?: number;
   status: CallStatus;
   error?: string;
+  durationMs?: number;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const asString = (value: unknown): string | undefined =>
   typeof value === "string" ? value : undefined;
+const asNumber = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) ? value : undefined;
 
 const DETAIL_STATUS: Record<DetailCall["status"], CallStatus> = {
   running: "running",
@@ -89,7 +93,8 @@ export function scriptCalls(details: unknown): ScriptCall[] {
         preview: asString(call.args) ?? "",
         status,
         error: asString(call.error),
-        cost: typeof call.cost === "number" && Number.isFinite(call.cost) ? call.cost : undefined,
+        cost: asNumber(call.cost),
+        durationMs: asNumber(call.durationMs),
       },
     ];
   });
@@ -112,6 +117,7 @@ export function savedCalls(record: unknown): SavedCall[] {
         omittedBytes: typeof call.argumentsBytes === "number" ? call.argumentsBytes : undefined,
         status,
         error: asString(call.error),
+        durationMs: asNumber(call.durationMs),
       },
     ];
   });

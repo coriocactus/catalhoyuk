@@ -2,9 +2,10 @@
 
 Run `/reload` in fullscreen mode. The transcript starts with roughly **50 saved
 entries**, plus the current compaction summary. Scroll upward with the wheel,
-Page Up, or Home: reaching the top prepends one older batch and keeps the existing
+Page Up, or Ctrl+Home: reaching the top prepends one older batch and keeps the existing
 messages in place. Reach the new top to load again; loading stops at the active
-branch's beginning. End returns to live output.
+branch's beginning. Ctrl+End returns to live output. (Plain Home/End move the editor
+cursor.)
 
 - Loaded history stays available, including through compaction and live updates.
 - Reload/resume and tree navigation start a fresh recent view. Reload after changing TUI mode.

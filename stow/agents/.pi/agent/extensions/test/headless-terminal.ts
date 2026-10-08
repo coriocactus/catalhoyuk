@@ -60,7 +60,7 @@ export class HeadlessTerminal {
   static async start(
     command: string,
     args: string[],
-    { cwd, env, artifacts, name = "terminal", cols = 150, rows = 72 }: StartOptions,
+    { cwd, env, artifacts, name = "terminal", cols = 150, rows = 76 }: StartOptions,
   ): Promise<HeadlessTerminal> {
     const terminal = new xterm.Terminal({ cols, rows, scrollback: 200, allowProposedApi: true });
     try {

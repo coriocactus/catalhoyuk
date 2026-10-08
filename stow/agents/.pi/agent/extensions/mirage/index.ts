@@ -15,12 +15,11 @@ import { type FileReference, OPEN_FILE_EVENT, type OpenFileRequest } from "../sh
 import { isTranscriptView, TRANSCRIPT_VIEW, type TranscriptView } from "../shared/transcript.ts";
 import { TOOL_NAMES, ToolGroups, type ToolName, type ToolRow } from "./model.ts";
 import { installNativeImageSlot, ownImageRendering, renderNativeImages } from "./native-images.ts";
-import { installNativeOutputPadding, outputPadding, ownOutputPadding } from "./native-padding.ts";
 import { installNativeThinking } from "./native-thinking.ts";
 import { ToolGroupView } from "./view.ts";
 
 const EMPTY: Component = { render: () => [], invalidate() {} };
-type DisplayState = { view?: ToolGroupView };
+type DisplayState = { view?: ToolGroupView; outputPad?: number };
 type RenderCall = NonNullable<ToolRenderers["renderCall"]>;
 type RenderResult = NonNullable<ToolRenderers["renderResult"]>;
 
@@ -34,7 +33,6 @@ function installNativeRendering(
   };
   try {
     releases.push(installNativeImageSlot(report));
-    releases.push(installNativeOutputPadding(report));
     releases.push(installNativeThinking(report, visibility));
     return release;
   } catch (error) {
@@ -87,6 +85,20 @@ export default function (pi: ExtensionAPI) {
   const report = (error: Error) => {
     warnings.push(`Mirage: ${error.message}`);
     queueMicrotask(flushWarnings); // Never add UI messages in the middle of a render.
+  };
+  // Pi passes the Output padding setting to every render and re-renders rows when it changes.
+  let paddingWarned = false;
+  const outputPad = (value: number): number => {
+    if (Number.isSafeInteger(value) && value >= 0) return value;
+    if (!paddingWarned) {
+      paddingWarned = true;
+      report(
+        new Error(
+          `Pi ${VERSION}: tool render contexts lack outputPad; tool rows will use no outer padding. Run npm run verify in ~/.pi/agent/extensions.`,
+        ),
+      );
+    }
+    return 0;
   };
   let releaseRendering: (() => void) | undefined = installNativeRendering(report, visibility);
   const unsubscribeTranscript = pi.events.on(TRANSCRIPT_VIEW, (value) => {
@@ -229,7 +241,9 @@ export default function (pi: ExtensionAPI) {
   });
   pi.on("tool_execution_end", (event) => {
     if (sessionContext && event.parentToolCallId)
-      redraw(groups.updateNested(event.toolCallId, event.result, false, event.isError));
+      redraw(
+        groups.updateNested(event.toolCallId, event.result, false, event.isError, event.durationMs),
+      );
   });
 
   function openFile(file: FileReference): void {
@@ -245,6 +259,7 @@ export default function (pi: ExtensionAPI) {
   function renderers(name: ToolName): ToolRenderers {
     const renderCall: RenderCall = (args, theme, context) => {
       const state = context.state as DisplayState & AnchorState;
+      state.outputPad = outputPad(context.outputPad);
       const groups = groupsFor(state);
       // Observe global expansion during Pi's update callback, never during render().
       groups.setAllExpanded(sessionContext?.ui.getToolsExpanded() ?? context.expanded);
@@ -262,7 +277,7 @@ export default function (pi: ExtensionAPI) {
                 context.invalidate();
               },
               openFile,
-              outputPad: () => outputPadding(state),
+              outputPad: () => state.outputPad ?? 0,
               renderImages: (target, width) => images.get(target)?.(width) ?? [],
             });
       state.view = view;
@@ -273,12 +288,15 @@ export default function (pi: ExtensionAPI) {
     const renderResult: RenderResult = (result, options, _theme, context) => {
       const groups = groupsFor(context.state);
       const row = groups.rows.get(context.toolCallId);
-      if (row) groups.updateResult(row, result, options.isPartial, context.isError);
+      if (row)
+        groups.updateResult(row, result, options.isPartial, context.isError, {
+          durationMs: context.durationMs,
+        });
       return EMPTY;
     };
     // The renderers must exist at load time, because Pi rebuilds the transcript before
     // session_start.
-    return ownOutputPadding(ownImageRendering({ renderShell: "self", renderCall, renderResult }));
+    return ownImageRendering({ renderShell: "self", renderCall, renderResult });
   }
 
   const drawn = new Map([...TOOL_NAMES].map((name) => [name, renderers(name as ToolName)]));

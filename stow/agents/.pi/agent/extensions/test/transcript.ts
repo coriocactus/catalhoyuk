@@ -119,6 +119,13 @@ export function transcript(count = 130) {
     layout(height = 20) {
       scroll.updateLayout(document.render(100).length, height, () => {});
     },
+    /** What Pi's settings do when Output padding changes: no rebuild, each chat child updates. */
+    setOutputPad(padding: number) {
+      host.outputPad = padding;
+      for (const child of chat.children)
+        if ("setOutputPad" in child && typeof child.setOutputPad === "function")
+          child.setOutputPad(padding);
+    },
   };
 }
 
