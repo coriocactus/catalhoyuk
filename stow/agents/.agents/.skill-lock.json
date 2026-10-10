@@ -10,16 +10,6 @@
       "installedAt": "2026-09-27T10:55:29.189Z",
       "updatedAt": "2026-10-04T09:37:47.857Z"
     },
-    "grilling": {
-      "source": "mattpocock/skills",
-      "sourceType": "github",
-      "sourceUrl": "https://github.com/mattpocock/skills.git",
-      "skillPath": "skills/productivity/grilling/SKILL.md",
-      "skillFolderHash": "f0732035b8b1b60ae39454e4191caef32fa91903",
-      "pluginName": "mattpocock-skills",
-      "installedAt": "2026-09-27T10:55:29.194Z",
-      "updatedAt": "2026-09-27T10:55:29.194Z"
-    },
     "postgres": {
       "source": "planetscale/database-skills",
       "sourceType": "github",
