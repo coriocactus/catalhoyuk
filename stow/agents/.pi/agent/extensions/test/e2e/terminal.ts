@@ -331,9 +331,9 @@ async function expandScript() {
       s.includes("JavaScript, 5 lines") &&
       s.includes("printf SCRIPT_COMMAND") &&
       s.includes("scripted.txt +1 −1") &&
-      s.includes("SCRIPT_RESULT SCRIPT_COMMAND") &&
+      /SCRIPT_RESULT SCRIPT_COMMAND\s*\n\s*Took \d+\.\ds/.test(s) &&
       !s.includes("Script completed"),
-    "a script lists its calls, then its output",
+    "a script lists its calls, then its output and recorded execution time",
   );
 }
 async function owners(label: string, count = 1) {

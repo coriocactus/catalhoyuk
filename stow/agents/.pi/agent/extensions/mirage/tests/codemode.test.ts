@@ -279,7 +279,7 @@ test("saved scripts rebuild calls from Pi's record, without a store() boundary",
   assert.equal(JSON.stringify(entries), before, "grouping is presentation-only");
 });
 
-test("commands end with the execution time Pi recorded, live, in scripts, and after reload", async () => {
+test("commands and scripts end with the execution time Pi recorded, live and after reload", async () => {
   const f = await fixture();
   const direct = f.call("bash", "timed", { command: "make" });
   direct.result(result("BUILDING"), false, true);
@@ -301,6 +301,7 @@ test("commands end with the execution time Pi recorded, live, in scripts, and af
   await nested.end("2", "bash", result("LINTED"));
   await nested.start("3", "read", { path: "a.txt" });
   await nested.end("3", "read", result("READ_BODY"), false, 5);
+  run.context.durationMs = 4200;
   run.result(
     script("OUT", [
       { id: "timed-script/1", name: "bash", args: "{}", status: "error", durationMs: 99 },
@@ -312,7 +313,16 @@ test("commands end with the execution time Pi recorded, live, in scripts, and af
   const open = plain(run.view);
   assert.match(open, /FAILED_TESTS\n *Took 1m 1s/, "failed commands keep their time");
   assert.match(open, /LINTED\n *Took 0\.5s/, "details.calls fill in a time events lacked");
-  assert.equal(open.match(/Took/g)?.length, 2, "only commands show a time");
+  assert.match(open, /OUT\n *Took 4\.2s$/, "the script's own time follows its output");
+  assert.equal(open.match(/Took/g)?.length, 3, "only commands and scripts show a time");
+  f.expand(false);
+
+  await f.pi.event("user_bash");
+  const silent = f.call("codemode", "silent-script", { code: "return;" });
+  silent.context.durationMs = 300;
+  silent.result(script(""));
+  f.expand(true);
+  assert.match(plain(silent.view), /\n {4}return;\n {2}Took 0\.3s$/, "no blank output row");
   f.expand(false);
 
   const message = (value: object) => ({ type: "message", message: value });
@@ -335,6 +345,7 @@ test("commands end with the execution time Pi recorded, live, in scripts, and af
       toolName: "codemode",
       ...script("OUT"),
       isError: false,
+      durationMs: 9000,
       nestedCalls: {
         complete: true,
         calls: [
@@ -354,6 +365,7 @@ test("commands end with the execution time Pi recorded, live, in scripts, and af
   const saved = plain(view);
   assert.match(saved, /MADE\n *Took 2\.5s/);
   assert.match(saved, /Output not kept in session\.\n *Took 1h 2m 5s/);
+  assert.match(saved, /OUT\n *Took 9\.0s/, "a resumed script keeps its time");
 });
 
 test("rebuilds keep outputs and expansion of calls seen running", async () => {

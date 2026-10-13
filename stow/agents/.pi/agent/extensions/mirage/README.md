@@ -14,8 +14,9 @@ $ npm test ▸
 - Click rows/trailing carets to expand or collapse; group members have their own toggles.
 - Command rows and command-only groups use **$**: green on success, red on failure,
   muted while pending/running. Mixed groups use **✓**, **✗**, or **…**.
-- A finished command's output ends with a muted `Took 1.2s`: the execution time Pi recorded,
-  as on Pi's own bash rows. It survives reload/resume, including for commands in scripts.
+- A finished command's or script's output ends with a muted `Took 1.2s`: the execution time
+  Pi recorded, as on Pi's own bash and codemode rows. It survives reload/resume, including
+  for commands in scripts. Pi's live `Elapsed` counter is not shown.
 - A closed group is one line. Its **✓**/**$** turns red only when every call failed;
   open it to see failed calls, red on their own rows. Error output stays hidden until expanded.
 - Images group like other reads. Previews start hidden; each image row's toggle and

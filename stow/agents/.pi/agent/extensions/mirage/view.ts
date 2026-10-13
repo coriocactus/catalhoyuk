@@ -473,7 +473,8 @@ export class ToolGroupView implements Component {
       } else if (row.kind === "read") {
         output = this.code(output, row.file?.path);
       } else if (row.kind === "codemode" || row.kind === "tool") {
-        output = this.theme.fg("toolOutput", output);
+        // Colouring nothing would still emit escape codes, and an empty row.
+        if (output) output = this.theme.fg("toolOutput", output);
       }
       if (imageLines.length === 0) {
         for (const part of row.result?.content ?? []) {
@@ -481,9 +482,15 @@ export class ToolGroupView implements Component {
             output += `\n${imageFallback(part.mimeType, getImageDimensions(part.data, part.mimeType) ?? undefined)}`;
         }
       }
-      // Like Pi's bash rows: the recorded execution time, which survives reloads.
-      if (row.kind === "bash" && row.durationMs !== undefined && isComplete(row))
-        output += `\n${this.theme.fg("muted", `Took ${formatDuration(row.durationMs)}`)}`;
+      // Like Pi's bash and codemode rows: the recorded execution time, which survives reloads.
+      if (
+        (row.kind === "bash" || row.kind === "codemode") &&
+        row.durationMs !== undefined &&
+        isComplete(row)
+      ) {
+        const took = this.theme.fg("muted", `Took ${formatDuration(row.durationMs)}`);
+        output = output ? `${output}\n${took}` : took;
+      }
       return output;
     });
     this.addLines([...component.render(bodyWidth), ...imageLines], row, indent);
