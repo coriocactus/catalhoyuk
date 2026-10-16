@@ -411,6 +411,69 @@ test("normalized renderer inputs tolerate invalid arguments without bypassing va
   assert.match(plain(invalid.view), /VALIDATION_ERROR/);
 });
 
+test("malformed JSON arguments say so instead of looking pending, also after a rebuild", async () => {
+  const f = await fixture();
+  const error = 'Unexpected end of JSON input\n\nReceived arguments:\n{"path": "a.t';
+  const call = (id: string, name: string, args: object, argumentsError?: string) => ({
+    type: "toolCall",
+    id,
+    name,
+    arguments: args,
+    ...(argumentsError === undefined ? {} : { argumentsError }),
+  });
+  const assistant = (block: object) =>
+    ({ role: "assistant", content: [block], stopReason: "toolUse" }) as unknown as Message;
+  const cases = [
+    ["bash", { command: "npm te" }, "$ invalid arguments \u25b8"],
+    ["read", { path: "a.t" }, "\u2717 Read invalid arguments \u25b8"],
+  ] as const;
+  const entries: object[] = [];
+  for (const [name, streamed, header] of cases) {
+    const id = `malformed-${name}`;
+    await f.pi.event("user_bash");
+    await f.pi.event("message_start", { message: assistant(call(id, name, streamed)) }, f.ctx);
+    const slot = f.call(name, id, streamed, false);
+    // Pi 1.3+ finishes a call whose arguments are not valid JSON with `{}` and the reason.
+    const finished = assistant(call(id, name, {}, error));
+    await f.pi.event("message_end", { message: finished }, f.ctx);
+    slot.context.args = {};
+    slot.redraw();
+    const output = result(`Invalid arguments for tool "${name}": ${error}`);
+    slot.result(output, true);
+    assert.equal(plain(slot.view), header);
+    assert(slot.view.render(160)[0].includes(themes.theme.fg("dim", "invalid arguments")));
+    entries.push(
+      { type: "message", message: { role: "user", content: "boundary" } },
+      { type: "message", message: finished },
+      {
+        type: "message",
+        message: { role: "toolResult", toolCallId: id, toolName: name, ...output, isError: true },
+      },
+    );
+  }
+  await f.rebuild("session_tree", entries);
+  for (const [name, , header] of cases)
+    assert.equal(plain(f.call(name, `malformed-${name}`, {}).view), header);
+});
+
+test("read rows show Pi's line range, including numeric strings, and omit malformed ranges", async () => {
+  const f = await fixture();
+  const cases = [
+    [{ offset: 40, limit: 50 }, ":40-89"],
+    [{ offset: "40", limit: "50" }, ":40-89"],
+    [{ offset: 40, limit: null }, ":40"],
+    [{ offset: null, limit: 50 }, ":1-50"],
+    [{ offset: null, limit: null }, ""],
+    [{ offset: "forty", limit: 50 }, ""],
+  ] as const;
+  for (const [i, [args, range]] of cases.entries()) {
+    await f.pi.event("user_bash");
+    const { view } = f.call("read", `range-${i}`, { path: "a.txt", ...args }, false);
+    assert.equal(plain(view), `\u2026 Read a.txt${range} \u25b8`, JSON.stringify(args));
+    if (range) assert(view.render(160)[0].includes(themes.theme.fg("dim", range)));
+  }
+});
+
 test("rendering is read-only and cached; file clicks use an acknowledged reference", async () => {
   const f = await fixture();
   let opened: OpenFileRequest | undefined;
