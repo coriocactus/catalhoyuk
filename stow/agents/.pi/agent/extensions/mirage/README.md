@@ -29,6 +29,9 @@ $ npm test ▸
   Group summaries use grey brackets around plain counts; file rows keep green/red counts.
 - Mixed reads, commands, edits, and writes share one summary, in first-tool order.
   Expanding shows the calls in their original order. Single calls keep their filename/command.
+  Reads add Pi's own line-range label (`:40-89`). A call whose arguments were not valid
+  JSON shows a dim `invalid arguments` instead; its output holds Pi's error and the text
+  the model sent.
   Writes say `Wrote`, not `Created`, because they may overwrite files. Pi reports no diff
   for a write, so a write row counts the lines it wrote (`+N`) and never removals. Each kind
   totals its own successful calls (`wrote 6 files (+420), edited 3 files (+26 −16)`).

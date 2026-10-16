@@ -12,18 +12,47 @@
 ## After upgrading Pi
 
 1. Upgrade normally and **restart Pi** (not just `/reload`).
-2. Check whether Pi now covers any extension features; prefer native support.
-3. Run `cd ~/.pi/agent/extensions && npm run verify`.
+2. Run `cd ~/.pi/agent/extensions && npm run pi-diff`. It prints Pi's changelog since
+   the release the extensions were last reviewed against (`piReviewed` in `package.json`),
+   then diffs every Pi module the extensions import. Check whether Pi now covers any
+   extension features (prefer native support), and whether a changed module alters what
+   an adapter relies on.
+3. Run `npm run verify`.
 4. If it fails, give Pi the failure output and printed artifact paths, fix it, and rerun.
+5. Run `npm run pi-diff -- --reviewed`, then commit `package.json` with the
+   `lastChangelogVersion` change Pi made to `settings.json`.
 
 There is no version allowlist or approval step. Adapters check the APIs they use
 and retain patch-ownership checks. Detected layout changes fall back to the native
 transcript/previews or unpadded tool rows with a warning; missing entry points or
-patch conflicts stop the affected extension from loading.
+patch conflicts stop the affected extension from loading. `piReviewed` gates
+nothing: `verify` ends by saying whether it matches the installed Pi.
 
-API shape checks cannot detect every behavioral change. Verification exercises the
-installed package's real CLI, dialogs and scrolling; it reduces risk but is not a guarantee.
-Also try a filename click and scrolling in your actual terminal after upgrading.
+API shape checks cannot detect every behavioral change, which is what step 2 is for.
+Verification exercises the installed package's real CLI, dialogs and scrolling; it
+reduces risk but is not a guarantee. Also try a filename click and scrolling in your
+actual terminal after upgrading.
+
+### What `pi-diff` watches
+
+No list of Pi files is kept by hand. `test/pi-diff.ts` reads every Pi import in
+extension code (not tests), including type imports, and follows Pi's declaration
+re-exports, also between Pi packages, to the module that defines each symbol. Those
+modules' `.js` and `.d.ts` are diffed; other changed files in the same packages are
+listed by name. The list therefore follows the code. An adapter that patches a Pi class or
+replaces methods on a Pi object must import that class or type, as strict TypeScript
+already requires, and its module is watched from then on. Keep it that way:
+
+- Reach Pi internals only through a symbol imported from a Pi package. Never through
+  an object obtained untyped, or a path into Pi's `dist`.
+- Import Pi symbols by name from package entry points. `npm test` rejects namespace,
+  default, side-effect, subpath and `import()` forms, and any symbol it cannot trace
+  to a defining module, so the review never silently watches less.
+
+The previous release comes from Pi's managed install, which keeps the release that ran
+the last update beside the new one. If it is gone (two upgrades without a review), or Pi is
+a package install, `pi-diff` fetches that release's packages from npm into a temporary
+directory. `npm run pi-diff -- <version>` compares any release with the installed one.
 
 ## Development
 
@@ -44,8 +73,9 @@ npm run verify
 ```
 
 `verify` runs Biome, strict TypeScript, unit/integration tests, and the terminal
-suite. Individual commands: `npm run check`, `npm run typecheck`, `npm test`,
-`npm run test:terminal`.
+suite, then reports whether `piReviewed` matches the installed Pi. Individual commands:
+`npm run check`, `npm run typecheck`, `npm test`, `npm run test:terminal`,
+`npm run pi-diff`.
 
 Tests are TypeScript run directly by Node (type stripping, no build step):
 
@@ -53,9 +83,9 @@ Tests are TypeScript run directly by Node (type stripping, no build step):
   extension, `shared/`, and `test/`, so deleting an extension never breaks another
   extension's tests (only the cross-extension files in `test/` need updating).
 - `<extension>/tests/*.ts` without `.test`: that extension's shared test fixtures.
-- `test/*.test.ts`: `shared/` contracts, mirage × rearview integration, and a guard
+- `test/*.test.ts`: `shared/` contracts, mirage × rearview integration, a guard
   that Pi autoloads exactly the five extensions (never `test/` or `shared/`, which
-  must not contain an `index.ts`).
+  must not contain an `index.ts`), and a guard that `pi-diff` traces every Pi import.
 - `test/e2e/`: the terminal suite and its offline provider.
 - `test/pi.ts`, `test/fake-pi.ts`, `test/transcript.ts`, `test/headless-terminal.ts`:
   support code. Extension source loads through jiti against the installed Pi, as Pi

@@ -53,6 +53,8 @@ export interface ToolRow {
   preview?: string;
   /** Size in bytes of arguments Pi did not keep. */
   omittedBytes?: number;
+  /** Pi's `argumentsError`: the model's arguments were not valid JSON, so `args` is empty. */
+  invalidArguments?: boolean;
   cost?: number;
 }
 
@@ -460,7 +462,14 @@ export class ToolGroups {
     if (message.role === "assistant") {
       this.classify(message);
       for (const block of message.content) {
-        if (block.type === "toolCall") this.addCall(block.id, block.name, block.arguments, cwd);
+        if (block.type !== "toolCall") continue;
+        const row = this.addCall(block.id, block.name, block.arguments, cwd);
+        // Only the finished message says so. Renderers receive just the emptied arguments.
+        const invalid = block.argumentsError !== undefined;
+        if (row && invalid !== (row.invalidArguments === true)) {
+          row.invalidArguments = invalid;
+          this.changed(row);
+        }
       }
     } else if (message.role === "toolResult") {
       const row = this.rows.get(message.toolCallId);
@@ -507,6 +516,7 @@ export class ToolGroups {
         row.args = snapshot.args;
         row.cwd = snapshot.cwd;
         row.file = snapshot.file;
+        row.invalidArguments = snapshot.invalidArguments;
         row.result = snapshot.result;
         row.status = snapshot.status;
         row.durationMs = snapshot.durationMs;

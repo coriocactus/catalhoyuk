@@ -1,6 +1,11 @@
 import { homedir } from "node:os";
 import { sep } from "node:path";
-import { getLanguageFromPath, highlightCode, type Theme } from "@earendil-works/pi-coding-agent";
+import {
+  formatReadLineRange,
+  getLanguageFromPath,
+  highlightCode,
+  type Theme,
+} from "@earendil-works/pi-coding-agent";
 import {
   type Component,
   getCapabilities,
@@ -105,8 +110,9 @@ function json(value: unknown): string {
   }
 }
 
-/** What a call inside a script shows when Pi did not keep its arguments. */
+/** Shown in place of arguments a row cannot display: invalid, or not kept by Pi. */
 function argumentsNote(row: ToolRow): string {
+  if (row.invalidArguments) return "invalid arguments";
   if (row.preview) return oneLine(row.preview);
   return row.omittedBytes === undefined ? "" : `${row.omittedBytes} bytes of arguments`;
 }
@@ -306,7 +312,9 @@ export class ToolGroupView implements Component {
   private rowLabel(row: ToolRow): string {
     let label: string;
     if (row.kind === "bash") {
-      label = oneLine(text(row.args.command)) || argumentsNote(row) || "…";
+      const note = argumentsNote(row);
+      // A note is not a command, so it is dim, as on file rows.
+      label = oneLine(text(row.args.command)) || (note ? this.theme.fg("dim", note) : "…");
     } else if (row.kind === "codemode") {
       const summary = this.summary(toolCalls(row), true);
       label = summary ? `Script: ${summary}` : "Script";
@@ -334,8 +342,9 @@ export class ToolGroupView implements Component {
         );
       }
       label = `${FILE_VERBS[row.kind][row.status]} ${filename}`;
-      if (row.kind === "read" && typeof row.args.offset === "number")
-        label += this.theme.fg("dim", `:${row.args.offset}`);
+      // Pi's own range label: `:40-89`, also for numeric strings; empty when malformed.
+      const range = row.kind === "read" ? formatReadLineRange(row.args.offset, row.args.limit) : "";
+      if (range) label += this.theme.fg("dim", range);
       if (row.hasImages) label += this.theme.fg("dim", " (image)");
       if (row.kind === "edit" || row.kind === "write") label += this.changeSummary([row]);
     }
