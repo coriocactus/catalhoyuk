@@ -15,7 +15,7 @@ log = "(trunk()..@):: | (trunk()..@)-"
 
 [revset-aliases]
 "closest_bookmark(to)" = "latest(heads(::to & bookmarks()))"
-"default()" = "coalesce(trunk(),root())::present(@) | ancestors(visible_heads() & recent(), 25)"
+"default()" = "coalesce(trunk(),root())::present(@) | ancestors(visible_heads() & recent(), 250)"
 "recent()" = "committer_date(after:'1 month ago')"
 "authored()" = "author(regex:'.*@.*')"
 "full()" = "ancestors(present(@))"
