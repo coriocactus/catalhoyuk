@@ -10,7 +10,7 @@ import type {
   ExtensionContext,
   ExtensionToolContext,
 } from "@earendil-works/pi-coding-agent";
-import type { EditorComponent } from "@earendil-works/pi-tui";
+import type { Component, Container, EditorComponent } from "@earendil-works/pi-tui";
 import { type FileToolName, OPEN_FILE_EVENT, type OpenFileRequest } from "../../shared/protocol.ts";
 import { fake, fakePi } from "../../test/fake-pi.ts";
 import { core, load, tui } from "../../test/pi.ts";
@@ -27,12 +27,70 @@ const { resolveToolFile } = await load<typeof import("../paths.ts")>(
 type CustomFactory = Parameters<ExtensionContext["ui"]["custom"]>[0];
 type FactoryArgs = Parameters<CustomFactory>;
 type Notice = Parameters<ExtensionContext["ui"]["notify"]>;
-/** Private InteractiveMode dialog host: the real custom-component lifecycle. */
+/** A stand-in InteractiveMode whose dialog methods, private ones included, are Pi's own. */
 interface DialogHost {
-  showExtensionCustom(this: object, factory: CustomFactory): Promise<unknown>;
+  editor: EditorComponent;
+  readonly editorContainer: Container;
+  showExtensionCustom(factory: CustomFactory): Promise<unknown>;
+}
+interface Dialogs {
+  host: DialogHost;
+  focus(): unknown;
+  /** The editor slot shows the current editor, focused, and no dialog status remains. */
+  assertEditorRestored(): void;
 }
 
-const dialogs = core.InteractiveMode.prototype as unknown as DialogHost;
+/**
+ * Runs Pi's own custom-component lifecycle and the dialog stack behind it: the stand-in is
+ * built on the real prototype, so it supplies only state. Dialog code reading state the
+ * stand-in lacks fails by name rather than as a TypeError inside Pi.
+ */
+function dialogHost(editor: EditorComponent, terminal: { stop(): void; start(): void }): Dialogs {
+  let focused: unknown = editor;
+  const blocked = new Map<string, unknown>();
+  const editorContainer = new tui.Container();
+  editorContainer.addChild(editor);
+  const state = {
+    editor,
+    editorContainer,
+    keybindings: {},
+    activeSelectorDispose: undefined,
+    extensionDialogs: [],
+    programStatus: {
+      setBlocked: (source: string, status: unknown) =>
+        status === undefined ? blocked.delete(source) : blocked.set(source, status),
+    },
+    ui: {
+      ...terminal,
+      requestRender() {},
+      setFocus(component: unknown) {
+        focused = component;
+      },
+    },
+  };
+  const target: object = Object.create(
+    core.InteractiveMode.prototype,
+    Object.getOwnPropertyDescriptors(state),
+  );
+  const host = new Proxy(target, {
+    get(object, key, receiver) {
+      if (typeof key === "string" && !(key in object))
+        throw new Error(`Pi's dialog code reads InteractiveMode.${key}, which the stand-in lacks.`);
+      return Reflect.get(object, key, receiver);
+    },
+  }) as DialogHost;
+  return {
+    host,
+    focus: () => focused,
+    assertEditorRestored() {
+      const slot = host.editorContainer.children;
+      assert(slot.length === 1 && slot[0] === host.editor, "the editor slot shows the editor");
+      assert.equal(focused, host.editor, "focus returns to the editor");
+      assert.equal(blocked.size, 0, "no dialog status remains");
+    },
+  };
+}
+
 const root = mkdtempSync(join(tmpdir(), "pi-inspector-"));
 after(() => rmSync(root, { recursive: true, force: true }));
 
@@ -86,7 +144,32 @@ test("filename resolution matches Pi, including Unicode spaces, URLs, and macOS 
   );
 });
 
-test("real Pi dialog preserves newer drafts on Vim success, failure and session replacement", async (t) => {
+test("the dialog stand-in drives Pi's own dialog stack for components that stay on screen", async () => {
+  let draft = "DRAFT";
+  const editor = fake<EditorComponent>({
+    getText: () => draft,
+    setText: (value) => {
+      draft = value;
+    },
+    render: () => [],
+    invalidate() {},
+  });
+  const { host, focus, assertEditorRestored } = dialogHost(editor, { stop() {}, start() {} });
+  const component: Component = { render: () => [], invalidate() {} };
+  let close: ((result: unknown) => void) | undefined;
+  const shown = host.showExtensionCustom((_tui, _theme, _keys, done) => {
+    close = done;
+    return component;
+  });
+  await waitFor(() => host.editorContainer.children[0] === component);
+  assert.equal(focus(), component);
+  close?.("closed");
+  assert.equal(await shown, "closed");
+  assertEditorRestored();
+  assert.equal(draft, "DRAFT");
+});
+
+test("real Pi dialog code returns the editor with newer drafts on Vim success, failure and session replacement", async (t) => {
   const oldVisual = process.env.VISUAL;
   const stdout = process.stdout.write;
   t.mock.method(
@@ -152,29 +235,22 @@ setInterval(() => { if (existsSync(${JSON.stringify(gate)})) {
             render: () => [],
             invalidate() {},
           });
-        const host = {
-          editor: makeEditor("ORIGINAL_DRAFT"),
-          editorContainer: new tui.Container(),
-          keybindings: {},
-          ui: {
-            stop() {
-              stops++;
-              host.editor.setText(latest);
-            },
-            start() {
-              assert(alive, "never restart an obsolete TUI");
-              starts++;
-            },
-            requestRender() {},
-            setFocus() {},
+        const { host, assertEditorRestored } = dialogHost(makeEditor("ORIGINAL_DRAFT"), {
+          stop() {
+            stops++;
+            host.editor.setText(latest);
           },
-        };
+          start() {
+            assert(alive, "never restart an obsolete TUI");
+            starts++;
+          },
+        });
         const ui = fake<ExtensionContext["ui"]>({
           notify: (...args) => notices.push(args),
           getEditorText: () => host.editor.getText(),
           setEditorText: (text) => host.editor.setText(text),
           custom: <T>(factory: CustomFactory) =>
-            dialogs.showExtensionCustom.call(host, factory).finally(() => {
+            host.showExtensionCustom(factory).finally(() => {
               finished++;
             }) as Promise<T>,
         });
@@ -219,6 +295,7 @@ setInterval(() => { if (existsSync(${JSON.stringify(gate)})) {
             await shutdown;
             assert.equal(finished, 1);
             assert.equal(host.editor.getText(), latest);
+            assertEditorRestored();
             assert.equal(starts, scenario === "quit" || scenario === "stubborn" ? 0 : 1);
             // Only now does Pi invalidate the outgoing runtime and replace its editor.
             alive = false;
@@ -235,6 +312,7 @@ setInterval(() => { if (existsSync(${JSON.stringify(gate)})) {
               );
             await waitFor(() => finished === 1 && (!failed || notices.length === 1));
             assert.equal(host.editor.getText(), latest);
+            assertEditorRestored();
             assert.equal(starts, 1);
           }
           assert.equal(stops, 1);
