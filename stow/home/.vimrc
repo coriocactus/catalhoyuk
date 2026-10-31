@@ -58,7 +58,7 @@ set nowrap
 set autoindent
 set hlsearch
 set belloff=all
-set signcolumn=yes
+set signcolumn=number
 set colorcolumn=80
 set laststatus=0
 set cursorline
@@ -99,6 +99,7 @@ augroup END
 syntax on
 colorscheme slate
 highlight ColorColumn ctermbg=238
+highlight ModeMsg ctermfg=220 ctermbg=NONE
 
 " =================================================================================================
 "                                  ░██
