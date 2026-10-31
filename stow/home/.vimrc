@@ -97,7 +97,15 @@ augroup END
 "     ░████ ░██    ░██  ░███████  ░██   ░██   ░██  ░███████
 
 syntax on
-colorscheme darkside
+" Fall back to slate where ~/.vim/colors/darkside.vim was not installed.
+try
+  colorscheme darkside
+catch /^Vim\%((\a\+)\)\=:E185:/
+  colorscheme slate
+  highlight Normal ctermbg=NONE
+  highlight ColorColumn ctermbg=238
+  highlight ModeMsg ctermfg=3 ctermbg=NONE cterm=bold guifg=#f2d42c guibg=NONE gui=bold
+endtry
 
 " =================================================================================================
 "                                  ░██
