@@ -27,7 +27,8 @@ let s:sky      = ['#3d97e2', 14]
 
 let s:bg      = ['#222324', 'NONE']
 let s:line    = ['#2c2d2e', 236]
-let s:select  = ['#3a3d3d', 237]
+let s:raised  = ['#3a3d3d', 237]
+let s:visual  = ['#005f87', 24]
 let s:linenr  = ['#5a5b5c', 240]
 let s:comment = ['#767778', 243]
 
@@ -68,27 +69,27 @@ call s:hi('EndOfBuffer', s:gray, s:none)
 call s:hi('SpecialKey', s:gray, s:none)
 call s:hi('Conceal', s:gray, s:none)
 call s:hi('VertSplit', s:gray, s:none)
-call s:hi('Visual', s:none, s:select)
-call s:hi('VisualNOS', s:none, s:select)
+call s:hi('Visual', s:fg, s:visual)
+call s:hi('VisualNOS', s:fg, s:visual)
 call s:hi('Search', s:black, s:yellow)
 call s:hi('IncSearch', s:black, s:coral)
 call s:hi('CurSearch', s:black, s:coral)
-call s:hi('MatchParen', s:yellow, s:select, 'bold')
+call s:hi('MatchParen', s:yellow, s:raised, 'bold')
 call s:hi('Directory', s:blue, s:none)
 call s:hi('Title', s:yellow, s:none, 'bold')
 call s:hi('QuickFixLine', s:yellow, s:none, 'bold')
 
 " Status, tabs, menus
-call s:hi('StatusLine', s:fg, s:select)
+call s:hi('StatusLine', s:fg, s:raised)
 call s:hi('StatusLineNC', s:comment, s:line)
-call s:hi('StatusLineTerm', s:fg, s:select)
+call s:hi('StatusLineTerm', s:fg, s:raised)
 call s:hi('StatusLineTermNC', s:comment, s:line)
 call s:hi('TabLine', s:comment, s:line)
 call s:hi('TabLineFill', s:none, s:line)
 call s:hi('TabLineSel', s:fg, s:none, 'bold')
 call s:hi('Pmenu', s:fg, s:line)
 call s:hi('PmenuSel', s:black, s:blue)
-call s:hi('PmenuSbar', s:none, s:select)
+call s:hi('PmenuSbar', s:none, s:raised)
 call s:hi('PmenuThumb', s:none, s:gray)
 call s:hi('PmenuMatch', s:yellow, s:line, 'bold')
 call s:hi('PmenuMatchSel', s:black, s:blue, 'bold')
