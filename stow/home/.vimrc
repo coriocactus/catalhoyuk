@@ -98,6 +98,7 @@ augroup END
 
 syntax on
 colorscheme slate
+highlight Normal ctermbg=NONE
 highlight ColorColumn ctermbg=238
 highlight ModeMsg ctermfg=220 ctermbg=NONE
 
