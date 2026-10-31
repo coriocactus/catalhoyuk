@@ -33,9 +33,9 @@
       "sourceType": "github",
       "sourceUrl": "https://github.com/dmmulroy/anti-slop.git",
       "skillPath": "skills/install-anti-slop/SKILL.md",
-      "skillFolderHash": "89044d21c75a367eac1ddbaf208e650b1a7d5820",
+      "skillFolderHash": "97962dc9fad565ca7695bf57805d9d0138ce1def",
       "installedAt": "2026-10-04T09:37:33.305Z",
-      "updatedAt": "2026-10-04T09:37:33.305Z"
+      "updatedAt": "2026-10-31T19:24:46.565Z"
     }
   },
   "dismissed": {
@@ -47,11 +47,13 @@
     "codex",
     "cursor",
     "droid",
+    "fx",
     "gemini-cli",
     "github-copilot",
     "kilo",
     "kimi-code-cli",
     "opencode",
+    "pi",
     "warp",
     "zed"
   ]

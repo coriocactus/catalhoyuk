@@ -17,11 +17,10 @@
   "defaultModel": "claude-opus-5-5",
   "defaultThinkingLevel": "xhigh",
   "enabledModels": [
-    "openai/gpt-6-astra",
-    "openai/gpt-6.1-sol",
     "anthropic/claude-fable-5-1",
     "anthropic/claude-opus-5-5",
-    "anthropic/claude-sonnet-5-5"
+    "anthropic/claude-sonnet-5-5",
+    "anthropic/claude-haiku-5-5"
   ],
   "warnings": {
     "anthropicExtraUsage": false
