@@ -84,7 +84,7 @@ augroup END
 augroup remember_folds
   autocmd!
   autocmd BufWinLeave * if &buftype == '' && !empty(expand('%')) | mkview | endif
-  autocmd BufWinEnter * silent! loadview
+  autocmd BufWinEnter * if &buftype == '' && !empty(expand('%')) | silent! loadview | endif
 augroup END
 
 " =================================================================================================
@@ -168,6 +168,9 @@ function! s:Plugins() abort
     Plug 'ojroques/vim-oscyank', {'branch': 'main'}
     Plug 'sheerun/vim-polyglot'
     Plug 'dense-analysis/ale'
+    Plug 'junegunn/goyo.vim'
+    Plug 'junegunn/limelight.vim'
+    Plug 'preservim/vim-pencil'
   call plug#end()
 endfunction
 
@@ -200,7 +203,41 @@ endif
 
 let g:python_recommended_style = 0
 let g:undotree_SetFocusWhenToggle = 1
-let g:indentLine_fileTypeExclude = ['json', 'markdown', 'tex']
+let g:indentLine_fileTypeExclude = ['json', 'markdown', 'tex', 'text']
+
+" Writing mode: Goyo centres a 99-column page, Limelight dims other paragraphs.
+" Goyo opens its own tab, so window-local options set here vanish on leave.
+let g:goyo_width = 99
+let g:limelight_conceal_ctermfg = 240
+let g:limelight_conceal_guifg = '#5a5b5c'
+" Soft-wrap only at whitespace, never mid-URL. Global; only affects 'linebreak' windows.
+let &breakat = " \t"
+
+let s:has_pencil = !empty(globpath(&runtimepath, 'autoload/pencil.vim'))
+
+function! s:GoyoEnter() abort
+  Limelight
+  setlocal wrap linebreak spell spelllang=en_us
+  if s:has_pencil && index(['markdown', 'text'], &filetype) >= 0
+    call pencil#init({'wrap': 'soft'})
+  endif
+endfunction
+
+" Runs back in the original window. Pencil's off mode resets buffer options to
+" global defaults, so re-run the filetype plugins to restore their settings.
+function! s:GoyoLeave() abort
+  Limelight!
+  if get(b:, 'pencil_wrap_mode', 0)
+    call pencil#init({'wrap': 'off'})
+    let &l:filetype = &l:filetype
+  endif
+endfunction
+
+augroup writing
+  autocmd!
+  autocmd User GoyoEnter call s:GoyoEnter()
+  autocmd User GoyoLeave call s:GoyoLeave()
+augroup END
 
 " =================================================================================================
 " ░██ ░██              ░██                                    ░██    ░██
@@ -442,8 +479,7 @@ nnoremap <leader>e <cmd>Lexplore<CR>
 nnoremap <leader>u <cmd>UndotreeToggle<CR>
 nnoremap <leader>g <cmd>Git<CR>
 
-nnoremap <leader>= <cmd>set wrap<CR><cmd>set colorcolumn=<CR>
-nnoremap <leader>0 <cmd>set nowrap<CR><cmd>set colorcolumn=80<CR>
+nnoremap <leader>= <cmd>Goyo<CR>
 
 let s:ssh_config = expand('~/.vimrc-ssh')
 if filereadable(s:ssh_config) | execute 'source ' . fnameescape(s:ssh_config) | endif
