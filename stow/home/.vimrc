@@ -221,12 +221,21 @@ let s:goyo_quit = ''
 " position in the text window's status line, just under the page. Runs after
 " Goyo's own WinEnter/WinLeave/BufWinEnter blanking. Two rows (Vim 9.2+), the
 " first left blank as a gap; fixedheight stops the layout jumping when Goyo
-" briefly blanks it.
+" briefly blanks it. Word count on the left, position on the right.
 function! s:GoyoStatus() abort
   if exists('t:goyo_pads') && index(values(t:goyo_pads), bufnr('')) < 0
     setlocal statuslineopt=maxheight:2,fixedheight
-    setlocal statusline=%@%=%l/%L\ \ %P
+    let &l:statusline = '%@%{' . expand('<SID>') . 'GoyoWords()}%=%l/%L  %P'
   endif
+endfunction
+
+" wordcount() scans the whole buffer, so only recount after a change.
+function! s:GoyoWords() abort
+  if get(b:, 'goyo_words_tick', -1) != b:changedtick
+    let b:goyo_words = wordcount().words
+    let b:goyo_words_tick = b:changedtick
+  endif
+  return b:goyo_words . (b:goyo_words == 1 ? ' word' : ' words')
 endfunction
 
 " Goyo makes StatusLine invisible. On leave it clears #goyo, then reloads the
