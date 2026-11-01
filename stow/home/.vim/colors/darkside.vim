@@ -93,7 +93,10 @@ call s:hi('PmenuSbar', s:none, s:raised)
 call s:hi('PmenuThumb', s:none, s:gray)
 call s:hi('PmenuMatch', s:yellow, s:line, 'bold')
 call s:hi('PmenuMatchSel', s:black, s:blue, 'bold')
+call s:hi('PmenuShadow', s:black, s:black)
 call s:hi('WildMenu', s:black, s:blue)
+call s:hi('ToolbarLine', s:none, s:line)
+call s:hi('ToolbarButton', s:fg, s:raised, 'bold')
 
 " Messages
 call s:hi('ModeMsg', s:yellow, s:none, 'bold')
@@ -142,6 +145,47 @@ call s:hi('Underlined', s:indigo, s:none, 'underline')
 call s:hi('Ignore', s:gray, s:none)
 call s:hi('Error', s:black, s:red)
 call s:hi('Todo', s:yellow, s:none, 'bold')
+
+" Identifier and Operator stay plain for variables and operators, but some
+" syntax files link markup, keys, keywords, types and tags to them. Give those
+" the colour their siblings already have.
+
+" Markdown: list markers and rules like slate's; reference links like links.
+call s:hi('mkdListItem', s:coral, s:none)
+call s:hi('mkdRule', s:coral, s:none)
+highlight! link mkdID Underlined
+highlight! link mkdLinkDef Underlined
+
+" Help links like markdown links; commit hashes like git's own colouring.
+highlight! link helpHyperTextJump Underlined
+call s:hi('gitcommitHash', s:yellow, s:none)
+call s:hi('fugitiveHash', s:yellow, s:none)
+
+" YAML and TOML keys like JSON keys.
+highlight! link yamlBlockMappingKey Statement
+highlight! link yamlFlowMappingKey Statement
+highlight! link tomlKey Statement
+highlight! link tomlKeyDq Statement
+highlight! link tomlKeySq Statement
+
+" HTML/JSX: closing tags like opening tags, <div> like HTML tag names.
+highlight! link htmlEndTag Function
+highlight! link jsxTagName Statement
+
+" TypeScript: const/enum/typeof/new like function/class/return; type
+" references like predefined types; alias names like interface names.
+highlight! link typescriptVariable Statement
+highlight! link typescriptEnumKeyword Statement
+highlight! link typescriptOperator Statement
+highlight! link typescriptKeywordOp Statement
+highlight! link typescriptConstructSignature Statement
+highlight! link typescriptTypeReference Type
+highlight! link typescriptTypeParameter Type
+highlight! link typescriptAliasDeclaration Function
+
+" Python: and/or/not/in/is like keywords; __name__ etc. like constants.
+highlight! link pythonOperator Statement
+highlight! link pythonBuiltinObj Constant
 
 " ALE
 call s:hi('ALEError', s:none, s:none, 'undercurl', s:red)
