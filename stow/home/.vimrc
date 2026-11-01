@@ -214,6 +214,27 @@ let g:limelight_conceal_guifg = '#5a5b5c'
 let &breakat = " \t"
 
 let s:has_pencil = !empty(globpath(&runtimepath, 'autoload/pencil.vim'))
+let s:goyo_quit = ''
+
+" Goyo blanks every status line and its bottom pad owns the ruler, so put the
+" position in the text window's status line, just under the page. Runs after
+" Goyo's own WinEnter/WinLeave/BufWinEnter blanking. Two rows (Vim 9.2+), the
+" first left blank as a gap; fixedheight stops the layout jumping when Goyo
+" briefly blanks it.
+function! s:GoyoStatus() abort
+  if exists('t:goyo_pads') && index(values(t:goyo_pads), bufnr('')) < 0
+    setlocal statuslineopt=maxheight:2,fixedheight
+    setlocal statusline=%@%=%l/%L\ \ %P
+  endif
+endfunction
+
+" Goyo makes StatusLine invisible. On leave it clears #goyo, then reloads the
+" colorscheme, which must not re-apply this.
+function! s:GoyoStatusColor() abort
+  if exists('#goyo')
+    highlight StatusLine ctermfg=240 ctermbg=NONE cterm=NONE guifg=#5a5b5c guibg=NONE gui=NONE
+  endif
+endfunction
 
 function! s:GoyoEnter() abort
   Limelight
@@ -221,6 +242,16 @@ function! s:GoyoEnter() abort
   if s:has_pencil && index(['markdown', 'text'], &filetype) >= 0
     call pencil#init({'wrap': 'soft'})
   endif
+  call s:GoyoStatus()
+  call s:GoyoStatusColor()
+  let s:goyo_quit = ''
+  augroup goyo_session
+    autocmd!
+    autocmd WinEnter,WinLeave,BufWinEnter * call s:GoyoStatus()
+    autocmd ColorScheme * call s:GoyoStatusColor()
+    " :q only closes Goyo's window, so record it and repeat it after Goyo exits.
+    autocmd QuitPre * let s:goyo_quit = histget(':', -1) =~# '^\s*\a*!' ? 'quit!' : 'quit'
+  augroup END
 endfunction
 
 " Runs back in the original window. Pencil's off mode resets buffer options to
@@ -231,12 +262,23 @@ function! s:GoyoLeave() abort
     call pencil#init({'wrap': 'off'})
     let &l:filetype = &l:filetype
   endif
+  autocmd! goyo_session
+  let l:quit = s:goyo_quit
+  let s:goyo_quit = ''
+  if !empty(l:quit)
+    try
+      execute l:quit
+    catch
+      echohl ErrorMsg | echomsg substitute(v:exception, '^Vim(\a\+):', '', '') | echohl None
+    endtry
+  endif
 endfunction
 
 augroup writing
   autocmd!
   autocmd User GoyoEnter call s:GoyoEnter()
-  autocmd User GoyoLeave call s:GoyoLeave()
+  " ++nested so a repeated :q still fires ExitPre/VimLeave autocmds.
+  autocmd User GoyoLeave ++nested call s:GoyoLeave()
 augroup END
 
 " =================================================================================================
