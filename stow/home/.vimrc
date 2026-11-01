@@ -205,7 +205,8 @@ let g:python_recommended_style = 0
 let g:undotree_SetFocusWhenToggle = 1
 let g:indentLine_fileTypeExclude = ['json', 'markdown', 'tex', 'text']
 
-" Writing mode: Goyo centres a 99-column page, Limelight dims other paragraphs.
+" Writing mode: Goyo centres a 99-column page; \0 toggles Limelight, which dims
+" other paragraphs (off by default).
 " Goyo opens its own tab, so window-local options set here vanish on leave.
 let g:goyo_width = 99
 let g:limelight_conceal_ctermfg = 240
@@ -237,13 +238,13 @@ function! s:GoyoStatusColor() abort
 endfunction
 
 function! s:GoyoEnter() abort
-  Limelight
   setlocal wrap linebreak spell spelllang=en_us
   if s:has_pencil && index(['markdown', 'text'], &filetype) >= 0
     call pencil#init({'wrap': 'soft'})
   endif
   call s:GoyoStatus()
   call s:GoyoStatusColor()
+  nnoremap <leader>0 <cmd>Limelight!!<CR>
   let s:goyo_quit = ''
   augroup goyo_session
     autocmd!
@@ -258,6 +259,7 @@ endfunction
 " global defaults, so re-run the filetype plugins to restore their settings.
 function! s:GoyoLeave() abort
   Limelight!
+  silent! nunmap <leader>0
   if get(b:, 'pencil_wrap_mode', 0)
     call pencil#init({'wrap': 'off'})
     let &l:filetype = &l:filetype
