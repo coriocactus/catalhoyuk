@@ -171,6 +171,7 @@ function! s:Plugins() abort
     Plug 'junegunn/goyo.vim'
     Plug 'junegunn/limelight.vim'
     Plug 'preservim/vim-pencil'
+    Plug 'godlygeek/tabular'
   call plug#end()
 endfunction
 
@@ -244,6 +245,78 @@ function! s:GoyoStatusColor() abort
   if exists('#goyo')
     highlight StatusLine ctermfg=240 ctermbg=NONE cterm=NONE guifg=#5a5b5c guibg=NONE gui=NONE
   endif
+endfunction
+
+" [first, last] lines of the pipe table under the cursor, or [] if none.
+function! s:TableRange() abort
+  let l:first = line('.')
+  let l:last = line('.')
+  if getline(l:first) !~# '^\s*|'
+    echomsg 'Cursor is not in a table'
+    return []
+  endif
+  while l:first > 1 && getline(l:first - 1) =~# '^\s*|' | let l:first -= 1 | endwhile
+  while l:last < line('$') && getline(l:last + 1) =~# '^\s*|' | let l:last += 1 | endwhile
+  return [l:first, l:last]
+endfunction
+
+" \| toggles the table under the cursor: compact if its pipes already line up,
+" aligned otherwise.
+function! s:ToggleTable() abort
+  let l:range = s:TableRange()
+  if empty(l:range) | return | endif
+  let l:pipes = map(getline(l:range[0], l:range[1]), {_, l -> s:PipeColumns(l)})
+  if empty(filter(copy(l:pipes), {_, p -> p != l:pipes[0]}))
+    call s:CompactTable(l:range)
+  else
+    call s:AlignTable(l:range)
+  endif
+endfunction
+
+" Display columns of a row's unescaped pipes.
+function! s:PipeColumns(line) abort
+  let l:columns = []
+  let l:width = 0
+  for l:cell in split(a:line, '\\\@<!|', 1)[:-2]
+    let l:width += strdisplaywidth(l:cell)
+    call add(l:columns, l:width)
+    let l:width += 1
+  endfor
+  return l:columns
+endfunction
+
+" vim-polyglot's markdown :TableFormat aligns the table under the cursor (needs
+" tabular). Tabular pads the empty field before the leading pipe, indenting the
+" table by a space, so restore the table's original indent afterwards.
+function! s:AlignTable(range) abort
+  if exists(':TableFormat') != 2
+    echomsg 'No :TableFormat for this filetype'
+    return
+  endif
+  let [l:first, l:last] = a:range
+  let l:indent = matchstr(getline(l:first), '^\s*')
+  TableFormat
+  call setline(l:first, map(getline(l:first, l:last), {_, l -> substitute(l, '^\s*', l:indent, '')}))
+endfunction
+
+" One space around each cell and --- separators, keeping alignment colons and
+" the table's indent. Escaped \| pipes stay inside their cell.
+function! s:CompactTable(range) abort
+  let [l:first, l:last] = a:range
+  call setline(l:first, map(getline(l:first, l:last), {_, l -> s:CompactRow(l)}))
+endfunction
+
+function! s:CompactRow(line) abort
+  let l:indent = matchstr(a:line, '^\s*')
+  let l:body = trim(a:line)
+  let l:trailing = l:body =~# '\\\@<!|$'
+  " Drop the empty field before the leading pipe, and after a trailing one.
+  let l:cells = map(split(l:body, '\\\@<!|', 1)[1:], {_, c -> trim(c)})
+  if l:trailing | call remove(l:cells, -1) | endif
+  if empty(filter(copy(l:cells), {_, c -> c !~# '^:\=-\+:\=$'}))
+    call map(l:cells, {_, c -> (c =~# '^:' ? ':' : '') . '---' . (c =~# ':$' ? ':' : '')})
+  endif
+  return l:indent . '| ' . join(l:cells, ' | ') . (l:trailing ? ' |' : '')
 endfunction
 
 function! s:GoyoEnter() abort
@@ -533,6 +606,7 @@ nnoremap <leader>u <cmd>UndotreeToggle<CR>
 nnoremap <leader>g <cmd>Git<CR>
 
 nnoremap <leader>= <cmd>Goyo<CR>
+nnoremap <leader><Bar> <cmd>call <SID>ToggleTable()<CR>
 
 let s:ssh_config = expand('~/.vimrc-ssh')
 if filereadable(s:ssh_config) | execute 'source ' . fnameescape(s:ssh_config) | endif
