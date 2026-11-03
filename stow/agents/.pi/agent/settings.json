@@ -1,6 +1,6 @@
 {
   "$schema": "https://pi.dev/schemas/settings.schema.json",
-  "lastChangelogVersion": "1.4.0",
+  "lastChangelogVersion": "1.5.0",
   "theme": "dark",
   "tuiMode": "fullscreen",
   "fullscreenScrollbar": "auto",
@@ -33,5 +33,9 @@
     "npm:@gotgenes/pi-anthropic-auth",
     "npm:@narumitw/pi-btw"
   ],
-  "deviceId": "a5f18aeb-ec49-4c13-8bbb-1e9112604e5d"
+  "deviceId": "a5f18aeb-ec49-4c13-8bbb-1e9112604e5d",
+  "extensionChangelogVersions": {
+    "{\"source\":\"npm:pi-web-access\",\"scope\":\"user\"}": "0.46.0",
+    "{\"source\":\"npm:@gotgenes/pi-anthropic-auth\",\"scope\":\"user\"}": "3.4.4"
+  }
 }
