@@ -4,7 +4,7 @@ set -eu
 
 usage() {
     printf '%s\n' \
-        'Usage: ./bin/stow [--ssh] [--repo4] [--dry-run] [--delete]' \
+        'Usage: ./bin/stow [--repo4] [--dry-run] [--delete]' \
         '       ./bin/stow [--dry-run] track|untrack PATH...'
 }
 warn() { printf 'error: %s\n' "$*" >&2; }
@@ -12,10 +12,9 @@ error() { warn "$@"; exit 1; }
 misuse() { usage >&2; exit 2; }
 
 root=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-ssh= repo4= dry= delete= action= paths=()
+repo4= dry= delete= action= paths=()
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --ssh) ssh=1 ;;
         --repo4) repo4=1 ;;
         --dry-run) dry=1 ;;
         --delete) delete=1 ;;
@@ -27,7 +26,7 @@ while [ "$#" -gt 0 ]; do
     esac
     shift
 done
-if [ -n "$action" ]; then [ "${#paths[@]}" -gt 0 ] && [ -z "$ssh$repo4$delete" ] || misuse; fi
+if [ -n "$action" ]; then [ "${#paths[@]}" -gt 0 ] && [ -z "$repo4$delete" ] || misuse; fi
 
 command -v stow >/dev/null 2>&1 || error 'GNU Stow is required: brew install stow'
 config=${XDG_CONFIG_HOME:-$HOME/.config}
@@ -41,7 +40,7 @@ check_extensions() {
     fi
 }
 
-# Target and options per package. vim-ssh is opt-in, so track never chooses it.
+# Target and options per package.
 stow_package() { # OPERATION PACKAGE
     case "$2" in
         home) run -t "$HOME" --no-folding "$1" home ;;
@@ -290,7 +289,7 @@ fi
 # ---- install ---------------------------------------------------------------
 
 if [ -n "$delete" ]; then
-    run -t "$HOME" -D home agents vim-ssh
+    run -t "$HOME" -D home agents
     run -t "$config" -D xdg
     exit 0
 fi
@@ -310,7 +309,7 @@ if [ -d "$config" ]; then
 else
     printf '%s\n' "[dry-run] mkdir $config and stow xdg"
 fi
-run -t "$HOME" -D vim-ssh -R agents ${ssh:+vim-ssh}
+stow_package -R agents
 
 if [ -n "$repo4" ]; then
     if [ -n "$dry" ]; then printf '%s\n' '[dry-run] repo4 init'; else "${repo4_init[@]}"; fi

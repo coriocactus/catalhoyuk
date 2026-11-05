@@ -58,7 +58,6 @@ setup() {
     put "$pkgs/agents/.agents/.skill-lock.json" lock
     put "$pkgs/agents/.pi/agent/settings.json" settings
     put "$pkgs/agents/.pi/agent/extensions/index.ts" extension
-    put "$pkgs/vim-ssh/.vimrc-ssh" ssh
 }
 
 run_test() {
@@ -83,26 +82,23 @@ default_install() {
     linked "$HOME/.pi/agent/settings.json" "$checkout/stow/agents/.pi/agent/settings.json"
     linked "$HOME/.pi/agent/extensions" "$checkout/stow/agents/.pi/agent/extensions"
     real_dir "$HOME/.pi/agent"
-    absent "$HOME/.vimrc-ssh"
     absent "$XDG_STATE_HOME"
 }
 
-flags() {
-    install --ssh
-    linked "$HOME/.vimrc-ssh" "$checkout/stow/vim-ssh/.vimrc-ssh"
+arguments() {
     install
-    absent "$HOME/.vimrc-ssh"
     reject --bogus
     reject --tmux home
     reject stray
     reject track
-    reject --ssh track "$HOME/.homerc"
+    reject --repo4 track "$HOME/.homerc"
+    reject --delete track "$HOME/.homerc"
     linked "$HOME/.homerc" "$checkout/stow/home/.homerc"
 }
 
 dry_run() {
-    install --dry-run --ssh
-    contains 'LINK: .vimrc-ssh'
+    install --dry-run
+    contains 'LINK: .homerc'
     absent "$HOME/.homerc"
     absent "$HOME/.agents"
     absent "$HOME/.pi"
@@ -149,12 +145,11 @@ coexists_with_real_directories() {
 }
 
 delete() {
-    install --ssh
+    install
     mkdir -p "$HOME/.pi/agent/sessions"
     install --delete
     absent "$HOME/.homerc"
     absent "$HOME/.local/bin/tool"
-    absent "$HOME/.vimrc-ssh"
     absent "$HOME/.agents"
     absent "$HOME/.pi/agent/settings.json"
     absent "$HOME/.pi/agent/extensions"
@@ -357,7 +352,7 @@ round_trip() {
 
 command -v stow >/dev/null 2>&1 || { printf 'Missing test dependency: stow\n' >&2; exit 1; }
 run_test 'install links leaf packages per file and folds agents' default_install
-run_test '--ssh toggles; unknown arguments are refused' flags
+run_test 'unknown arguments, and install flags with track, are refused' arguments
 run_test '--dry-run reports without changing anything' dry_run
 run_test 'renamed sources drop their stale links on rerun' rename_prunes_stale_link
 run_test 'files, foreign links, and a real extensions directory are refused' conflicts

@@ -36,7 +36,6 @@ Packages are linked according to their role:
 
 - `home` and `xdg` run with `--no-folding`, creating real directories in the target and one symlink per leaf file. When stowing `xdg`, `--ignore` excludes `identities.example` from the target.
 - `agents` uses Stow's directory folding so that `~/.agents` and `~/.pi/agent/extensions` become directory symlinks (which also installs `agents/.agents/.skill-lock.json` at `$HOME/.agents/.skill-lock.json`). Before running Stow, `bin/stow` creates `~/.pi/agent` as a real directory so Pi's runtime state stays out of the checkout, and refuses to proceed if `~/.pi/agent/extensions` already exists as a real directory.
-- `vim-ssh` is unstowed on every run unless `--ssh` is passed.
 - Passing `--repo4` runs a preflight check of `repo4 init` before linking and runs the initialization itself after linking succeeds.
 
 ### track and untrack
@@ -62,6 +61,8 @@ The `home` package provides `~/.tmux.conf`, which uses `run-shell` to execute `$
 ### Vim
 
 Vim never downloads anything automatically on startup. Running `:BootstrapPlugins` downloads `vim-plug` `0.14.0` if it is not already installed and then runs `PlugInstall --sync`. Restart Vim afterwards. Run `:PlugUpdate` to update installed plugins.
+
+`<leader>y` yanks to the system clipboard (`"+`). Over SSH (`$SSH_CONNECTION` is set), or in a Vim built without clipboard support, it yanks through `vim-oscyank` instead, which sends the text to the local terminal with OSC 52. This needs a terminal that accepts OSC 52 and, inside `tmux`, the `set-clipboard on` setting in `~/.tmux.conf`. `<leader>d` and `<leader>p` always use `"+`.
 
 ### JJ
 
