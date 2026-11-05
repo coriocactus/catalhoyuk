@@ -7,13 +7,12 @@ Personal dotfiles and [Pi agent extensions](stow/agents/.pi/agent/extensions/REA
 ```sh
 brew install stow
 ./bin/stow             # home + XDG configs
-./bin/stow --ssh       # also SSH vimrc
 ./bin/stow --repo4     # also repo4 identity profiles
 ./bin/stow --dry-run   # report only
 ./bin/stow --delete    # remove all links
 ```
 
-Rerunning `./bin/stow` reconciles the installation with the flags you pass. For example, omitting `--ssh` unlinks the SSH `.vimrc-ssh`. After running the installer, start a new shell to load the Zsh configuration. To install Vim plugins, open Vim, run `:BootstrapPlugins`, and restart Vim.
+After running the installer, start a new shell to load the Zsh configuration. To install Vim plugins, open Vim, run `:BootstrapPlugins`, and restart Vim.
 
 ## Layout
 
@@ -33,7 +32,6 @@ Each directory under `stow/` is a Stow package:
 | `home` | `~` | Creates real directories and symlinks individual leaf files |
 | `xdg` | `~/.config` | Creates real directories and symlinks individual leaf files, except `repo4/identities.example` |
 | `agents` | `~` | Symlinks `.agents` and `.pi/agent/extensions` as directories |
-| `vim-ssh` | `~` | Optional SSH Vim configuration, enabled with `--ssh` |
 
 Stow never replaces existing regular files or foreign symlinks. If a target path is already occupied, it stops and reports a conflict.
 

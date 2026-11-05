@@ -29,7 +29,7 @@ setup() {
     export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$case_dir/gitconfig" JJ_CONFIG="$case_dir/jjconfig"
     unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_CONFIG GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
     unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL EMAIL JJ_USER JJ_EMAIL JJ_WORKSPACE_ROOT
-    unset TMUX HOMEBREW_PREFIX SKIP PREK_SKIP
+    unset TMUX SSH_CONNECTION SSH_CLIENT SSH_TTY HOMEBREW_PREFIX SKIP PREK_SKIP
     unset PREK_STATUS PREK_MESSAGE_STATUS PREK_FIX_FILE PREK_FIX_STAGE PREK_REWRITE_STAGE PREK_NO_TRAILER
     export PREK_HOME="$case_dir/prek-cache"
     export SHELL=/bin/sh TERM=xterm-256color TMUX_TMPDIR="$case_dir/tmux-tmp"
@@ -127,6 +127,24 @@ vim_outside_tmux() {
     vim_driver 'doautocmd tmux_title FocusGained'
     run_vim "$case_dir/plain.txt"
     absent "$CALLS"
+}
+
+vim_yank() {
+    # Locally the choice follows whether this Vim has a clipboard; over SSH it is always OSC 52.
+    # The vimrc is not re-sourced: the mapping must be right as chosen during startup,
+    # before Vim has initialized its clipboard.
+    local osc52='!has("clipboard")'
+    if [ "$1" = ssh ]; then
+        export SSH_CONNECTION='192.0.2.1 50000 192.0.2.2 22'
+        osc52=1
+    fi
+    vim_driver \
+        "let osc52 = $osc52" \
+        'call assert_equal(osc52 ? "<Plug>OSCYankOperator" : "\"+y", maparg("<leader>y", "n"))' \
+        'call assert_equal(osc52 ? "<Plug>OSCYankVisual" : "\"+y", maparg("<leader>y", "v"))' \
+        'call assert_equal(!osc52, maparg("<leader>y", "n", 0, 1).noremap)' \
+        'call assert_equal("\"+p", maparg("<leader>p", "n"))'
+    run_vim "$case_dir/plain.txt"
 }
 
 vim_bootstrap() {
@@ -554,6 +572,7 @@ for name in 'file with spaces.txt' "quote's\".txt" 'note; touch MARKER; echo don
     run_test "Vim tmux titles preserve literal filename: $name" vim_title "$name"
 done
 run_test 'Vim does not invoke tmux outside a tmux session' vim_outside_tmux
+for mode in local ssh; do run_test "Vim <leader>y uses the clipboard, or OSC 52 over SSH ($mode)" vim_yank "$mode"; done
 for outcome in failure success; do run_test "explicit Vim bootstrap: $outcome" vim_bootstrap "$outcome"; done
 run_test 'jj prek selects @- filenames, not @, and preserves options and subdirectories' jj_paths
 for state in empty deleted missing; do run_test "jj prek skips $state selections" jj_empty "$state"; done

@@ -418,11 +418,11 @@ stow_integration() {
 }
 
 stow_init_dry_run() {
-    bash "$repo_root/bin/stow" --repo4 --ssh --dry-run > "$output" 2>&1
+    bash "$repo_root/bin/stow" --repo4 --dry-run > "$output" 2>&1
     contains '[dry-run] repo4 init'
     [[ ! -e $XDG_CONFIG_HOME && ! -e $XDG_STATE_HOME && ! -e $HOME/.vimrc ]] || fail 'dry run created files'
-    bash "$repo_root/bin/stow" --repo4 --ssh > "$output" 2>&1
-    [[ -f $profiles && -L $HOME/.vimrc-ssh ]] || fail '--repo4 did not compose with --ssh'
+    bash "$repo_root/bin/stow" --repo4 > "$output" 2>&1
+    [[ -f $profiles && -L $HOME/.vimrc ]] || fail '--repo4 did not install alongside the packages'
     local before=$(cksum "$profiles"; ls -di "$profiles")
     bash "$repo_root/bin/stow" --repo4 --dry-run > "$output" 2>&1
     [[ $(cksum "$profiles"; ls -di "$profiles") == $before ]] || fail 'dry run changed existing profiles'

@@ -588,8 +588,17 @@ vnoremap > >gv
 
 vnoremap <leader>d "+d
 nnoremap <leader>d "+d
-vnoremap <leader>y "+y
-nnoremap <leader>y "+y
+" Over SSH, or in a Vim built without a clipboard, yank through the terminal (OSC 52).
+" SSH_CONNECTION rather than SSH_TTY: tmux refreshes it for new panes on every attach.
+" has('clipboard_working') is no use here: it stays 0 until after the vimrc has loaded.
+" <Plug> needs a recursive map in older Vims.
+if !empty($SSH_CONNECTION) || !has('clipboard')
+  vmap <leader>y <Plug>OSCYankVisual
+  nmap <leader>y <Plug>OSCYankOperator
+else
+  vnoremap <leader>y "+y
+  nnoremap <leader>y "+y
+endif
 vnoremap <leader>p "+p
 nnoremap <leader>p "+p
 
@@ -607,8 +616,5 @@ nnoremap <leader>g <cmd>Git<CR>
 
 nnoremap <leader>= <cmd>Goyo<CR>
 nnoremap <leader><Bar> <cmd>call <SID>ToggleTable()<CR>
-
-let s:ssh_config = expand('~/.vimrc-ssh')
-if filereadable(s:ssh_config) | execute 'source ' . fnameescape(s:ssh_config) | endif
 
 " =================================================================================================
