@@ -5,6 +5,12 @@ import { test } from "node:test";
 import { ROW_ANCHOR } from "../shared/anchors.ts";
 import { HISTORY_PAGE } from "../shared/history.ts";
 import { isOpenFileRequest, OPEN_FILE_EVENT } from "../shared/protocol.ts";
+import {
+  CONTENT_START,
+  CONTINUES_JOINED,
+  CONTINUES_SPACED,
+  findMarker,
+} from "../shared/selection.ts";
 import { isTranscriptView, TRANSCRIPT_VIEW } from "../shared/transcript.ts";
 
 test("shared presentation identifiers use the owning extensions' namespaces", () => {
@@ -39,4 +45,13 @@ test("payload guards accept well-formed messages and reject malformed ones", () 
     { ...view, prepend: "yes" },
   ])
     assert(!isTranscriptView(invalid));
+});
+
+test("selection markers are private, zero-width APC sequences, found in row order", () => {
+  for (const marker of [CONTENT_START, CONTINUES_SPACED, CONTINUES_JOINED]) {
+    assert(marker.startsWith("\x1b_pi-select;") && marker.endsWith("\x1b\\"), "an APC sequence");
+    assert(!marker.startsWith("\x1b_G"), "never a kitty image command");
+  }
+  assert.equal(findMarker(`  ${CONTINUES_SPACED}x${CONTENT_START}`)?.marker, CONTINUES_SPACED);
+  assert.equal(findMarker("plain"), undefined);
 });

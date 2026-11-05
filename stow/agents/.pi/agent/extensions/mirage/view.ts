@@ -21,6 +21,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { RowAnchor } from "../shared/anchors.ts";
 import type { FileReference } from "../shared/protocol.ts";
+import { CONTENT_START, findMarker } from "../shared/selection.ts";
 import {
   type Expandable,
   isComplete,
@@ -32,6 +33,7 @@ import {
   toolCalls,
 } from "./model.ts";
 import { scriptOutput } from "./nested.ts";
+import { type ShellPaint, showCommand } from "./shell.ts";
 
 import { colouredDiff, paint } from "./style.ts";
 
@@ -73,6 +75,8 @@ interface ViewActions {
   openFile(file: FileReference): void;
   outputPad(): number;
   renderImages(row: ToolRow, width: number): string[];
+  /** The working spinner's current frame while Pi is working, for calls still in progress. */
+  spinner?(): string | undefined;
 }
 
 function text(value: unknown): string {
@@ -115,6 +119,33 @@ function argumentsNote(row: ToolRow): string {
   if (row.invalidArguments) return "invalid arguments";
   if (row.preview) return oneLine(row.preview);
   return row.omittedBytes === undefined ? "" : `${row.omittedBytes} bytes of arguments`;
+}
+
+/** Marks where a row's content starts, after its indent, for prose's bounded selection. */
+const markStart = (line: string) => {
+  const lead = line.length - line.trimStart().length;
+  return `${line.slice(0, lead)}${CONTENT_START}${line.slice(lead)}`;
+};
+
+const keep = (value: string) => value;
+/** Shell layout without colour, to ask whether a header left anything out. */
+const PLAIN: ShellPaint = {
+  command: keep,
+  flag: keep,
+  string: keep,
+  variable: keep,
+  operator: keep,
+  redirect: keep,
+  comment: keep,
+  dim: keep,
+};
+
+/** The exit code Pi appends to a failed command's output. */
+function exitCode(row: ToolRow): string | undefined {
+  const output = (row.result?.content ?? [])
+    .map((part) => (part.type === "text" ? text(part.text) : ""))
+    .join("\n");
+  return /Command exited with code (\d+)\s*$/.exec(output)?.[1];
 }
 
 /** Formats a duration as Pi's bash rows do: `1.2s`, `2m 5s`, `1h 2m 5s`. */
@@ -174,9 +205,12 @@ export class ToolGroupView implements Component {
     padding: number;
     revision: number;
     epoch: number;
+    frame: string;
     lines: string[];
   };
   private bodies = new Map<string, { revision: number; component: Text }>();
+  /** The spinner frame this render paints, the same one its cache key records. */
+  private frame = "";
   readonly row: ToolRow;
   private readonly model: GroupState;
   private readonly actions: ViewActions;
@@ -205,12 +239,16 @@ export class ToolGroupView implements Component {
     if (this.model.rows.get(this.row.id) !== this.row || group.rows[0] !== this.row) return [];
     const padding = Math.min(this.actions.outputPad(), Math.max(0, Math.floor((width - 1) / 2)));
     const contentWidth = Math.max(0, width - padding * 2);
+    // A group with calls in progress redraws for each spinner frame. A finished one stays cached.
+    const frame = group.rows.every(isComplete) ? "" : (this.actions.spinner?.() ?? "");
+    this.frame = frame;
     if (
       this.cache?.group === group &&
       this.cache.width === width &&
       this.cache.padding === padding &&
       this.cache.revision === group.revision &&
-      this.cache.epoch === this.model.epoch
+      this.cache.epoch === this.model.epoch &&
+      this.cache.frame === frame
     )
       return this.cache.lines;
 
@@ -241,6 +279,7 @@ export class ToolGroupView implements Component {
       padding,
       revision: group.revision,
       epoch: this.model.epoch,
+      frame,
       lines,
     };
     return lines;
@@ -292,7 +331,9 @@ export class ToolGroupView implements Component {
 
   /** One call: its header, then its output or, for a script, its calls and output. */
   private entry(row: ToolRow, indent: number, width: number): void {
-    this.header(`${" ".repeat(indent)}${this.rowLabel(row)}`, row, width);
+    if (row.kind === "bash" && text(row.args.command).trim())
+      this.commandHeader(row, indent, width);
+    else this.header(`${" ".repeat(indent)}${this.rowLabel(row)}`, row, width);
     if (!this.model.expanded(row)) return;
     if (row.kind === "codemode") this.script(row, indent + 2, width);
     else this.body(row, width, indent + 2);
@@ -305,6 +346,8 @@ export class ToolGroupView implements Component {
   private status(status: ToolRow["status"], command = false): string {
     if (status === "error") return paint(this.theme, "red", command ? "$" : "✗");
     if (status === "success") return paint(this.theme, "green", command ? "$" : "✓");
+    // In progress while Pi works: Pi's own working spinner, in its colour.
+    if (this.frame && status !== "cancelled") return this.theme.fg("accent", this.frame);
     if (command) return this.theme.fg("muted", "$");
     return this.theme.fg("muted", status === "cancelled" ? "✗" : "…");
   }
@@ -405,12 +448,54 @@ export class ToolGroupView implements Component {
     );
   }
 
+  /** A command as Amp draws it: a line per step, then where it ran and how it failed. */
+  private commandHeader(row: ToolRow, indent: number, width: number): void {
+    const shown = showCommand(clean(text(row.args.command)), this.shellPaint());
+    const note = (value: string) => this.theme.italic(this.theme.fg("dim", value));
+    const trailer: string[] = [];
+    if (shown.cwd) {
+      const home = homedir();
+      const cwd = shown.cwd.startsWith(`${home}/`) ? `~${shown.cwd.slice(home.length)}` : shown.cwd;
+      trailer.push(note(`(in ${cwd})`));
+    }
+    const code = row.status === "error" ? exitCode(row) : undefined;
+    if (code !== undefined)
+      trailer.push(`${note("(exit code: ")}${paint(this.theme, "red", code)}${note(")")}`);
+    const pad = " ".repeat(indent);
+    const lines = shown.lines.map((line, index) =>
+      index ? `${pad}    ${line}` : `${pad}${this.status(row.status, true)} ${line}`,
+    );
+    if (trailer.length) lines[lines.length - 1] += ` ${trailer.join(" ")}`;
+    // Every line toggles the row. The caret ends the last one.
+    for (const line of lines.slice(0, -1)) {
+      this.targets.set(this.rawLines.length, row);
+      this.rawLines.push(markStart(truncateToWidth(line, Math.max(0, width))));
+    }
+    this.header(lines[lines.length - 1], row, width);
+  }
+
+  private shellPaint(): ShellPaint {
+    const theme = this.theme;
+    return {
+      command: (value) => theme.bold(value),
+      flag: (value) => theme.fg("syntaxFunction", value),
+      string: (value) => theme.fg("syntaxString", value),
+      variable: (value) => theme.fg("syntaxVariable", value),
+      operator: (value) => theme.fg("syntaxOperator", value),
+      redirect: (value) => theme.bold(value),
+      comment: (value) => theme.fg("syntaxComment", value),
+      dim: (value) => theme.fg("dim", value),
+    };
+  }
+
   private header(label: string, target: ToggleTarget, width: number): void {
     this.targets.set(this.rawLines.length, target);
     const arrow = this.arrow(this.model.expanded(target));
     // Keep the caret visible even when the filename or command is truncated.
     this.rawLines.push(
-      width > 2 ? `${truncateToWidth(label, width - 2)} ${arrow}` : truncateToWidth(arrow, width),
+      markStart(
+        width > 2 ? `${truncateToWidth(label, width - 2)} ${arrow}` : truncateToWidth(arrow, width),
+      ),
     );
   }
 
@@ -471,10 +556,16 @@ export class ToolGroupView implements Component {
       } else if (row.kind === "write") {
         output = this.code(clean(text(row.args.content)), row.file?.path);
       } else if (row.kind === "bash") {
-        output =
-          this.theme.fg("dim", `$ ${clean(text(row.args.command))}`) +
-          (output ? `\n${this.theme.fg("toolOutput", output)}` : "") +
-          (missing ? `\n${unkept}` : "");
+        // The header shows the command, unless it had to leave part of it out.
+        const command = clean(text(row.args.command));
+        const elided = !command.trim() || showCommand(command, PLAIN).elided;
+        output = [
+          elided && command ? this.theme.fg("dim", `$ ${command}`) : "",
+          output ? this.theme.fg("toolOutput", output) : "",
+          missing ? unkept : "",
+        ]
+          .filter(Boolean)
+          .join("\n");
       } else if (row.kind === "model") {
         output = this.theme.fg("dim", "Result returned to the script.");
       } else if (missing) {
@@ -531,7 +622,9 @@ export class ToolGroupView implements Component {
   private addLines(lines: readonly string[], target: ToggleTarget, indent: number): void {
     for (const line of lines) {
       this.targets.set(this.rawLines.length, target);
-      this.rawLines.push(" ".repeat(indent) + line);
+      // The indent is mirage's layout. The line's own leading space is content, such as code's.
+      // Text that prose wrapped already marks its rows, wrapped continuations included.
+      this.rawLines.push(`${" ".repeat(indent)}${findMarker(line) ? "" : CONTENT_START}${line}`);
     }
   }
 

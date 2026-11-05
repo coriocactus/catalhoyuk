@@ -160,6 +160,8 @@ export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 [ -f "$HOME/.ripgreprc" ] && export RIPGREP_CONFIG_PATH="$HOME/.ripgreprc"
 [ -s "$HOME/.bun/_bun" ] && source "$HOME/.bun/_bun"
 
+alias pi='PATH="$brew_prefix/opt/node/bin:$PATH" pi'
+
 # ssh port forwarding functions
 fip() {
   (( $# < 2 )) && echo "Usage: fip <host> <port1> [port2] ..." && return 1

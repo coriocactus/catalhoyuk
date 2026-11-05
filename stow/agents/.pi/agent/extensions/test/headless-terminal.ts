@@ -198,12 +198,15 @@ export class HeadlessTerminal {
 
   click(needle: string, filename = false): void {
     const target = this.locate(needle);
-    const cell = filename
-      ? target.cell
-      : target.row.cells.find((cell) => cell.text === "▸" || cell.text === "▾");
+    const caret = (row: Row | undefined) =>
+      row?.cells.find((cell) => cell.text === "▸" || cell.text === "▾");
+    // A header can span lines, as a multi-step command does: its caret ends the last one.
+    let y = target.y;
+    while (!filename && !caret(this.snapshot.rows[y]) && y < target.y + 8) y++;
+    const cell = filename ? target.cell : caret(this.snapshot.rows[y]);
     assert(cell, `No toggle caret on ${needle}`);
-    const x = cell.x + 1,
-      y = target.y + 1;
+    const x = cell.x + 1;
+    y += 1;
     this.send(`\x1b[<0;${x};${y}M\x1b[<0;${x};${y}m`);
   }
 

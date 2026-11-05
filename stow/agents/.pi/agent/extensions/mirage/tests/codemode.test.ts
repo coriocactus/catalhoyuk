@@ -3,7 +3,17 @@ import { test } from "node:test";
 import { OPEN_FILE_EVENT, type OpenFileRequest } from "../../shared/protocol.ts";
 import { themes, tui } from "../../test/pi.ts";
 import { assistant } from "../../test/transcript.ts";
-import { fixture, mouse, paint, plain, type Result, result, root, ToolGroups } from "./fixture.ts";
+import {
+  fixture,
+  mouse,
+  paint,
+  plain,
+  type Result,
+  result,
+  root,
+  ToolGroups,
+  unmark,
+} from "./fixture.ts";
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 const HEADER = "Script completed\nWall time 0.4 seconds\nOutput:\n";
@@ -87,7 +97,7 @@ test("a script joins its run; its calls count in the summary and expand with liv
   assert.match(open, /^ {4}SCRIPT_OUTPUT$/m, "the script's output follows its calls");
   assert(!open.includes("Script completed"), "Pi's header is dropped");
   assert(!open.includes("NESTED_READ_BODY") && !open.includes("tools.read"));
-  const failed = before.view.render(160)[lineOf(before.view, "npm test")];
+  const failed = before.view.render(160).map(unmark)[lineOf(before.view, "npm test")];
   assert(failed.startsWith(`    ${paint(themes.theme, "red", "$")} npm test`));
 
   before.view.handleMouse(mouse(0, lineOf(before.view, "JavaScript")));
@@ -104,7 +114,7 @@ test("a script joins its run; its calls count in the summary and expand with liv
 
   const y = lineOf(before.view, "Read a.txt");
   before.view.handleMouse(
-    mouse(tui.stripTerminalSequences(before.view.render(160)[y]).indexOf("a.txt"), y),
+    mouse(tui.stripTerminalSequences(before.view.render(160).map(unmark)[y]).indexOf("a.txt"), y),
   );
   assert.deepEqual(opened, { path: "a.txt", cwd: f.dir, tool: "read", accepted: true });
   f.expand(true);
@@ -161,15 +171,20 @@ test("single scripts: model calls, cancelled calls, failures, and scripts withou
     true,
   );
   assert.equal(plain(run.view), "✗ Script: explored 1 file ▸");
-  assert(run.view.render(160)[0].startsWith(paint(themes.theme, "red", "✗")));
+  assert(
+    run.view
+      .render(160)
+      .map(unmark)[0]
+      .startsWith(paint(themes.theme, "red", "✗")),
+  );
   run.view.handleMouse(mouse(0));
   const open = plain(run.view);
   assert.match(open, /^ {2}✗ Read slow\.txt ▸$/m, "cut-off calls are cancelled");
   assert.match(open, /^ {2}✓ models\.classify typesafe\/jev-latest \$0\.0012 ▸$/m);
   assert.match(open, /^ {2}PARTIAL_OUTPUT\n {2}Script error:\n {2}TimeoutError$/m);
-  const cancelled = run.view.render(160)[lineOf(run.view, "slow.txt")];
+  const cancelled = run.view.render(160).map(unmark)[lineOf(run.view, "slow.txt")];
   assert(cancelled.startsWith(`  ${themes.theme.fg("muted", "✗")}`), "cancelled is muted");
-  const error = run.view.render(160)[lineOf(run.view, "TimeoutError")];
+  const error = run.view.render(160).map(unmark)[lineOf(run.view, "TimeoutError")];
   assert(error.includes(paint(themes.theme, "red", "").split("\x1b[39m")[0]), "errors are red");
   run.view.handleMouse(mouse(0, lineOf(run.view, "slow.txt")));
   assert.match(plain(run.view), /Cancelled when the script ended\./);
@@ -289,7 +304,7 @@ test("commands and scripts end with the execution time Pi recorded, live and aft
   direct.context.durationMs = 1234;
   direct.result(result("BUILT"));
   assert.match(plain(direct.view), /\n {2}BUILT\n {2}Took 1\.2s$/);
-  const took = direct.view.render(160).at(-1) ?? "";
+  const took = direct.view.render(160).map(unmark).at(-1) ?? "";
   assert(took.includes(themes.theme.fg("muted", "Took 1.2s")), "muted, like Pi's bash rows");
 
   await f.pi.event("user_bash");

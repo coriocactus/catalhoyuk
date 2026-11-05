@@ -8,7 +8,7 @@
   "editorPaddingX": 1,
   "outputPad": 1,
   "markdown": {
-    "codeBlockIndent": ""
+    "codeBlockIndent": "    "
   },
   "steeringMode": "all",
   "followUpMode": "one-at-a-time",
@@ -38,7 +38,8 @@
   ],
   "deviceId": "a5f18aeb-ec49-4c13-8bbb-1e9112604e5d",
   "extensionChangelogVersions": {
-    "{\"source\":\"npm:pi-web-access\",\"scope\":\"user\"}": "0.46.0",
-    "{\"source\":\"npm:@gotgenes/pi-anthropic-auth\",\"scope\":\"user\"}": "3.4.4"
+    "{\"source\":\"npm:pi-web-access\",\"scope\":\"user\"}": "0.47.0",
+    "{\"source\":\"npm:@gotgenes/pi-anthropic-auth\",\"scope\":\"user\"}": "3.4.4",
+    "{\"source\":\"npm:@narumitw/pi-btw\",\"scope\":\"user\"}": "0.63.4"
   }
 }
