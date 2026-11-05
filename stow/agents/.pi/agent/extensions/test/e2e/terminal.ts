@@ -223,7 +223,7 @@ const args = [
   // Pi's own codemode tool, which --no-extensions also disables.
   "-e",
   "builtin:codemode",
-  // Match the directories' discovery order: echo, inspector, interupt, mirage, rearview.
+  // Match the directories' discovery order: echo, inspector, interupt, mirage, prose, rearview.
   "-e",
   join(extensions, "echo/index.ts"),
   "-e",
@@ -232,6 +232,8 @@ const args = [
   join(extensions, "interupt/index.ts"),
   "-e",
   join(extensions, "mirage/index.ts"),
+  "-e",
+  join(extensions, "prose/index.ts"),
   "-e",
   historyWrapper,
   "-e",
@@ -278,19 +280,31 @@ function cpuSeconds(pid: number): number {
 // The current PTY session. `running` tracks the one that still needs cleanup.
 let terminal!: HeadlessTerminal;
 let running: HeadlessTerminal | undefined;
+/** A command header from its `$` line, through any continuation lines, to its caret. */
 function assertCommandHeader(needle: string, tone: keyof typeof colours, caret = "▸") {
-  const header = terminal.locate(needle).row.text.trim();
-  assert(header.startsWith("$ ") && header.endsWith(` ${caret}`), header);
+  const { rows } = terminal.snapshot;
+  let y = terminal.locate(needle).y;
+  while (
+    y > 0 &&
+    !rows[y].text.trim().startsWith("$ ") &&
+    rows[y - 1].text.trimEnd().endsWith("\\")
+  )
+    y--;
+  const lines = [rows[y].text.trim()];
+  while (lines[lines.length - 1].endsWith("\\") && rows[y + lines.length])
+    lines.push(rows[y + lines.length].text.trim());
+  const header = lines.join("\n");
+  assert(lines[0].startsWith("$ ") && header.endsWith(` ${caret}`), header);
   assert(!/[✓✗]/.test(header), "command headers use only $ for status");
-  terminal.assertColour(header, colours[tone]);
+  terminal.assertColour(lines[0], colours[tone]);
 }
 function assertOutputPadding(padding: number) {
   assert.equal(terminal.locate("✓ Explored 2 files").x, padding);
   assert.equal(terminal.locate("✓ Edited ").x, padding);
-  const command = terminal.screen.includes("$ Running 2 commands")
-    ? "$ Running 2 commands"
-    : "$ Ran 2 commands";
-  assert.equal(terminal.locate(command).x, padding);
+  // While the commands run, Pi's working spinner and a space come before the label.
+  const running = terminal.screen.includes("Running 2 commands");
+  const command = running ? "Running 2 commands" : "$ Ran 2 commands";
+  assert.equal(terminal.locate(command).x - (running ? 2 : 0), padding);
 }
 async function expandEditGroup() {
   terminal.click("Edited 2 files");
@@ -356,6 +370,8 @@ try {
     cwd: root,
     env,
     artifacts: root,
+    // Tall enough to show every expanded row at once, multi-line command headers included.
+    rows: 84,
   });
   await terminal.waitFor((s) => s.includes("Fixture ready"), "startup");
   assert.equal(renderedArchive().size, 0, "archived messages are not rendered eagerly");
@@ -389,12 +405,13 @@ try {
   await terminal.waitFor((s) => !s.includes("ECHO_EDITOR_DRAFT"), "clear combined unsent draft");
   assert.equal(readFileSync(fixture, "utf8"), beforeEcho, "echo never submits to the model");
   terminal.send("Run the fixture\r");
-  // The second read's arguments are still streaming: it belongs to its group at once.
+  // The second read's arguments are still streaming: it belongs to its group at once. While
+  // Pi works, a call in progress shows Pi's working spinner.
   let screen = await terminal.waitFor(
-    (s) => /… Explore 2 files ▸/.test(s),
-    "a loading call joins its group",
+    (s) => /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Explore 2 files ▸/.test(s),
+    "a loading call joins its group, spinning",
   );
-  assert(!/… Read/.test(screen), "no loading call outside its group");
+  assert(!/[…⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Read/.test(screen), "no loading call outside its group");
   writeFileSync(join(root, "release-pending"), "release");
   screen = await terminal.waitFor(
     (s) =>
@@ -563,6 +580,14 @@ try {
   assertCommandHeader("Ran 2 commands", "green", "▾");
   assertCommandHeader("DISPLAY_FIXTURE_PREFIX", "green");
   assertCommandHeader("DISPLAY_FIXTURE_ERROR", "red");
+  // Its steps on their own lines, as Amp shows them, with how it failed at the end.
+  screen = terminal.screen;
+  assert(
+    /\$ printf '%s\\n' "\$DISPLAY_FIXTURE_ERROR" >&2; \\\n\s+exit 1 \(exit code: 1\) ▸/.test(
+      screen,
+    ),
+    screen,
+  );
   terminal.click("DISPLAY_FIXTURE_ERROR");
   await terminal.waitFor(
     (s) =>

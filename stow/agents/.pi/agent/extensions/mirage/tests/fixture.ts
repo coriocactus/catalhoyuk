@@ -12,6 +12,7 @@ import type {
   ToolRenderers,
 } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI, TuiMouseEvent, TuiMouseEventType } from "@earendil-works/pi-tui";
+import { MARKERS } from "../../shared/selection.ts";
 import { type FakePi, fake, fakePi, type Tool } from "../../test/fake-pi.ts";
 import { core, load, themes, tui } from "../../test/pi.ts";
 import type { ToolGroupView } from "../view.ts";
@@ -84,6 +85,9 @@ export const mouse = (x: number, y = 0, type: TuiMouseEventType = "click"): TuiM
   alt: false,
   ctrl: false,
 });
+/** A rendered line without prose's zero-width selection markers, to compare raw styling. */
+export const unmark = (line: string) =>
+  MARKERS.reduce((value, marker) => value.replaceAll(marker, ""), line);
 export const plain = (component: Component, width = 160) =>
   component
     .render(width)
@@ -129,8 +133,17 @@ export interface Slot {
   result(output: Result, failed?: boolean, partial?: boolean): void;
 }
 
-/** `global` is the user's settings.json, read by mirage at session start. */
-export async function fixture({ global = {} }: { global?: object } = {}) {
+/**
+ * `global` is the user's settings.json, read by mirage at session start. `busy` makes Pi
+ * report that it is working, as it does during a turn.
+ */
+export async function fixture({
+  global = {},
+  busy = false,
+}: {
+  global?: object;
+  busy?: boolean;
+} = {}) {
   const dir = mkdtempSync(join(root, "case-"));
   const config = join(dir, "config");
   mkdirSync(config);
@@ -142,9 +155,11 @@ export async function fixture({ global = {} }: { global?: object } = {}) {
   let allExpanded = false,
     entries: SessionEntry[] = [],
     invalidations = 0;
+  let working = busy;
   const ctx = fake<ExtensionContext>({
     mode: "tui",
     cwd: dir,
+    isIdle: () => !working,
     isProjectTrusted: () => false,
     ui: {
       getToolsExpanded: () => allExpanded,
@@ -213,6 +228,10 @@ export async function fixture({ global = {} }: { global?: object } = {}) {
     notices,
     get invalidations() {
       return invalidations;
+    },
+    /** Pi starts or stops working, as at the start and end of a turn. */
+    setBusy(value: boolean) {
+      working = value;
     },
     expand(value: boolean) {
       allExpanded = value;

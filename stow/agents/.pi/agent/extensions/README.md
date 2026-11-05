@@ -1,69 +1,42 @@
 # pi-catalhoyuk
 
-- `rearview`: recent rows first; prepend older batches on reaching the top.
-- `mirage`: grouped tool rows, including codemode scripts and their calls, with
-  collapsible output/images and configurable colours. It draws Pi's tools and never replaces
-  them.
-- `inspector`: same-terminal filename opening, including while Pi is working.
-- `interupt`: first Esc arms interruption; second within 1.5s stops the running response.
-- `echo`: `@@name` inserts Markdown snippets at the cursor.
-- `shared`: filename and read-only transcript presentation protocols.
+Local TypeScript extensions for the Pi terminal coding agent, installed at `~/.pi/agent/extensions`:
+
+- [`rearview`](rearview/README.md): Renders the most recent transcript rows first and prepends older batches when you scroll to the top.
+- [`mirage`](mirage/README.md): Groups consecutive tool rows, including codemode scripts and their nested calls, with collapsible output, image previews, and configurable colours. It changes only how Pi's own tools are drawn and never replaces the tools themselves.
+- [`inspector`](inspector/README.md): Opens clicked tool filenames in Vim inside the same terminal, including while Pi is working.
+- `interupt`: Requires a second `Esc` press within 1.5 seconds to stop a running response. The first `Esc` arms interruption.
+- [`echo`](echo/README.md): Expands `@@name` tokens into Markdown snippets from `~/.pi/agent/echo/*.md` at the editor cursor.
+- [`comrade`](comrade/README.md): Provides a tool that delegates a self-contained task to a fresh one-shot Pi process and returns its final answer.
+- [`prose`](prose/README.md): Draws Markdown code blocks without fence lines and keeps wrapped lines indented. In fullscreen, every selection stops at the text and starts at a row's content, and a copy joins wrapped rows back into their lines.
+- `shared`: Defines the internal filename-opening, read-only transcript presentation, and selection-marker protocols shared across extensions.
 
 ## After upgrading Pi
 
-1. Upgrade normally and **restart Pi** (not just `/reload`).
-2. Run `cd ~/.pi/agent/extensions && npm run pi-diff`. It prints Pi's changelog since
-   the release the extensions were last reviewed against (`piReviewed` in `package.json`),
-   then diffs every Pi module the extensions import. Check whether Pi now covers any
-   extension features (prefer native support), and whether a changed module alters what
-   an adapter relies on.
+1. Upgrade Pi normally and **restart Pi** (do not just run `/reload`).
+2. Run `cd ~/.pi/agent/extensions && npm run pi-diff`. This prints Pi's changelog since the release recorded in `piReviewed` in `package.json`, and then diffs every Pi module imported by the extensions. Review the diff to check whether Pi now provides any extension features natively (prefer native support) and whether a changed module alters behaviour an adapter relies on.
 3. Run `npm run verify`.
-4. If it fails, give Pi the failure output and printed artifact paths, fix it, and rerun.
-5. Run `npm run pi-diff -- --reviewed`, then commit `package.json` with the
-   `lastChangelogVersion` change Pi made to `settings.json`.
+4. If verification fails, pass the failure output and printed artifact paths to Pi, fix the issue, and rerun `npm run verify`.
+5. Run `npm run pi-diff -- --reviewed`, and commit the updated `package.json` together with the `lastChangelogVersion` update that Pi wrote to `settings.json`.
 
-There is no version allowlist or approval step. Adapters check the APIs they use
-and retain patch-ownership checks. Detected layout changes fall back to the native
-transcript/previews or unpadded tool rows with a warning; missing entry points or
-patch conflicts stop the affected extension from loading. `piReviewed` gates
-nothing: `verify` ends by saying whether it matches the installed Pi.
+There is no runtime version allowlist or manual approval gate. Adapters verify the APIs they use on load and retain patch-ownership checks: if an adapter detects an internal layout change, it warns and falls back to Pi's native transcript, native image previews, native thinking blocks, or unpadded tool rows, whereas missing entry points or conflicting patches stop only the affected extension from loading. The `piReviewed` field in `package.json` does not block execution. `npm run verify` simply reports at the end whether `piReviewed` matches the installed Pi version.
 
-API shape checks cannot detect every behavioral change, which is what step 2 is for.
-Verification exercises the installed package's real CLI, dialogs and scrolling; it
-reduces risk but is not a guarantee. Also try a filename click and scrolling in your
-actual terminal after upgrading.
+Because runtime API-shape checks cannot catch every behavioural change, step 2 remains essential. While `npm run verify` exercises the installed Pi package's real CLI, dialogs, and scrolling, it reduces risk rather than guaranteeing compatibility. After upgrading, also test a filename click and transcript scrolling in your real terminal after upgrading.
 
 ### What `pi-diff` watches
 
-No list of Pi files is kept by hand. `test/pi-diff.ts` reads every Pi import in
-extension code (not tests), including type imports, and follows Pi's declaration
-re-exports, also between Pi packages, to the module that defines each symbol. Those
-modules' `.js` and `.d.ts` are diffed; other changed files in the same packages are
-listed by name. The list therefore follows the code. An adapter that patches a Pi class or
-replaces methods on a Pi object must import that class or type, as strict TypeScript
-already requires, and its module is watched from then on. Keep it that way:
+No list of watched Pi files is maintained by hand. `test/pi-diff.ts` parses every Pi import across the extension source files (excluding tests), including `import type` declarations, and traces Pi's `.d.ts` re-exports, including those across Pi packages, to the specific module that defines each imported symbol. It then diffs both the `.js` and `.d.ts` files of those defining modules and lists any other changed files in the same packages by name. Because strict TypeScript requires any adapter that patches a Pi class or replaces methods on a Pi object to import that class or type, its defining module is watched automatically. To preserve that guarantee, follow two rules when importing from Pi:
 
-- Reach Pi internals only through a symbol imported from a Pi package. Never through
-  an object obtained untyped, or a path into Pi's `dist`.
-- Import Pi symbols by name from package entry points. `npm test` rejects namespace,
-  default, side-effect, subpath and `import()` forms, and any symbol it cannot trace
-  to a defining module, so the review never silently watches less.
+- Reach Pi internals only through a symbol imported from a Pi package, never through an untyped object traversal or a direct path into Pi's `dist` directory.
+- Import Pi symbols by name from package root entry points. `npm test` rejects namespace, default, side-effect, subpath, and dynamic `import()` forms, as well as any symbol that `pi-diff` cannot trace to a defining module, ensuring upgrade reviews never silently watch less code.
 
-The previous release comes from Pi's managed install, which keeps the release that ran
-the last update beside the new one. If it is gone (two upgrades without a review), or Pi is
-a package install, `pi-diff` fetches that release's packages from npm into a temporary
-directory. `npm run pi-diff -- <version>` compares any release with the installed one.
+By default, `pi-diff` locates the previous release from Pi's managed installation directory, which retains the release that performed the last update alongside the new one. If that directory is no longer present (for example, after two upgrades without a review) or if Pi is installed as a standard package, `pi-diff` fetches the reviewed release's packages from npm into a temporary directory. You can also run `npm run pi-diff -- <version>` to compare any specific release against the installed one.
 
 ## Development
 
-One package manifest and lockfile here own all development dependencies. No
-per-test packages or runtime dependency installation.
+A single `package.json` and lockfile in this directory manage all development dependencies. There are no per-extension packages or runtime dependencies.
 
-Requires Node 22.19+ (Pi's own minimum; `devEngines` makes npm enforce it), Pi on
-`PATH` (its managed launcher or a package install) or `PI_PACKAGE_DIR`,
-`/usr/bin/vim`, and native build tools (Xcode Command Line Tools on macOS). Build
-`node-pty` from source to avoid its 1.1.0 macOS prebuilt-helper permissions defect,
-with no permission patches:
+Development requires Node 22.19+ (Pi's own minimum, enforced by npm via `devEngines`), Pi on `PATH` (via its managed launcher or a package install) or `PI_PACKAGE_DIR`, `/usr/bin/vim`, and native build tools (Xcode Command Line Tools on macOS). Build `node-pty` from source so that you avoid the macOS prebuilt-helper permissions defect in `node-pty` 1.1.0 without needing post-install permission patches:
 
 ```sh
 cd ~/.pi/agent/extensions
@@ -72,44 +45,18 @@ npm run format
 npm run verify
 ```
 
-`verify` runs Biome, strict TypeScript, unit/integration tests, and the terminal
-suite, then reports whether `piReviewed` matches the installed Pi. Individual commands:
-`npm run check`, `npm run typecheck`, `npm test`, `npm run test:terminal`,
-`npm run pi-diff`.
+`npm run verify` runs Biome, strict TypeScript typechecking, unit and integration tests, and the headless terminal suite, then checks whether `piReviewed` matches the installed Pi version. You can also run the individual steps with `npm run check`, `npm run typecheck`, `npm test`, `npm run test:terminal`, and `npm run pi-diff`.
 
-Tests are TypeScript run directly by Node (type stripping, no build step):
+Typechecking covers every extension entry point, test file, and support module with `erasableSyntaxOnly` and `verbatimModuleSyntax` enabled: enums, namespaces, and parameter properties are disallowed, and type-only imports must use `import type`.
 
-- `<extension>/tests/*.test.ts`: that extension alone. They import only their own
-  extension, `shared/`, and `test/`, so deleting an extension never breaks another
-  extension's tests (only the cross-extension files in `test/` need updating).
-- `<extension>/tests/*.ts` without `.test`: that extension's shared test fixtures.
-- `test/*.test.ts`: `shared/` contracts, mirage × rearview integration, a guard
-  that Pi autoloads exactly the five extensions (never `test/` or `shared/`, which
-  must not contain an `index.ts`), and a guard that `pi-diff` traces every Pi import.
-- `test/e2e/`: the terminal suite and its offline provider.
-- `test/pi.ts`, `test/fake-pi.ts`, `test/transcript.ts`, `test/headless-terminal.ts`:
-  support code. Extension source loads through jiti against the installed Pi, as Pi
-  loads it. Fakes are typed against Pi's declarations, so an API rename fails
-  `npm run typecheck` at the fake.
+Tests are written in TypeScript and executed directly by Node using native type stripping, with no build step:
 
-Typecheck covers every entry point, test, and support file with
-`erasableSyntaxOnly` and `verbatimModuleSyntax`: no enums, namespaces, or parameter
-properties, and type-only imports use `import type`.
+- `<extension>/tests/*.test.ts`: Unit tests for a single extension. Each suite imports only its own extension, `shared/`, and `test/`, so deleting an extension never breaks another extension's tests (only the cross-extension files in `test/` need updating).
+- `<extension>/tests/*.ts` (without `.test`): Shared test fixtures for that extension.
+- `test/*.test.ts`: Cross-extension tests covering `shared/` contracts, `mirage` × `rearview` integration, a layout guard verifying that Pi autoloads only the seven extensions (and never `test/` or `shared/`, which must not contain an `index.ts`), and a guard verifying that `pi-diff` can trace every Pi import.
+- `test/e2e/`: The end-to-end terminal suite and its offline fixture provider.
+- `test/pi.ts`, `test/fake-pi.ts`, `test/transcript.ts`, `test/headless-terminal.ts`: Shared test support. Extension code is loaded through `jiti` against the installed Pi package just as Pi loads it at runtime, and test fakes are typed against Pi's own declarations so that an upstream API rename fails `npm run typecheck` at the fake.
 
-The terminal suite launches Pi's package-declared CLI with
-**xterm.js (`@xterm/headless`) + Microsoft's `node-pty`**.
-It waits for parsed terminal state, targets Unicode cells, checks RGB colours,
-and gates background work rather than racing a fixed sleep. Real Pi/Vim run with
-isolated settings and an offline fixture provider. Vim syntax stays on; personal
-configuration, Ghostty settings, and installed Pi files are untouched.
+The end-to-end terminal suite spawns Pi's package-declared CLI inside a real pseudo-terminal using **xterm.js (`@xterm/headless`) and Microsoft's `node-pty`**. Instead of relying on fixed sleeps, it waits for parsed terminal state, inspects Unicode cells and RGB colours, and gates background work explicitly. Real Pi and Vim processes run with isolated settings and an offline fixture provider. Vim syntax highlighting stays enabled, and your personal configuration, Ghostty settings, and installed Pi files are never touched.
 
-Coverage includes grouping, codemode scripts run by Pi's codemode tool (live calls, saved
-calls after resume, and `store()` entries), live output padding, command and script execution times
-(live and resumed), errors/diffs/images, clicks/Ctrl+O,
-background work while Vim owns the terminal, newer/replacement drafts, editor failures,
-saves, resizing, new/resume/fork/reload cleanup, disabling history, rapid scrolling
-between prepend and layout, bounded paging, archived filenames/images, unchanged model
-context, compatibility fallbacks, idle CPU, and snippet autocomplete/loading without
-submission. Image checks cover Kitty commands, not rasterized pixels. Raw output,
-cell snapshots, screens, and saved sessions remain in the printed temporary directory
-for debugging.
+The terminal suite covers tool grouping, codemode scripts executed by Pi's codemode tool (live nested calls, saved calls after resume, and `store()` entries), live output padding changes, command and script execution durations (both live and resumed), tool errors, diffs, and images, mouse clicks and `Ctrl+O` toggling, background agent work while Vim owns the terminal, newer and replacement editor drafts, editor failures, file saves, terminal resizing, cleanup across `/new`, `/resume`, `/fork`, and `/reload`, disabling history, rapid scrolling between batch prepends and layout passes, bounded history paging, archived filenames and images, unchanged model context, compatibility fallbacks, idle CPU usage, and `echo` snippet autocomplete and insertion without message submission. Image assertions verify emitted Kitty graphics commands rather than rasterized pixels. Raw terminal output, cell snapshots, rendered screens, and saved session files are preserved in the printed temporary directory for debugging.

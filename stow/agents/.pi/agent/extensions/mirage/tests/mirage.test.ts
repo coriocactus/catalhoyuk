@@ -27,6 +27,7 @@ import {
   result,
   root,
   ToolGroups,
+  unmark,
   writtenLines,
 } from "./fixture.ts";
 
@@ -441,7 +442,9 @@ test("malformed JSON arguments say so instead of looking pending, also after a r
     const output = result(`Invalid arguments for tool "${name}": ${error}`);
     slot.result(output, true);
     assert.equal(plain(slot.view), header);
-    assert(slot.view.render(160)[0].includes(themes.theme.fg("dim", "invalid arguments")));
+    assert(
+      slot.view.render(160).map(unmark)[0].includes(themes.theme.fg("dim", "invalid arguments")),
+    );
     entries.push(
       { type: "message", message: { role: "user", content: "boundary" } },
       { type: "message", message: finished },
@@ -470,7 +473,7 @@ test("read rows show Pi's line range, including numeric strings, and omit malfor
     await f.pi.event("user_bash");
     const { view } = f.call("read", `range-${i}`, { path: "a.txt", ...args }, false);
     assert.equal(plain(view), `\u2026 Read a.txt${range} \u25b8`, JSON.stringify(args));
-    if (range) assert(view.render(160)[0].includes(themes.theme.fg("dim", range)));
+    if (range) assert(view.render(160).map(unmark)[0].includes(themes.theme.fg("dim", range)));
   }
 });
 
@@ -555,7 +558,7 @@ test("trailing carets survive truncation and toggle independently of filename li
       if (width > 0) assert(tui.stripTerminalSequences(line).endsWith(i === 0 ? "▾" : "▸"));
     }
   }
-  const clipped = a.view.render(24)[1];
+  const clipped = a.view.render(24).map(unmark)[1];
   assert(!tui.stripTerminalSequences(clipped).includes(path));
   a.view.invalidate(); // Hit targets still refer to the last painted frame.
   a.view.handleMouse(mouse(tui.visibleWidth("  ✓ Read "), 1));
@@ -574,33 +577,54 @@ test("command headers use a status-coloured dollar without ticks or crosses", as
   const a = f.call("bash", "dollar-a", { command: "npm test" }, false);
   const neutral = themes.theme.fg("muted", "$");
   assert.equal(plain(a.view), "$ npm test ▸");
-  assert(a.view.render(160)[0].startsWith(`${neutral} npm test `));
+  assert(a.view.render(160).map(unmark)[0].startsWith(`${neutral} npm test `));
   a.result(result("streaming"), false, true);
-  assert(a.view.render(160)[0].startsWith(`${neutral} npm test `));
+  assert(a.view.render(160).map(unmark)[0].startsWith(`${neutral} npm test `));
   a.result(result("passed"));
-  assert(a.view.render(160)[0].startsWith(`${paint(themes.theme, "green", "$")} npm test `));
+  assert(
+    a.view
+      .render(160)
+      .map(unmark)[0]
+      .startsWith(`${paint(themes.theme, "green", "$")} npm test `),
+  );
   a.result(result("failed"), true);
   assert.equal(plain(a.view), "$ npm test ▸");
-  assert(a.view.render(160)[0].startsWith(`${paint(themes.theme, "red", "$")} npm test `));
+  assert(
+    a.view
+      .render(160)
+      .map(unmark)[0]
+      .startsWith(`${paint(themes.theme, "red", "$")} npm test `),
+  );
   a.result(result("passed"));
   const b = f.call("bash", "dollar-b", { command: "npm run lint" }, false);
   assert.equal(plain(a.view), "$ Run 2 commands ▸");
-  assert(a.view.render(160)[0].startsWith(`${neutral} Run `));
+  assert(a.view.render(160).map(unmark)[0].startsWith(`${neutral} Run `));
   b.result(result("streaming"), false, true);
   assert.equal(plain(a.view), "$ Running 2 commands ▸");
-  assert(a.view.render(160)[0].startsWith(`${neutral} Running `));
+  assert(a.view.render(160).map(unmark)[0].startsWith(`${neutral} Running `));
   b.result(result("passed"));
   assert.equal(plain(a.view), "$ Ran 2 commands ▸");
-  assert(a.view.render(160)[0].startsWith(`${paint(themes.theme, "green", "$")} Ran `));
+  assert(
+    a.view
+      .render(160)
+      .map(unmark)[0]
+      .startsWith(`${paint(themes.theme, "green", "$")} Ran `),
+  );
   b.result(result("failed"), true);
   assert.equal(plain(a.view), "$ Ran 2 commands ▸", "no failure count; closed groups are one line");
   assert(
-    a.view.render(160)[0].startsWith(`${paint(themes.theme, "green", "$")} Ran `),
+    a.view
+      .render(160)
+      .map(unmark)[0]
+      .startsWith(`${paint(themes.theme, "green", "$")} Ran `),
     "one failure does not turn the group red",
   );
   f.expand(true);
   const headers = () =>
-    a.view.render(160).filter((line) => tui.stripTerminalSequences(line).endsWith("▾"));
+    a.view
+      .render(160)
+      .map(unmark)
+      .filter((line) => tui.stripTerminalSequences(line).endsWith("▾"));
   assert.equal(headers().length, 3);
   for (const [i, tone] of (["green", "green", "red"] as const).entries()) {
     const prefix = `${i ? "  " : ""}${paint(themes.theme, tone, "$")} `;
@@ -682,7 +706,10 @@ test("writes count the lines they wrote, in rows and per-kind group totals", asy
   a.result(result("written"));
   assert.equal(plain(a.view), "✓ Wrote a.ts +3 ▸");
   assert(
-    a.view.render(160)[0].includes(paint(themes.theme, "green", "+3")),
+    a.view
+      .render(160)
+      .map(unmark)[0]
+      .includes(paint(themes.theme, "green", "+3")),
     "rows show the count in green",
   );
   const empty = f.call("write", "write-empty", { path: "empty.ts", content: "" });
@@ -690,7 +717,7 @@ test("writes count the lines they wrote, in rows and per-kind group totals", asy
   const b = f.call("write", "write-b", { path: "b.ts", content: "x\ny" });
   b.result(result("written"));
   assert.equal(plain(a.view), "✓ Wrote 3 files (+5) ▸", "empty writes add nothing");
-  const header = a.view.render(160)[0];
+  const header = a.view.render(160).map(unmark)[0];
   const dim = (text: string) => themes.theme.fg("dim", text);
   assert(
     header.includes(`${dim("(")}+5${dim(")")}`),
@@ -765,7 +792,7 @@ test("edit groups expand into clickable files with independent diffs and global 
   const b = f.call("edit", "expand-edit-b", { path: "b.txt" });
   b.result(result("done", { diff: "+1 AFTER_B" }));
   assert.equal(plain(a.view), "✓ Edited 2 files (+2 −1) ▸");
-  const header = a.view.render(160)[0];
+  const header = a.view.render(160).map(unmark)[0];
   // Group summaries: grey brackets around plain counts; rows keep green/red counts.
   const dim = (text: string) => themes.theme.fg("dim", text);
   assert(header.includes(`${dim("(")}+2 −1${dim(")")}`));
@@ -775,7 +802,7 @@ test("edit groups expand into clickable files with independent diffs and global 
     plain(a.view),
     `✓ Edited 2 files (+2 −1) ▾\n  ✓ Edited ${path} +1 −1 ▸\n  ✓ Edited b.txt +1 ▸`,
   );
-  const row = a.view.render(160)[1];
+  const row = a.view.render(160).map(unmark)[1];
   assert(
     row.includes(paint(themes.theme, "green", "+1")) &&
       row.includes(paint(themes.theme, "red", "−1")),
@@ -786,7 +813,7 @@ test("edit groups expand into clickable files with independent diffs and global 
       if (width) assert(tui.stripTerminalSequences(line).endsWith(i ? "▸" : "▾"));
     }
   }
-  const clipped = a.view.render(24)[1];
+  const clipped = a.view.render(24).map(unmark)[1];
   a.view.invalidate();
   a.view.handleMouse(mouse(tui.visibleWidth("  ✓ Edited "), 1));
   assert.deepEqual(opened, { path, cwd: f.dir, tool: "edit", accepted: true });
@@ -811,7 +838,12 @@ test("failed edits are hidden in closed groups, red only when all failed, and ad
   const b = f.call("edit", "failed-edit", { path: "bad.txt" });
   b.result(result("EDIT_ERROR_BODY", { diff: "+1 NOT_APPLIED" }), true);
   assert.equal(plain(a.view), "✓ Edited 2 files (+1 −1) ▸");
-  assert(a.view.render(160)[0].startsWith(paint(themes.theme, "green", "✓")));
+  assert(
+    a.view
+      .render(160)
+      .map(unmark)[0]
+      .startsWith(paint(themes.theme, "green", "✓")),
+  );
   assert.equal(plain(b.view), "");
   a.view.handleMouse(mouse(0));
   assert.match(plain(a.view), /\n {2}✗ Edit bad.txt ▸$/);
@@ -824,7 +856,12 @@ test("failed edits are hidden in closed groups, red only when all failed, and ad
   assert.equal(plain(a.view), "✓ Edited 2 files (+1 −1) ▸");
   a.result(result("ALSO_FAILED"), true);
   assert.equal(plain(a.view), "✗ Edit 2 files ▸", "all-failed edits did not happen");
-  assert(a.view.render(160)[0].startsWith(paint(themes.theme, "red", "✗")));
+  assert(
+    a.view
+      .render(160)
+      .map(unmark)[0]
+      .startsWith(paint(themes.theme, "red", "✗")),
+  );
 });
 
 test("output padding follows Pi's live setting for cached headers, bodies, clicks and images", async (t) => {
@@ -1166,4 +1203,64 @@ test("in-runtime reconstruction preserves rows and local expansion without editi
     assert.equal(plain(f.call("edit", "b", { path: "b.txt" }).view), "");
   }
   assert.equal(JSON.stringify(entries), before, "grouping is presentation-only");
+});
+
+test("calls in progress show Pi's working spinner while Pi works, and stop spinning when done", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "Date"] });
+  const f = await fixture({ busy: true });
+  const read = f.call("read", "spin-read", { path: "a.txt" });
+  assert.equal(plain(read.view), "⠋ Reading a.txt ▸");
+  // The frame follows the clock, in Pi's accent colour, and a timer redraws the row.
+  t.mock.timers.tick(80);
+  assert.equal(plain(read.view), "⠙ Reading a.txt ▸");
+  assert(f.invalidations > 0, "the timer asks Pi to redraw");
+  assert(
+    read.view.render(160).map(unmark)[0].startsWith(themes.theme.fg("accent", "⠙")),
+    "the spinner uses Pi's accent colour",
+  );
+
+  // A running command spins instead of its muted $, then shows the green $ when done.
+  const command = f.call("bash", "spin-bash", { command: "npm test" });
+  assert.match(plain(read.view), /^⠙ Reading 1 file, running 1 command ▸$/);
+  read.result(result("done"));
+  command.result(result("ok"));
+  assert.equal(plain(read.view), "✓ Read 1 file, ran 1 command ▸");
+  const settled = f.invalidations;
+  t.mock.timers.tick(800);
+  assert.equal(f.invalidations, settled, "no redraws once nothing is in progress");
+
+  // When Pi is idle, a call left in progress rests on the muted ellipsis.
+  await f.pi.event("user_bash", {}, f.ctx); // a user ! command starts a new group
+  const left = f.call("read", "spin-left", { path: "b.txt" });
+  f.setBusy(false);
+  assert.equal(plain(left.view), "… Reading b.txt ▸");
+  t.mock.timers.tick(80);
+  const idle = f.invalidations;
+  t.mock.timers.tick(800);
+  assert.equal(f.invalidations, idle, "the timer stopped when Pi went idle");
+});
+
+test("multi-step commands are drawn as Amp draws them", async () => {
+  const f = await fixture();
+  const row = f.call("bash", "steps", {
+    command: "cd ~/dbt/cdl && jj status && printf 'conflicts:\\n' && jj resolve --list",
+  });
+  row.result(result("Working copy clean\n\nCommand exited with code 2"), true);
+  assert.equal(
+    plain(row.view),
+    [
+      "$ jj status && \\",
+      "    printf 'conflicts:\\n' && \\",
+      "    jj resolve --list (in ~/dbt/cdl) (exit code: 2) ▸",
+    ].join("\n"),
+  );
+  const [first] = row.view.render(160).map(unmark);
+  assert(first.startsWith(paint(themes.theme, "red", "$")), "a failed command's $ is red");
+  assert(first.includes(themes.theme.bold("jj")), "command names are bold");
+
+  // The header shows the whole command, so the output does not repeat it.
+  f.expand(true);
+  const expanded = plain(row.view).split("\n");
+  assert.equal(expanded[3]?.trim(), "Working copy clean");
+  assert(!expanded.some((line) => line.trim().startsWith("$ cd")), "no repeated command");
 });
