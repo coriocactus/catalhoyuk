@@ -7,9 +7,6 @@
   "fullscreenExitOutput": "resume-hint",
   "editorPaddingX": 1,
   "outputPad": 1,
-  "markdown": {
-    "codeBlockIndent": "    "
-  },
   "steeringMode": "all",
   "followUpMode": "one-at-a-time",
   "treeFilterMode": "default",
