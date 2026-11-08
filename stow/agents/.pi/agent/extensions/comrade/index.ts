@@ -1,6 +1,6 @@
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { Usage } from "@earendil-works/pi-ai";
 import {
   DEFAULT_MAX_BYTES,
@@ -26,11 +26,13 @@ import {
 import {
   type Card,
   card,
+  cutOff,
   formatCost,
   formatDuration,
   header,
   type Look,
   type Phase,
+  runLine,
   taskLine,
 } from "./view.ts";
 import { emptyWork, summary as workSummary } from "./work.ts";
@@ -44,6 +46,8 @@ const ADOPT_MS = 10_000;
 /** Pi's working spinner: the frames and interval of pi-tui's Loader, as mirage draws them. */
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const SPINNER_MS = 80;
+/** Lines of an answer written to output that the calling model still reads. */
+const WRITTEN_HEAD = 20;
 /** The current frame, from the clock, so every spinning row shows the same one. */
 const frame = () => SPINNER[Math.floor(Date.now() / SPINNER_MS) % SPINNER.length];
 const MESSAGE = "comrade";
@@ -77,6 +81,28 @@ const parameters = Type.Object({
         '"edit" and "write" to let it change files, or "bash" to run commands. [] for none.',
     }),
   ),
+  files: Type.Optional(
+    Type.Array(Type.String(), {
+      description:
+        "Files to attach, text or images. Each follows the task as a <file name=...> block, so " +
+        "the comrade has them without reading. Paths resolve from the working directory.",
+    }),
+  ),
+  output: Type.Optional(
+    Type.String({
+      description:
+        "Write the whole answer to this file and return only its first lines and the path. " +
+        "Use when the answer feeds a file or a build rather than you.",
+    }),
+  ),
+  timeout: Type.Optional(
+    Type.Integer({
+      minimum: 1,
+      description:
+        "Seconds before the comrade is stopped. The result then says it timed out and gives " +
+        "any text it had. Default: no limit.",
+    }),
+  ),
   background: Type.Optional(
     Type.Boolean({
       description:
@@ -88,7 +114,6 @@ const parameters = Type.Object({
 
 export interface Details extends Card {
   usage: Usage;
-  stopReason?: string;
   exitCode?: number | null;
   /** Stopped with Esc, rather than failed. */
   stopped?: boolean;
@@ -151,6 +176,8 @@ function summary(request: Request, progress: Progress): Details {
     model: progress.model ?? `${request.provider}/${request.model}`,
     thinking: progress.thinking ?? request.thinking,
     tools: request.tools,
+    // Jobs adopted across a /reload from an older version have no files.
+    ...(request.files?.length ? { files: request.files.length } : {}),
     turns,
     calls,
     work,
@@ -186,6 +213,58 @@ function limit(answer: string): { text: string; file?: string } {
   writeFileSync(file, answer, { mode: 0o600 });
   const shown = `${cut.outputLines} of ${cut.totalLines} lines (${formatSize(cut.outputBytes)} of ${formatSize(cut.totalBytes)})`;
   return { text: `${cut.content}\n\n[Answer truncated: ${shown}. Full answer: ${file}]`, file };
+}
+
+/** Write the answer where the caller asked, and say so with its first lines. */
+function written(answer: string, file: string): string {
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, answer);
+  const lines = answer.split("\n").length;
+  const size = `${lines} line${lines === 1 ? "" : "s"}, ${formatSize(Buffer.byteLength(answer))}`;
+  if (lines <= WRITTEN_HEAD) return `Answer written to ${file} (${size}):\n\n${answer}`;
+  const head = truncateHead(answer, { maxLines: WRITTEN_HEAD, maxBytes: DEFAULT_MAX_BYTES });
+  return `Answer written to ${file} (${size}). First ${head.outputLines} lines:\n\n${head.content}`;
+}
+
+interface Reply {
+  text: string;
+  isError: boolean;
+  /** The file holding the whole answer. */
+  file?: string;
+}
+
+/**
+ * What the calling model reads. It never sees the row, so an answer that is not final says so
+ * on its first line, and a run line ends every result of a comrade that ran.
+ */
+function respond(request: Request, outcome: Outcome, details: Card, durationMs: number): Reply {
+  if (outcome.aborted && !outcome.timedOut) return { text: "Comrade stopped.", isError: true };
+  const run = outcome.turns || outcome.calls ? `\n\n${runLine(details, durationMs)}` : "";
+  const limitText = formatDuration(request.timeoutMs ?? 0);
+  if (outcome.timedOut && !outcome.text)
+    return { text: `Comrade timed out after ${limitText} and was stopped.${run}`, isError: true };
+  const failed = outcome.timedOut ? undefined : failure(outcome);
+  if (failed !== undefined) return { text: failed + run, isError: true };
+  const state = outcome.timedOut
+    ? `[Comrade timed out after ${limitText} and was stopped. Its last text follows. It is not a final answer.]`
+    : cutOff(details)
+      ? `[Comrade's answer is cut off: its last turn ended with stopReason "${outcome.stopReason}"${outcome.stopReason === "length" ? ", the model's output token limit" : ""}. It is not a final answer.]`
+      : "";
+  let body: string;
+  let file: string | undefined;
+  let isError = outcome.timedOut;
+  if (request.output)
+    try {
+      body = written(outcome.text, request.output);
+      file = request.output;
+    } catch (error) {
+      const shown = limit(outcome.text);
+      body = `Could not write the answer to ${request.output}: ${error instanceof Error ? error.message : error}\n\n${shown.text}`;
+      file = shown.file;
+      isError = true;
+    }
+  else ({ text: body, file } = limit(outcome.text));
+  return { text: [state, body].filter(Boolean).join("\n\n") + run, isError, file };
 }
 
 /** Message text: one header line, then the body. The renderer shows the body under its own card. */
@@ -262,6 +341,7 @@ export function register(pi: ExtensionAPI, invocation: Invocation): void {
       ...summary(job.request, outcome),
       stopReason: outcome.stopReason,
       exitCode: outcome.exitCode,
+      ...(outcome.timedOut ? { timedOut: true } : {}),
       id: job.id,
       task: job.task,
       durationMs: Date.now() - job.started,
@@ -271,10 +351,12 @@ export function register(pi: ExtensionAPI, invocation: Invocation): void {
     if (job.stoppedBy === "user")
       // The user stopped it: tell the agent without starting a turn.
       return deliver({ ...base, status: "stopped" }, "Stopped by the user.", false);
-    const failed = failure(outcome);
-    if (failed !== undefined) return deliver({ ...base, status: "failed" }, failed, true);
-    const { text, file } = limit(outcome.text);
-    deliver({ ...base, status: "finished", answer: file }, text, true);
+    const reply = respond(job.request, outcome, base, base.durationMs);
+    deliver(
+      { ...base, status: reply.isError ? "failed" : "finished", answer: reply.file },
+      reply.text,
+      true,
+    );
   }
 
   function start(request: Request): Job {
@@ -483,9 +565,11 @@ export function register(pi: ExtensionAPI, invocation: Invocation): void {
       "Run a task in a fresh one-shot pi process and return its final answer. The comrade sees " +
       "nothing of this conversation. By default the call waits for the answer and shows live " +
       "progress, and several comrade calls in one message run in parallel. With background: true " +
-      "it returns at once and the answer arrives later as a [comrade #N …] message. Answers over " +
-      `${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)} are truncated, and the full ` +
-      "answer is saved to a file.",
+      "it returns at once and the answer arrives later as a [comrade #N …] message. files attaches " +
+      "files to the task, output writes the answer to a file, and timeout stops the comrade. " +
+      `Answers over ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)} are truncated, ` +
+      "and the full answer is saved to a file. A run line ends the result: model, turns, calls, " +
+      "tokens, cost, duration, and why it stopped.",
     promptSnippet: "Delegate a self-contained task to a fresh pi agent and get its answer",
     promptGuidelines: [
       "A comrade sees none of this conversation: put every path, constraint, and the expected answer format in comrade's task.",
@@ -493,6 +577,9 @@ export function register(pi: ExtensionAPI, invocation: Invocation): void {
       "A background comrade's answer arrives as a later [comrade #N …] message. Never guess it, and use the comrades tool to check on background comrades or stop one whose answer you no longer need.",
       "When you finish your other work while background comrades still run, end your reply as usual: your turn then waits for them, and continues with each answer as it arrives.",
       'comrade is read-only by default (read, grep, find, ls). Add "edit" and "write" to its tools when it must change files, or "bash" when it must run commands.',
+      "When a comrade needs more than a few files, pass them in comrade's files and set its tools to []. A comrade left to read a large set of files can loop.",
+      "When comrade's answer feeds a file or a build, set output and ask the comrade for the exact text, with no fences or commentary.",
+      "A comrade result whose first line starts [Comrade's answer is cut off or [Comrade timed out is not a finished answer.",
     ],
     parameters,
 
@@ -520,6 +607,7 @@ export function register(pi: ExtensionAPI, invocation: Invocation): void {
         });
       // Show the row, and the model it will use, before the comrade has started.
       update(emptyProgress());
+      const began = Date.now();
       const outcome = await run(invocation, request, signal, update).finally(() =>
         returned.add(toolCallId),
       );
@@ -527,23 +615,23 @@ export function register(pi: ExtensionAPI, invocation: Invocation): void {
         ...summary(request, outcome),
         stopReason: outcome.stopReason,
         exitCode: outcome.exitCode,
-        ...(outcome.aborted ? { stopped: true } : {}),
+        ...(outcome.aborted && !outcome.timedOut ? { stopped: true } : {}),
+        ...(outcome.timedOut ? { timedOut: true } : {}),
       };
-      const failed = failure(outcome);
-      if (failed !== undefined)
+      const reply = respond(request, outcome, details, Date.now() - began);
+      if (reply.isError)
         return {
-          content: [{ type: "text", text: failed }],
-          details,
+          content: [{ type: "text", text: reply.text }],
+          details: { ...details, answer: reply.file },
           usage: outcome.usage,
           isError: true,
         };
-      const { text, file } = limit(outcome.text);
       const note = params.background
         ? "(Ran in the foreground: background comrades need an interactive session.)\n\n"
         : "";
       return {
-        content: [{ type: "text", text: note + text }],
-        details: { ...details, answer: file },
+        content: [{ type: "text", text: note + reply.text }],
+        details: { ...details, answer: reply.file },
         usage: outcome.usage,
       };
     },

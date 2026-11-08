@@ -1,5 +1,8 @@
 // Turn the model's comrade arguments into a run request, rejecting what the comrade
 // could not use before it starts.
+import { statSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import type { Request } from "./run.ts";
 
@@ -17,6 +20,29 @@ export interface Arguments {
   model?: string;
   thinking?: Thinking;
   tools?: string[];
+  files?: string[];
+  output?: string;
+  /** Seconds. */
+  timeout?: number;
+}
+
+/** A path as the caller wrote it, from the working directory, with `~` as the home directory. */
+export function absolute(path: string, cwd: string): string {
+  const home = path === "~" || path.startsWith("~/") ? join(homedir(), path.slice(1)) : path;
+  return resolve(cwd, home);
+}
+
+/** Files to attach. Pi would exit on a missing one, and cannot attach a directory. */
+export function resolveFiles(requested: string[] | undefined, cwd: string): string[] {
+  const files = (requested ?? []).map((name) => {
+    const file = absolute(name, cwd);
+    const stats = statSync(file, { throwIfNoEntry: false });
+    if (!stats) throw new Error(`File "${name}" for comrade does not exist: ${file}.`);
+    if (!stats.isFile())
+      throw new Error(`"${name}" is not a file. Pass comrade files, not directories.`);
+    return file;
+  });
+  return [...new Set(files)];
 }
 
 /** The thinking level a `model:level` name carries, as `pi --model` reads it. */
@@ -82,6 +108,16 @@ export function resolveModel(
   );
 }
 
+/** Where to write the answer. Its directory is created when the answer is written. */
+function resolveOutput(requested: string | undefined, cwd: string): string | undefined {
+  if (requested === undefined) return undefined;
+  if (!requested.trim()) throw new Error("comrade's output needs a file path.");
+  const file = absolute(requested, cwd);
+  if (statSync(file, { throwIfNoEntry: false })?.isDirectory())
+    throw new Error(`comrade's output "${requested}" is a directory. Pass a file path.`);
+  return file;
+}
+
 /** The comrade runs exactly the model named, under its own provider. */
 export function prepare(args: Arguments, ctx: ExtensionToolContext, pi: ExtensionAPI): Request {
   if (!args.task.trim()) throw new Error("comrade needs a task.");
@@ -95,6 +131,9 @@ export function prepare(args: Arguments, ctx: ExtensionToolContext, pi: Extensio
     model: chosen.model,
     thinking: args.thinking ?? chosen.thinking ?? ctx.thinkingLevel ?? pi.getThinkingLevel(),
     tools: resolveTools(args.tools, pi),
+    files: resolveFiles(args.files, ctx.cwd),
+    output: resolveOutput(args.output, ctx.cwd),
+    timeoutMs: args.timeout === undefined ? undefined : args.timeout * 1000,
     cwd: ctx.cwd,
     trusted: ctx.isProjectTrusted(),
   };

@@ -21,6 +21,12 @@ export interface Request {
   model: string;
   thinking: string;
   tools: string[];
+  /** Absolute paths, attached to the prompt after the task. */
+  files: string[];
+  /** Absolute path the whole answer is written to. */
+  output?: string;
+  /** Stops the comrade after this long. */
+  timeoutMs?: number;
   cwd: string;
   trusted: boolean;
 }
@@ -44,6 +50,8 @@ export interface Outcome extends Progress {
   stderr: string;
   exitCode: number | null;
   aborted: boolean;
+  /** Stopped because it ran past its timeout, not by Esc or the comrades tool. */
+  timedOut: boolean;
 }
 
 export function piArgs(request: Request): string[] {
@@ -60,6 +68,8 @@ export function piArgs(request: Request): string[] {
     ...(request.tools.length ? ["--tools", request.tools.join(",")] : ["--no-tools"]),
     // Print mode cannot ask, so the comrade inherits the caller's trust decision.
     request.trusted ? "--approve" : "--no-approve",
+    // Pi appends each file to the stdin task as a <file name="..."> block.
+    ...request.files.map((file) => `@${file}`),
   ];
 }
 
@@ -97,6 +107,7 @@ export function run(
     stderr: "",
     exitCode: null,
     aborted: Boolean(signal?.aborted),
+    timedOut: false,
   };
   if (state.aborted) return Promise.resolve(state);
   const ledger = new Ledger(request.cwd);
@@ -152,6 +163,7 @@ export function run(
     });
     let buffer = "";
     let killer: ReturnType<typeof setTimeout> | undefined;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
     const abort = () => {
       state.aborted = true;
       child.kill("SIGTERM");
@@ -165,12 +177,20 @@ export function run(
       settled = true;
       signal?.removeEventListener("abort", abort);
       clearTimeout(killer);
+      clearTimeout(deadline);
       // Calls still running were cut off. The final record has no current call.
       ledger.close();
       state.work = ledger.snapshot(false);
       resolve(state);
     };
     signal?.addEventListener("abort", abort, { once: true });
+    if (request.timeoutMs !== undefined) {
+      deadline = setTimeout(() => {
+        state.timedOut = true;
+        abort();
+      }, request.timeoutMs);
+      deadline.unref();
+    }
 
     // Records are split on LF only; the decoder keeps multibyte characters whole across chunks.
     child.stdout.setEncoding("utf8");

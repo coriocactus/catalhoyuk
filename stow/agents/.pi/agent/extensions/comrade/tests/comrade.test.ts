@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { type TestContext, test } from "node:test";
@@ -188,13 +188,17 @@ const text = (result: Result) => {
   return first.text;
 };
 const details = (result: Result) => result.details as Details;
+/** The run line that ends the result of every comrade that ran. */
+const RUN = /\n\n\[comrade: [^\n]*\]$/;
+/** A result's text without its run line. */
+const answer = (result: Result) => text(result).replace(RUN, "");
 
 test("comrade sends the task verbatim on stdin and the run settings as Pi flags", async (t) => {
   const { call, cwd, updates } = fixture(t, "echo");
   const task = `@notes.md -- $(rm -rf ~) "double" 'single' ✓ é\n  second line`;
   const result = await call({ task });
   assert.equal(result.isError, undefined);
-  const echoed = JSON.parse(text(result));
+  const echoed = JSON.parse(answer(result));
   assert.equal(echoed.task, task);
   assert.deepEqual(echoed.args, [
     "--mode",
@@ -248,7 +252,7 @@ test("explicit settings override the caller's; an empty tool list means no tools
     thinking: "low",
     tools: [],
   });
-  const { args } = JSON.parse(text(result));
+  const { args } = JSON.parse(answer(result));
   assert.deepEqual(args.slice(3), [
     "--provider",
     "anthropic",
@@ -287,7 +291,7 @@ test("a long answer is truncated and saved in full to a private file", async (t)
   t.after(() => rmSync(dirname(file), { recursive: true, force: true }));
   assert.match(text(result), /^line 1\n/);
   assert.match(
-    text(result),
+    answer(result),
     /\[Answer truncated: 2000 of 3000 lines .*Full answer: .*answer\.md\]$/,
   );
   assert.equal(readFileSync(file, "utf8").split("\n").length, 3000);
@@ -303,7 +307,7 @@ test("failures are errors that say why", async (t) => {
   for (const [scenario, message, options] of outcomes) {
     const result = await fixture(t, scenario, options).call({ task: "✓" });
     assert.equal(result.isError, true, scenario);
-    assert.match(text(result), message, scenario);
+    assert.match(answer(result), message, scenario);
   }
 });
 
@@ -583,7 +587,7 @@ test("the model is always provider/id, and the comrade runs it under that provid
   const { call } = fixture(t, "echo");
   const flags = async (model: string, thinking?: string) => {
     const result = await call({ task: "✓", model, thinking });
-    const { args } = JSON.parse(text(result));
+    const { args } = JSON.parse(answer(result));
     return { args: args.slice(3, args.indexOf("--tools")), shown: details(result).model };
   };
   // Anthropic's model, even though OpenRouter's id for it is the same text.
@@ -637,7 +641,7 @@ test("bare or unknown model names are refused, with the names to use", async (t)
 
 test("tool patterns must match a tool this Pi has", async (t) => {
   const { call } = fixture(t, "echo");
-  const { args } = JSON.parse(text(await call({ task: "✓", tools: ["gr*", "bash"] })));
+  const { args } = JSON.parse(answer(await call({ task: "✓", tools: ["gr*", "bash"] })));
   assert.deepEqual(args.slice(9, 11), ["--tools", "gr*,bash"]);
 });
 
@@ -865,6 +869,147 @@ test("jobs parked for a reload that nothing adopts are stopped", async (t) => {
 
 test("a provider id may contain a slash", async (t) => {
   const { call } = fixture(t, "echo");
-  const { args } = JSON.parse(text(await call({ task: "✓", model: "corp/proxy/big-model" })));
+  const { args } = JSON.parse(answer(await call({ task: "✓", model: "corp/proxy/big-model" })));
   assert.deepEqual(args.slice(3, 7), ["--provider", "corp/proxy", "--model", "big-model"]);
+});
+
+/** A finished row, as Pi draws it after the call returns. */
+const row = (tool: Tool, result: Result, task: string, expanded = false) =>
+  render(
+    tool.renderResult?.(
+      result,
+      { expanded, isPartial: false },
+      themes.theme,
+      fake<RenderContext>({
+        args: { task },
+        state: {},
+        isPartial: false,
+        expanded,
+        isError: Boolean(result.isError),
+        durationMs: 1000,
+        invalidate() {},
+      }),
+    ),
+  );
+
+test("files follow the task as @file arguments, resolved from the working directory", async (t) => {
+  const { call, cwd } = fixture(t, "echo");
+  writeFileSync(join(cwd, "notes.md"), "notes");
+  // The same file twice, and one named from the home directory.
+  const fromHome = standIn.startsWith(`${homedir()}/`)
+    ? `~${standIn.slice(homedir().length)}`
+    : standIn;
+  const result = await call({ task: "✓", tools: [], files: ["notes.md", fromHome, "./notes.md"] });
+  const { args, task } = JSON.parse(answer(result));
+  assert.equal(task, "✓", "the task stays on stdin");
+  assert.deepEqual(args.slice(-4), [
+    "--no-tools",
+    "--approve",
+    `@${join(cwd, "notes.md")}`,
+    `@${standIn}`,
+  ]);
+  assert.equal(details(result).files, 2);
+  assert.match(row(tool(t), result, "✓", true), /· no tools · 2 files attached ·/);
+});
+
+/** A tool to render with: rendering does not depend on the scenario. */
+const tool = (t: TestContext) => fixture(t, "echo").tool;
+
+test("missing files, directories and bad output paths are rejected before anything starts", async (t) => {
+  const { call, cwd } = fixture(t, "echo", { command: "/nonexistent/pi" });
+  mkdirSync(join(cwd, "folder"));
+  const cases: [Record<string, unknown>, RegExp][] = [
+    [
+      { task: "x", files: ["missing.md"] },
+      /^Error: File "missing\.md" for comrade does not exist: .*\/missing\.md\.$/,
+    ],
+    [
+      { task: "x", files: ["folder"] },
+      /^Error: "folder" is not a file\. Pass comrade files, not directories\.$/,
+    ],
+    [
+      { task: "x", output: "folder" },
+      /^Error: comrade's output "folder" is a directory\. Pass a file path\.$/,
+    ],
+    [{ task: "x", output: " " }, /^Error: comrade's output needs a file path\.$/],
+  ];
+  for (const [params, error] of cases) await assert.rejects(call(params), error);
+});
+
+test("a run line ends the result for the calling model, and the row does not repeat it", async (t) => {
+  const { tool, call } = fixture(t, "busy");
+  const result = await call({ task: "✓" });
+  assert.match(
+    text(result),
+    /\n\n\[comrade: anthropic\/claude-opus-5-5:xhigh · 1 turn · 11 calls · read 3 files, ran 1 search, edited 1 file \(\+2 −1\), wrote 1 file \(\+2\), ran 4 commands · ↑150 ↓10 · \$0\.01 · \d+\.\ds · stop\]$/,
+  );
+  assert.match(row(tool, result, "✓", true), /\n\nDone\.$/);
+  // Failures that ran end with it too.
+  const failed = await fixture(t, "error").call({ task: "✓" });
+  assert.match(text(failed), /^Comrade failed: 529 overloaded\n\n\[comrade: .* · error\]$/);
+});
+
+test("an answer cut off at the output limit says so first, and is not an error", async (t) => {
+  const { tool, call } = fixture(t, "length");
+  const result = await call({ task: "✓" });
+  assert.equal(result.isError, undefined);
+  assert.match(
+    text(result),
+    /^\[Comrade's answer is cut off: its last turn ended with stopReason "length", the model's output token limit\. It is not a final answer\.\]\n\nThe first half of an\n\n\[comrade: .* · length\]$/,
+  );
+  assert.equal(details(result).stopReason, "length");
+  assert.equal(row(tool, result, "✓"), "✓ Comrade  ✓  cut off · $0.01 · 1.0s");
+  assert.match(row(tool, result, "✓", true), /\n\nThe first half of an$/);
+});
+
+test("output writes the whole answer to its file and returns the first lines and the path", async (t) => {
+  const long = fixture(t, "long");
+  const result = await long.call({ task: "x", output: "out/answer.md" });
+  const file = join(long.cwd, "out", "answer.md");
+  assert.equal(
+    readFileSync(file, "utf8"),
+    Array.from({ length: 3000 }, (_, i) => `line ${i + 1}`).join("\n"),
+  );
+  assert.match(
+    answer(result),
+    /^Answer written to .*\/out\/answer\.md \(3000 lines, [^)]+\)\. First 20 lines:\n\nline 1\n[\s\S]*\nline 20$/,
+  );
+  assert.equal(details(result).answer, file, "the row names the file; nothing is saved elsewhere");
+
+  const short = fixture(t, "echo");
+  const echoed = await short.call({ task: "✓", output: `${short.cwd}/a.md` });
+  const written = readFileSync(join(short.cwd, "a.md"), "utf8");
+  assert.equal(JSON.parse(written).task, "✓");
+  // A short answer is returned whole after the path.
+  assert(answer(echoed).startsWith(`Answer written to ${join(short.cwd, "a.md")} (1 line, `));
+  assert(answer(echoed).endsWith(`):\n\n${written}`));
+});
+
+test("a comrade past its timeout is stopped, and its last text is marked as not final", async (t) => {
+  const slow = fixture(t, "slow");
+  const started = Date.now();
+  const result = await slow.call({ task: "x", timeout: 1 });
+  assert(Date.now() - started < 4000, "stopped by SIGTERM, not the SIGKILL fallback");
+  assert.equal(result.isError, true);
+  assert.match(
+    text(result),
+    /^\[Comrade timed out after 1\.0s and was stopped\. Its last text follows\. It is not a final answer\.\]\n\nNotes so far\.\n\n\[comrade: .* · timed out\]$/,
+  );
+  assert.equal(details(result).timedOut, true);
+  assert.equal(details(result).stopped, undefined, "a timeout is not an Esc");
+  assert.equal(row(slow.tool, result, "x"), "✗ Comrade  x  timed out · $0.01 · 1.0s");
+  assert.match(row(slow.tool, result, "x", true), /\n\nNotes so far\.$/);
+
+  const silent = await fixture(t, "hang").call({ task: "x", timeout: 1 });
+  assert.match(text(silent), /^Comrade timed out after 1\.0s and was stopped\.\n\n\[comrade: /);
+});
+
+test("a background comrade past its timeout is delivered as failed", async (t) => {
+  const { call, delivered } = fixture(t, "slow");
+  await call({ task: "x", background: true, timeout: 1 });
+  const [message] = await delivered(1);
+  assert.deepEqual(message[1], { deliverAs: "followUp", triggerTurn: true });
+  assert.equal(delivery(message).status, "failed");
+  assert.equal(delivery(message).timedOut, true);
+  assert.match(body(message), /^\[comrade #1 failed\] x\n\n\[Comrade timed out after 1\.0s/);
 });

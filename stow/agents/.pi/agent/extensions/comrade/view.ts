@@ -31,8 +31,14 @@ export interface Card {
     cacheWrite: number;
     cost: { total: number };
   };
-  /** The full answer's file, when the returned text was truncated. */
+  /** The full answer's file, when the returned text was truncated or written to output. */
   answer?: string;
+  /** How many files were attached to the task. */
+  files?: number;
+  /** Why the comrade's last turn ended: anything but `stop` means the answer is cut off. */
+  stopReason?: string;
+  /** Stopped because it ran past its timeout. */
+  timedOut?: boolean;
 }
 
 export type Phase = "running" | "finished" | "failed" | "stopped" | "background" | "lost";
@@ -52,6 +58,14 @@ export interface Look {
 // biome-ignore lint/suspicious/noControlCharactersInRegex: strip control bytes from task text.
 const CONTROLS = /[\x00-\x1f\x7f]+/g;
 const TRUNCATED = /\n\n\[Answer truncated: [^\]]*\]$/;
+/** The run line that ends the text the calling model reads. The row shows the run itself. */
+const RUN = /\n\n\[comrade: [^\n]*\]$/;
+/** The first line of an answer that is not final. The row's header says so instead. */
+const NOT_FINAL = /^\[Comrade(?:'s answer is cut off| timed out)[^\n]*\]\n\n/;
+
+/** Cut off: the answer ended for a reason other than finishing. */
+export const cutOff = (card: Card | undefined) =>
+  Boolean(card?.stopReason && card.stopReason !== "stop" && !card.timedOut);
 
 /** The task's first line, on one line, with the home directory as `~`. */
 export function taskLine(task: string): string {
@@ -140,10 +154,12 @@ export function header(look: Look, card: Card | undefined, theme: Theme): Compon
   ].filter(Boolean);
   const word =
     look.phase === "failed"
-      ? theme.fg("error", "failed")
+      ? theme.fg("error", card?.timedOut ? "timed out" : "failed")
       : look.phase === "stopped" || look.phase === "lost" || look.phase === "background"
         ? theme.fg("muted", look.phase)
-        : "";
+        : look.phase === "finished" && cutOff(card)
+          ? theme.fg("warning", "cut off")
+          : "";
   const trailer = [word, ...costs.map((part) => theme.fg("dim", part))]
     .filter(Boolean)
     .join(theme.fg("dim", " · "));
@@ -209,6 +225,7 @@ function metaLine(card: Card, theme: Theme): string {
     [
       card.thinking ? `${card.model}:${card.thinking}` : card.model,
       card.tools.length ? card.tools.join(", ") : "no tools",
+      ...(card.files ? [`${card.files} file${card.files === 1 ? "" : "s"} attached`] : []),
       ...(card.turns
         ? [
             `${card.turns} turn${card.turns === 1 ? "" : "s"}`,
@@ -217,6 +234,26 @@ function metaLine(card: Card, theme: Theme): string {
         : []),
     ].join(" · "),
   );
+}
+
+/**
+ * The run, for the calling model, which never sees the row:
+ * `[comrade: model:level · 2 turns · 1 call · explored 1 file · ↑300 ↓20 · $0.02 · 1.2s · stop]`.
+ */
+export function runLine(card: Card, durationMs: number): string {
+  const { usage } = card;
+  const work = card.work?.tallies.length ? summary(card.work.tallies) : "";
+  const parts = [
+    card.thinking ? `${card.model}:${card.thinking}` : card.model,
+    `${card.turns} turn${card.turns === 1 ? "" : "s"}`,
+    `${card.calls} call${card.calls === 1 ? "" : "s"}`,
+    work && work[0].toLowerCase() + work.slice(1),
+    `↑${formatTokens(usage.input + usage.cacheRead + usage.cacheWrite)} ↓${formatTokens(usage.output)}`,
+    formatCost(usage.cost.total),
+    formatDuration(durationMs),
+    card.timedOut ? "timed out" : (card.stopReason ?? ""),
+  ];
+  return `[comrade: ${parts.filter(Boolean).join(" · ")}]`;
 }
 
 /** Header, then (running) the progress line or (expanded) everything else. */
@@ -246,7 +283,7 @@ export function card(
   }
   if (lines.length) blocks.push(new Lines(lines));
 
-  const body = answer.replace(TRUNCATED, "").trim();
+  const body = answer.replace(RUN, "").replace(TRUNCATED, "").replace(NOT_FINAL, "").trim();
   const said = new Container();
   if (look.phase === "finished" && body)
     said.addChild(new Markdown(body, 0, 0, getMarkdownTheme()));
@@ -255,9 +292,7 @@ export function card(
       new Text(theme.fg(look.phase === "failed" ? "error" : "muted", look.note ?? body), 0, 0),
     );
   if (details?.answer)
-    said.addChild(
-      new Lines([theme.fg("muted", `Truncated · full answer: ${homePath(details.answer)}`)]),
-    );
+    said.addChild(new Lines([theme.fg("muted", `Full answer: ${homePath(details.answer)}`)]));
   if (said.children.length) blocks.push(said);
   for (const block of blocks) {
     view.addChild(new Spacer(1));

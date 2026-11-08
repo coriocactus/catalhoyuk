@@ -106,4 +106,14 @@ switch (scenario) {
     start("1", "read", { path: "/tmp/forever.md" });
     setInterval(() => {}, 1000);
     break;
+  case "length":
+    // The model reached its output token limit mid-sentence.
+    write(assistant([{ type: "text", text: "The first half of an" }], "length"));
+    break;
+  case "slow":
+    // Some text, then a call that never ends: a timeout finds text to return.
+    write(assistant([{ type: "text", text: "Notes so far." }], "toolUse"));
+    start("1", "read", { path: "/tmp/forever.md" });
+    setInterval(() => {}, 1000);
+    break;
 }
