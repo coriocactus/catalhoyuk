@@ -7,7 +7,7 @@ Local TypeScript extensions for the Pi terminal coding agent, installed at `~/.p
 - [`inspector`](inspector/README.md): Opens clicked tool filenames in Vim inside the same terminal, including while Pi is working.
 - `interupt`: Requires a second `Esc` press within 1.5 seconds to stop a running response. The first `Esc` arms interruption.
 - [`echo`](echo/README.md): Expands `@@name` tokens into Markdown snippets from `~/.pi/agent/echo/*.md` at the editor cursor.
-- [`comrade`](comrade/README.md): Provides a tool that delegates a self-contained task to a fresh one-shot Pi process and returns its final answer.
+- [`comrade`](comrade/README.md): Provides a tool that delegates a self-contained task to a fresh Pi process and returns its final answer, with live progress and follow-ups that continue the comrade's conversation.
 - [`prose`](prose/README.md): Draws Markdown code blocks without fence lines and keeps wrapped lines indented. In fullscreen, every selection stops at the text and starts at a row's content, and a copy joins wrapped rows back into their lines.
 - `shared`: Defines the internal filename-opening, read-only transcript presentation, and selection-marker protocols shared across extensions.
 

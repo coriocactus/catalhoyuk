@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { Usage } from "@earendil-works/pi-ai";
@@ -13,7 +13,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Box, Container, isKeyRelease, matchesKey, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { prepare, THINKING, type Thinking } from "./request.ts";
+import { type Previous, prepare, THINKING, type Thinking } from "./request.ts";
 import {
   emptyUsage,
   type Invocation,
@@ -22,8 +22,10 @@ import {
   type Progress,
   type Request,
   run,
+  starting,
 } from "./run.ts";
 import {
+  activityText,
   type Card,
   card,
   cutOff,
@@ -48,6 +50,8 @@ const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", 
 const SPINNER_MS = 80;
 /** Lines of an answer written to output that the calling model still reads. */
 const WRITTEN_HEAD = 20;
+/** How often a comrade checks that its parent is still running. */
+const ORPHAN_MS = 2000;
 /** The current frame, from the clock, so every spinning row shows the same one. */
 const frame = () => SPINNER[Math.floor(Date.now() / SPINNER_MS) % SPINNER.length];
 const MESSAGE = "comrade";
@@ -55,15 +59,22 @@ const MESSAGE = "comrade";
 const parameters = Type.Object({
   task: Type.String({
     description:
-      "Complete, self-contained instructions. The comrade sees nothing of this conversation: " +
-      "include every path, constraint, and the answer format you need.",
+      "Complete, self-contained instructions: every path, constraint, and the answer format " +
+      "you need. With to, only your next message to that comrade.",
   }),
+  to: Type.Optional(
+    Type.Integer({
+      minimum: 1,
+      description:
+        "Continue comrade #N's conversation: task is your next message to it. It keeps its brief, " +
+        "files, model, thinking, tools, cwd, and what it read and answered.",
+    }),
+  ),
   model: Type.Optional(
     Type.String({
       description:
-        "provider/id, exactly as Pi lists it, such as anthropic/claude-fable-5-1 or " +
-        "openrouter/google/gemini-4-argon, optionally with :thinking. Bare names are refused. " +
-        "Default: your current model.",
+        "provider/id exactly as Pi lists it, such as anthropic/claude-fable-5-1, optionally with " +
+        ":thinking. Bare names are refused. Default: your model, or the comrade's with to.",
     }),
   ),
   // Pi's StringEnum schema (a plain string enum, which every provider accepts), typed for TypeBox.
@@ -71,43 +82,48 @@ const parameters = Type.Object({
     Type.Unsafe<Thinking>({
       type: "string",
       enum: [...THINKING],
-      description: "Default: your current thinking level.",
+      description: "Default: your thinking level, or the comrade's with to.",
     }),
   ),
   tools: Type.Optional(
     Type.Array(Type.String(), {
       description:
-        'Tools the comrade may use. Default: read-only, ["read", "grep", "find", "ls"]. Add ' +
-        '"edit" and "write" to let it change files, or "bash" to run commands. [] for none.',
+        'Default: read-only, ["read", "grep", "find", "ls"], or the comrade\'s with to. Add ' +
+        '"edit" and "write" to change files, "bash" to run commands. [] for none. Only tools ' +
+        "active here.",
     }),
   ),
   files: Type.Optional(
     Type.Array(Type.String(), {
       description:
-        "Files to attach, text or images. Each follows the task as a <file name=...> block, so " +
-        "the comrade has them without reading. Paths resolve from the working directory.",
+        "Files to attach, text or images, as <file name=...> blocks after the task. Paths " +
+        "resolve from the working directory.",
     }),
   ),
   output: Type.Optional(
     Type.String({
       description:
-        "Write the whole answer to this file and return only its first lines and the path. " +
-        "Use when the answer feeds a file or a build rather than you.",
+        "Write the whole answer to this file and return only its first lines and the path.",
+    }),
+  ),
+  cwd: Type.Optional(
+    Type.String({
+      description:
+        "Directory the comrade runs in. Default: the working directory, or the comrade's with to.",
     }),
   ),
   timeout: Type.Optional(
     Type.Integer({
       minimum: 1,
       description:
-        "Seconds before the comrade is stopped. The result then says it timed out and gives " +
-        "any text it had. Default: no limit.",
+        "Seconds before the comrade is stopped. The result then says so and gives any text it had.",
     }),
   ),
   background: Type.Optional(
     Type.Boolean({
       description:
-        "Only when you have other work to do before you need the answer: return at once and " +
-        "deliver the answer later as a message. Default: wait for the answer, with live progress.",
+        "Return at once and deliver the answer later as a [comrade #N …] message. Only when you " +
+        "have other work to do before you need it.",
     }),
   ),
 });
@@ -117,9 +133,14 @@ export interface Details extends Card {
   exitCode?: number | null;
   /** Stopped with Esc, rather than failed. */
   stopped?: boolean;
-  /** Background comrades: their number, and the task's first line. */
+  /** The comrade's number. Rows saved by older versions number only background comrades. */
   id?: number;
+  /** Background comrades: the task's first line. */
   task?: string;
+  /** A background comrade's start row. */
+  background?: boolean;
+  /** The model as asked for, under its provider: what a follow-up runs unless told otherwise. */
+  requested?: { provider: string; model: string };
 }
 
 /** A background comrade's delivered message. */
@@ -137,6 +158,8 @@ interface RowState {
 
 interface Job {
   id: number;
+  /** The start row's tool call. Absent in jobs adopted from older versions. */
+  toolCallId?: string;
   task: string;
   request: Request;
   started: number;
@@ -169,6 +192,34 @@ function currentPi(): Invocation {
   return { command: "pi", args: [] };
 }
 
+/**
+ * A comrade stops when its parent Pi is gone, rather than run on unseen. Pi's shutdown stops
+ * comrades itself; this covers a parent that crashed or was killed.
+ */
+export function watchParent(
+  parent: number,
+  every = ORPHAN_MS,
+  stop: () => void = () => process.kill(process.pid, "SIGTERM"),
+): () => void {
+  if (!Number.isInteger(parent) || parent <= 1) return () => {};
+  const alive = () => {
+    try {
+      process.kill(parent, 0);
+      return true;
+    } catch (error) {
+      // EPERM: it exists, but is not ours to signal.
+      return (error as NodeJS.ErrnoException).code === "EPERM";
+    }
+  };
+  const timer = setInterval(() => {
+    if (alive()) return;
+    clearInterval(timer);
+    stop();
+  }, every);
+  timer.unref();
+  return () => clearInterval(timer);
+}
+
 /** Prefers what the comrade reports using over the name it was given. */
 function summary(request: Request, progress: Progress): Details {
   const { turns, calls, work, usage } = progress;
@@ -176,14 +227,25 @@ function summary(request: Request, progress: Progress): Details {
     model: progress.model ?? `${request.provider}/${request.model}`,
     thinking: progress.thinking ?? request.thinking,
     tools: request.tools,
-    // Jobs adopted across a /reload from an older version have no files.
+    // Jobs adopted across a /reload from an older version have no files or session.
     ...(request.files?.length ? { files: request.files.length } : {}),
+    ...(request.origin && request.cwd !== request.origin ? { cwd: request.cwd } : {}),
     turns,
     calls,
     work,
     usage,
+    requested: { provider: request.provider, model: request.model },
+    ...(request.session ? { session: request.session } : {}),
+    ...(request.followUp ? { followUp: true } : {}),
   };
 }
+
+/** A running comrade's row: its summary, when it started, and what it is doing. */
+const live = (request: Request, progress: Progress, started: number): Details => ({
+  ...summary(request, progress),
+  started,
+  ...(progress.activity ? { activity: progress.activity } : {}),
+});
 
 const emptyProgress = (): Progress => ({
   turns: 0,
@@ -191,10 +253,83 @@ const emptyProgress = (): Progress => ({
   work: emptyWork(),
   usage: emptyUsage(),
   text: "",
+  activity: starting(),
 });
 
+/** Where comrade #id's conversation is saved: beside the caller's session, or in tmp without one. */
+function sessionFile(ctx: ExtensionContext, id: number): string {
+  const parent = ctx.sessionManager.getSessionFile();
+  const dir = parent
+    ? join(dirname(parent), `${basename(parent, ".jsonl")}.comrades`)
+    : join(tmpdir(), "pi-comrades", ctx.sessionManager.getSessionId());
+  return join(dir, `comrade-${id}.jsonl`);
+}
+
+/**
+ * Claims comrade #id's conversation file, so no other Pi on this session (a fork open beside
+ * it) takes the number. Pi starts a session in an empty file as it would in a missing one.
+ */
+function claim(file: string): boolean {
+  mkdirSync(dirname(file), { recursive: true });
+  try {
+    writeFileSync(file, "", { flag: "wx" });
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw error;
+  }
+}
+
+/** The conversation file holds a run: Pi wrote to it. A claimed, empty one was never started. */
+const saved = (file: string) => (statSync(file, { throwIfNoEntry: false })?.size ?? 0) > 0;
+
+/** A comrade's record in a session entry: its tool row or its delivered message. */
+function record(entry: SessionEntry): Partial<Details> | undefined {
+  if (entry.type === "message" && entry.message.role === "toolResult")
+    return entry.message.toolName === "comrade"
+      ? (entry.message.details as Partial<Details> | undefined)
+      : undefined;
+  if (entry.type === "custom_message" && entry.customType === MESSAGE)
+    return entry.details as Partial<Details> | undefined;
+}
+
+/** A background comrade's start row. Older versions numbered only those, and saved no session. */
+const backgroundStart = (details: Partial<Details> | undefined) =>
+  details?.id !== undefined && (details.background === true || !details.session);
+
+/** What continuing comrade #id needs, from its latest record on this branch. */
+function conversation(id: number, ctx: ExtensionContext): Previous & { session: string } {
+  let seen = false;
+  let found: Partial<Details> | undefined;
+  for (const entry of ctx.sessionManager.getBranch()) {
+    const details = record(entry);
+    if (details?.id !== id) continue;
+    seen = true;
+    if (details.session && details.requested) found = details;
+  }
+  if (!seen) throw new Error(`No comrade #${id} on this branch of the conversation.`);
+  const session = found?.session;
+  const requested = found?.requested;
+  if (!session || !requested)
+    throw new Error(
+      `Comrade #${id} cannot continue: it ran before comrades kept their conversations. Start a new comrade.`,
+    );
+  if (!saved(session))
+    throw new Error(
+      `Comrade #${id} cannot continue: its conversation was never saved, or was deleted (${session}). Start a new comrade.`,
+    );
+  return {
+    session,
+    provider: requested.provider,
+    model: requested.model,
+    // Missing settings fall back to the caller's, as for a new comrade.
+    thinking: found?.thinking || undefined,
+    tools: found?.tools,
+    cwd: found?.cwd,
+  };
+}
+
 function failure(outcome: Outcome): string | undefined {
-  if (outcome.aborted) return "Comrade stopped.";
   if (outcome.stopReason === "error" || outcome.stopReason === "aborted")
     return `Comrade failed: ${outcome.errorMessage ?? outcome.stopReason}`;
   if (outcome.exitCode !== 0) {
@@ -205,12 +340,30 @@ function failure(outcome: Outcome): string | undefined {
   if (!outcome.text) return "Comrade finished without an answer.";
 }
 
-/** Truncate like Pi's own tools, keeping the full answer in a private file. */
-function limit(answer: string): { text: string; file?: string } {
+/**
+ * Truncate like Pi's own tools, keeping the full answer beside the comrade's conversation:
+ * `comrade-3.answer.md`, then `comrade-3.answer.2.md` for a later run of the same comrade.
+ */
+function limit(
+  answer: string,
+  session: string | undefined,
+  id: number,
+): { text: string; file?: string } {
   const cut = truncateHead(answer, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
   if (!cut.truncated) return { text: answer };
-  const file = join(mkdtempSync(join(tmpdir(), "comrade-")), "answer.md");
-  writeFileSync(file, answer, { mode: 0o600 });
+  // Jobs adopted across a /reload from an older version have no session.
+  const dir = session ? dirname(session) : join(tmpdir(), "pi-comrades");
+  mkdirSync(dir, { recursive: true });
+  let file: string;
+  for (let run = 1; ; run++) {
+    file = join(dir, `comrade-${id}.answer${run === 1 ? "" : `.${run}`}.md`);
+    try {
+      writeFileSync(file, answer, { flag: "wx", mode: 0o600 });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+  }
   const shown = `${cut.outputLines} of ${cut.totalLines} lines (${formatSize(cut.outputBytes)} of ${formatSize(cut.totalBytes)})`;
   return { text: `${cut.content}\n\n[Answer truncated: ${shown}. Full answer: ${file}]`, file };
 }
@@ -237,9 +390,17 @@ interface Reply {
  * What the calling model reads. It never sees the row, so an answer that is not final says so
  * on its first line, and a run line ends every result of a comrade that ran.
  */
-function respond(request: Request, outcome: Outcome, details: Card, durationMs: number): Reply {
-  if (outcome.aborted && !outcome.timedOut) return { text: "Comrade stopped.", isError: true };
-  const run = outcome.turns || outcome.calls ? `\n\n${runLine(details, durationMs)}` : "";
+function respond(
+  request: Request,
+  outcome: Outcome,
+  details: Card,
+  durationMs: number,
+  id: number,
+): Reply {
+  if (outcome.aborted && !outcome.timedOut)
+    return { text: `Comrade #${id} stopped.`, isError: true };
+  // Even a comrade that failed at once ends with its run line, which carries its number.
+  const run = `\n\n${runLine(details, durationMs, id)}`;
   const limitText = formatDuration(request.timeoutMs ?? 0);
   if (outcome.timedOut && !outcome.text)
     return { text: `Comrade timed out after ${limitText} and was stopped.${run}`, isError: true };
@@ -258,12 +419,12 @@ function respond(request: Request, outcome: Outcome, details: Card, durationMs: 
       body = written(outcome.text, request.output);
       file = request.output;
     } catch (error) {
-      const shown = limit(outcome.text);
+      const shown = limit(outcome.text, request.session, id);
       body = `Could not write the answer to ${request.output}: ${error instanceof Error ? error.message : error}\n\n${shown.text}`;
       file = shown.file;
       isError = true;
     }
-  else ({ text: body, file } = limit(outcome.text));
+  else ({ text: body, file } = limit(outcome.text, request.session, id));
   return { text: [state, body].filter(Boolean).join("\n\n") + run, isError, file };
 }
 
@@ -273,7 +434,15 @@ const message = (id: number, status: Delivery["status"], task: string, body: str
 
 export function register(pi: ExtensionAPI, invocation: Invocation): void {
   const jobs = new Map<number, Job>();
+  // Foreground comrades running now, which a follow-up must wait for.
+  const busy = new Set<number>();
   let next = 1;
+  /** The next comrade number whose conversation file is free, claimed. */
+  const reserve = (ctx: ExtensionContext) => {
+    let id = next++;
+    while (!claim(sessionFile(ctx, id))) id = next++;
+    return id;
+  };
   let ui: ExtensionContext["ui"] | undefined;
   let sessionId: string | undefined;
   // Answers delivered to wake the agent, so a waiting turn knows one has arrived. Pi counts only
@@ -299,26 +468,35 @@ export function register(pi: ExtensionAPI, invocation: Invocation): void {
     ticker = setInterval(() => {
       for (const [key, row] of spinning) {
         row.redraw();
-        if (!row.running()) spinning.delete(key);
+        if (row.running()) continue;
+        spinning.delete(key);
+        returned.delete(key);
       }
       if (!spinning.size) stopSpinning();
     }, SPINNER_MS);
     ticker.unref();
   };
 
-  const listing = () =>
-    [...jobs.values()]
-      .map((job) =>
-        [
-          `#${job.id}`,
-          `turn ${job.progress.turns + 1}`,
-          workSummary(job.progress.work.tallies) || "no calls yet",
-          formatCost(job.progress.usage.cost.total),
-          formatDuration(Date.now() - job.started),
-          taskLine(job.task).slice(0, 60),
-        ].join(" · "),
-      )
-      .join("\n");
+  const listing = () => {
+    const lines = [...jobs.values()].map((job) =>
+      [
+        `#${job.id}`,
+        `turn ${job.progress.turns + 1}`,
+        activityText(live(job.request, job.progress, job.started)) ||
+          workSummary(job.progress.work.tallies) ||
+          "no calls yet",
+        formatCost(job.progress.usage.cost.total),
+        formatDuration(Date.now() - job.started),
+        taskLine(job.task).slice(0, 60),
+      ].join(" · "),
+    );
+    // Background costs are not in the session's totals, so the listing adds them up.
+    if (lines.length > 1) {
+      const total = [...jobs.values()].reduce((sum, job) => sum + job.progress.usage.cost.total, 0);
+      lines.push(`${lines.length} running · ${formatCost(total)} so far`);
+    }
+    return lines.join("\n");
+  };
 
   const deliver = (delivery: Delivery, body: string, wake: boolean) => {
     if (wake) woken++;
@@ -351,7 +529,7 @@ export function register(pi: ExtensionAPI, invocation: Invocation): void {
     if (job.stoppedBy === "user")
       // The user stopped it: tell the agent without starting a turn.
       return deliver({ ...base, status: "stopped" }, "Stopped by the user.", false);
-    const reply = respond(job.request, outcome, base, base.durationMs);
+    const reply = respond(job.request, outcome, base, base.durationMs, job.id);
     deliver(
       { ...base, status: reply.isError ? "failed" : "finished", answer: reply.file },
       reply.text,
@@ -359,14 +537,11 @@ export function register(pi: ExtensionAPI, invocation: Invocation): void {
     );
   }
 
-  function start(request: Request): Job {
-    if (jobs.size >= MAX_BACKGROUND)
-      throw new Error(
-        `${MAX_BACKGROUND} background comrades are already running. Wait for one to finish, or stop one with the comrades tool.`,
-      );
+  function start(request: Request, id: number, toolCallId: string): Job {
     const progress = emptyProgress();
     const job: Job = {
-      id: next++,
+      id,
+      toolCallId,
       task: taskLine(request.task),
       request,
       started: Date.now(),
@@ -403,33 +578,28 @@ export function register(pi: ExtensionAPI, invocation: Invocation): void {
       jobs.set(job.id, job);
       job.owner = finish;
     }
-    const ids = (entries: SessionEntry[]) => {
-      const started = new Map<number, string>();
-      const delivered = new Set<number>();
-      for (const entry of entries) {
-        if (entry.type === "message" && entry.message.role === "toolResult") {
-          const { toolName } = entry.message;
-          const details = entry.message.details as
-            | (Partial<Details> & { stopped?: number[] })
-            | undefined;
-          if (toolName === "comrade" && details?.id !== undefined)
-            started.set(details.id, details.task ?? "");
-          // Comrades the agent stopped send no message; their stop is the record.
-          if (toolName === "comrades") for (const id of details?.stopped ?? []) delivered.add(id);
-        } else if (entry.type === "custom_message" && entry.customType === MESSAGE) {
-          const id = (entry.details as Partial<Delivery> | undefined)?.id;
-          if (id !== undefined) delivered.add(id);
-        }
-      }
-      return { started, delivered };
-    };
     // Number comrades past every one this session has seen, on any branch.
-    const all = ids(ctx.sessionManager.getEntries());
-    next = Math.max(0, ...all.started.keys(), ...all.delivered, ...jobs.keys()) + 1;
-    // Comrades that were running when Pi exited or switched sessions will never answer.
-    const branch = ids(ctx.sessionManager.getBranch());
-    for (const [id, task] of branch.started) {
-      if (branch.delivered.has(id) || jobs.has(id)) continue;
+    const seen = ctx.sessionManager.getEntries().flatMap((entry) => record(entry)?.id ?? []);
+    next = Math.max(0, ...seen, ...jobs.keys()) + 1;
+    // Background runs that were going when Pi exited or switched sessions will never answer. A
+    // comrade can run in the background more than once, so each run is matched in order.
+    const pending = new Map<number, string>();
+    for (const entry of ctx.sessionManager.getBranch()) {
+      const details = record(entry);
+      if (details?.id !== undefined && entry.type === "message") {
+        if (backgroundStart(details)) pending.set(details.id, details.task ?? "");
+      } else if (details?.id !== undefined) pending.delete(details.id);
+      // Comrades the agent stopped send no message; their stop is the record.
+      const stops =
+        entry.type === "message" &&
+        entry.message.role === "toolResult" &&
+        entry.message.toolName === "comrades"
+          ? (entry.message.details as { stopped?: number[] } | undefined)?.stopped
+          : undefined;
+      for (const id of stops ?? []) pending.delete(id);
+    }
+    for (const [id, task] of pending) {
+      if (jobs.has(id)) continue;
       const lost: Delivery = {
         model: "",
         thinking: "",
@@ -562,33 +732,49 @@ export function register(pi: ExtensionAPI, invocation: Invocation): void {
     name: "comrade",
     label: "Comrade",
     description:
-      "Run a task in a fresh one-shot pi process and return its final answer. The comrade sees " +
-      "nothing of this conversation. By default the call waits for the answer and shows live " +
-      "progress, and several comrade calls in one message run in parallel. With background: true " +
-      "it returns at once and the answer arrives later as a [comrade #N …] message. files attaches " +
-      "files to the task, output writes the answer to a file, and timeout stops the comrade. " +
-      `Answers over ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)} are truncated, ` +
-      "and the full answer is saved to a file. A run line ends the result: model, turns, calls, " +
+      "Run a task in a fresh pi process and return its final answer. The comrade sees nothing " +
+      "of this conversation. Several calls in one message run in parallel. Every comrade is " +
+      "numbered #N and keeps its conversation: continue it with to: N. " +
+      `Answers over ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)} are truncated ` +
+      "and saved in full to a file. Every result ends with a run line: #N, model, turns, calls, " +
       "tokens, cost, duration, and why it stopped.",
-    promptSnippet: "Delegate a self-contained task to a fresh pi agent and get its answer",
+    promptSnippet:
+      "Delegate a self-contained task to a fresh pi agent and get its answer, or continue one",
     promptGuidelines: [
-      "A comrade sees none of this conversation: put every path, constraint, and the expected answer format in comrade's task.",
-      "Leave comrade's background off unless you have other work to do before you need the answer. Several foreground comrade calls in one message already run in parallel.",
-      "A background comrade's answer arrives as a later [comrade #N …] message. Never guess it, and use the comrades tool to check on background comrades or stop one whose answer you no longer need.",
-      "When you finish your other work while background comrades still run, end your reply as usual: your turn then waits for them, and continues with each answer as it arrives.",
-      'comrade is read-only by default (read, grep, find, ls). Add "edit" and "write" to its tools when it must change files, or "bash" when it must run commands.',
-      "When a comrade needs more than a few files, pass them in comrade's files and set its tools to []. A comrade left to read a large set of files can loop.",
-      "When comrade's answer feeds a file or a build, set output and ask the comrade for the exact text, with no fences or commentary.",
-      "A comrade result whose first line starts [Comrade's answer is cut off or [Comrade timed out is not a finished answer.",
+      "A comrade sees none of this conversation: put every path, constraint, and the expected answer format in its task.",
+      "To follow up with a comrade (a correction, a question, the next step), call comrade with to: N and only your new message. Start a new comrade for unrelated work, or once the conversation has grown long: each follow-up resends all of it.",
+      "Leave background off unless you have other work to do before you need the answer; foreground calls in one message already run in parallel. A background answer arrives later as a [comrade #N …] message: never guess it. When your other work is done, end your reply, and your turn waits for it.",
+      'comrade is read-only by default. Add "edit" and "write" when it must change files, or "bash" to run commands.',
+      "When a comrade needs more than a few files, pass them in files with tools: []. When its answer feeds a file or a build, set output and ask for the exact text, with no fences or commentary.",
+      "A result whose first line starts [Comrade's answer is cut off or [Comrade timed out is not a finished answer.",
     ],
     parameters,
 
     async execute(toolCallId, params, signal, onUpdate, ctx) {
-      const request = prepare(params, ctx, pi);
+      const to = params.to;
+      if (to !== undefined && busy.has(to))
+        throw new Error(`Comrade #${to} is still running. Wait for its answer.`);
+      if (to !== undefined && jobs.has(to))
+        throw new Error(
+          `Comrade #${to} is still running in the background. Wait for its answer, or stop it with the comrades tool.`,
+        );
+      const previous = to === undefined ? undefined : conversation(to, ctx);
+      const prepared = prepare(params, ctx, pi, previous);
       // Print and JSON modes exit when the agent settles, before a later message could arrive.
       const detached = ctx.mode === "tui" || ctx.mode === "rpc";
-      if (params.background && detached) {
-        const job = start(request);
+      const background = Boolean(params.background && detached);
+      if (background && jobs.size >= MAX_BACKGROUND)
+        throw new Error(
+          `${MAX_BACKGROUND} background comrades are already running. Wait for one to finish, or stop one with the comrades tool.`,
+        );
+      const id = to ?? reserve(ctx);
+      const request: Request = {
+        ...prepared,
+        session: previous?.session ?? sessionFile(ctx, id),
+        ...(previous ? { followUp: true } : {}),
+      };
+      if (background) {
+        const job = start(request, id, toolCallId);
         return {
           content: [
             {
@@ -596,29 +782,37 @@ export function register(pi: ExtensionAPI, invocation: Invocation): void {
               text: `Comrade #${job.id} started in the background. Keep working. Its answer will arrive as a [comrade #${job.id} …] message${ctx.mode === "tui" ? ", and if you finish first, your turn waits for it" : ""}. Check on it or stop it with the comrades tool.`,
             },
           ],
-          details: { ...summary(request, job.progress), id: job.id, task: job.task },
+          details: {
+            ...summary(request, job.progress),
+            id: job.id,
+            task: job.task,
+            background: true,
+          },
         };
       }
 
+      const began = Date.now();
       const update = (progress: Progress) =>
         onUpdate?.({
           content: [{ type: "text", text: progress.text }],
-          details: summary(request, progress),
+          details: { ...live(request, progress, began), id },
         });
       // Show the row, and the model it will use, before the comrade has started.
       update(emptyProgress());
-      const began = Date.now();
-      const outcome = await run(invocation, request, signal, update).finally(() =>
-        returned.add(toolCallId),
-      );
+      busy.add(id);
+      const outcome = await run(invocation, request, signal, update).finally(() => {
+        busy.delete(id);
+        returned.add(toolCallId);
+      });
       const details: Details = {
         ...summary(request, outcome),
+        id,
         stopReason: outcome.stopReason,
         exitCode: outcome.exitCode,
         ...(outcome.aborted && !outcome.timedOut ? { stopped: true } : {}),
         ...(outcome.timedOut ? { timedOut: true } : {}),
       };
-      const reply = respond(request, outcome, details, Date.now() - began);
+      const reply = respond(request, outcome, details, Date.now() - began, id);
       if (reply.isError)
         return {
           content: [{ type: "text", text: reply.text }],
@@ -666,7 +860,7 @@ export function register(pi: ExtensionAPI, invocation: Invocation): void {
       // Rejected before it started: the reason is all there is.
       if (!details?.usage)
         return card({ phase: "failed", task, expanded: true, note: body }, undefined, "", theme);
-      const background = details.id !== undefined;
+      const background = !isPartial && backgroundStart(details);
       const phase: Phase = isPartial
         ? "running"
         : background
@@ -676,21 +870,41 @@ export function register(pi: ExtensionAPI, invocation: Invocation): void {
               ? "stopped"
               : "failed"
             : "finished";
-      // A foreground comrade spins while it runs, and a background one while its job does.
+      // A foreground comrade spins while it runs, and a background one while its job does. A
+      // comrade continued in the background again has a new start row, which shows that run.
       const id = details.id;
-      const running =
-        phase === "running" || (id !== undefined && jobs.has(id) && phase === "background");
+      const ours = (job: Job | undefined) =>
+        job !== undefined && (job.toolCallId ?? context.toolCallId) === context.toolCallId;
+      const job = background && id !== undefined ? jobs.get(id) : undefined;
+      const running = phase === "running" || ours(job);
       if (phase === "running")
         spin(context.toolCallId, context.invalidate, () => !returned.has(context.toolCallId));
-      else if (running) spin(context.toolCallId, context.invalidate, () => jobs.has(id as number));
-      else spinning.delete(context.toolCallId);
+      else if (running)
+        spin(context.toolCallId, context.invalidate, () => ours(jobs.get(id as number)));
+      else {
+        spinning.delete(context.toolCallId);
+        returned.delete(context.toolCallId);
+      }
+      // A running background comrade shows its job's progress, not the saved start.
+      const shown =
+        background && job && ours(job)
+          ? { ...live(job.request, job.progress, job.started), id, background: true }
+          : (details as Details);
       const look: Look = {
         phase,
         task,
         expanded,
-        id: details.id,
+        // Ctrl+O shows the whole task, from the first progress line on.
+        prompt: true,
+        id,
         spinner: running ? frame() : undefined,
-        durationMs: background ? undefined : context.durationMs,
+        live: background && running,
+        durationMs:
+          running && shown.started !== undefined
+            ? Date.now() - shown.started
+            : background
+              ? undefined
+              : context.durationMs,
         note:
           phase === "background"
             ? `Runs in the background. Its answer arrives later as Comrade #${details.id}.`
@@ -698,7 +912,7 @@ export function register(pi: ExtensionAPI, invocation: Invocation): void {
               ? "Stopped with Esc."
               : undefined,
       };
-      return card(look, details as Details, body, theme);
+      return card(look, shown, body, theme);
     },
   });
 
@@ -751,6 +965,11 @@ function registerList(pi: ExtensionAPI, jobs: Map<number, Job>, listing: () => s
 }
 
 export default function (pi: ExtensionAPI) {
-  if (process.env[NESTED]) return;
+  const parent = process.env[NESTED];
+  // A comrade offers no comrade of its own, and stops once its parent is gone.
+  if (parent !== undefined) {
+    watchParent(Number(parent));
+    return;
+  }
   register(pi, currentPi());
 }

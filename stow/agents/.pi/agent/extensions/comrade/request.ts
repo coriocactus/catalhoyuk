@@ -2,7 +2,7 @@
 // could not use before it starts.
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import type { Request } from "./run.ts";
 
@@ -10,8 +10,6 @@ export const THINKING = ["off", "minimal", "low", "medium", "high", "xhigh", "ma
 export type Thinking = (typeof THINKING)[number];
 /** Read-only built-ins: enough to find and read files, nothing that changes them. */
 export const READ_ONLY = ["read", "grep", "find", "ls"];
-/** Pi's built-in tools, which a caller started with `--tools` does not list. */
-const BUILT_IN = ["read", "bash", "edit", "write", "grep", "find", "ls"];
 /** This extension's own tools, which comrades never get. */
 const OWN = ["comrade", "comrades"];
 
@@ -22,6 +20,7 @@ export interface Arguments {
   tools?: string[];
   files?: string[];
   output?: string;
+  cwd?: string;
   /** Seconds. */
   timeout?: number;
 }
@@ -51,24 +50,30 @@ export function thinkingSuffix(model: string): Thinking | undefined {
   return model.includes(":") && THINKING.includes(suffix) ? suffix : undefined;
 }
 
-/** Tool names and `*` patterns, checked against the tools a comrade can have. */
+/**
+ * Tool names and `*` patterns, checked against the tools a comrade can have: those active
+ * here. The caller's tool set is the ceiling, so a Pi started with `--tools read` cannot hand
+ * a comrade `bash`. The default is the read-only set, less any tool not active here.
+ */
 export function resolveTools(requested: string[] | undefined, pi: ExtensionAPI): string[] {
-  const tools = [...new Set(requested ?? READ_ONLY)];
+  const active = pi.getActiveTools().filter((name) => !OWN.includes(name));
+  if (requested === undefined) return READ_ONLY.filter((name) => active.includes(name));
+  const tools = [...new Set(requested)];
   if (tools.some((tool) => OWN.includes(tool))) throw new Error("A comrade cannot start comrades.");
-  const known = [...new Set([...BUILT_IN, ...pi.getAllTools().map((tool) => tool.name)])].filter(
-    (name) => !OWN.includes(name),
-  );
+  const all = pi.getAllTools().map((tool) => tool.name);
   for (const tool of tools) {
     const pattern = new RegExp(
       `^${tool.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replaceAll("*", ".*")}$`,
     );
+    const valid = /^[\w.*:-]+$/.test(tool) && !tool.startsWith("-");
+    if (valid && active.some((name) => pattern.test(name))) continue;
+    const available = active.length ? active.join(", ") : "none";
     // Pi silently ignores unknown names, which would leave the comrade without the tool.
-    if (
-      !/^[\w.*:-]+$/.test(tool) ||
-      tool.startsWith("-") ||
-      !known.some((name) => pattern.test(name))
-    )
-      throw new Error(`Unknown tool "${tool}" for comrade. Available: ${known.join(", ")}.`);
+    if (valid && all.some((name) => pattern.test(name)))
+      throw new Error(
+        `Tool "${tool}" is not active here, so a comrade cannot have it. Active: ${available}.`,
+      );
+    throw new Error(`Unknown tool "${tool}" for comrade. Active: ${available}.`);
   }
   return tools;
 }
@@ -118,23 +123,66 @@ function resolveOutput(requested: string | undefined, cwd: string): string | und
   return file;
 }
 
-/** The comrade runs exactly the model named, under its own provider. */
-export function prepare(args: Arguments, ctx: ExtensionToolContext, pi: ExtensionAPI): Request {
+/** The directory the comrade runs in, which must exist. */
+function resolveCwd(requested: string | undefined, cwd: string): string {
+  if (requested === undefined) return cwd;
+  if (!requested.trim()) throw new Error("comrade's cwd needs a directory path.");
+  const directory = absolute(requested, cwd);
+  if (!statSync(directory, { throwIfNoEntry: false })?.isDirectory())
+    throw new Error(`comrade's cwd "${requested}" is not a directory: ${directory}.`);
+  return directory;
+}
+
+/** Whether `path` is `root` or inside it. */
+export function within(path: string, root: string): boolean {
+  const rel = relative(root, path);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+/** How a comrade ran, which its follow-ups keep unless they say otherwise. */
+export interface Previous {
+  provider: string;
+  model: string;
+  thinking?: string;
+  tools?: string[];
+  cwd?: string;
+}
+
+/**
+ * The comrade runs exactly the model named, under its own provider. A follow-up keeps the
+ * comrade's own model, thinking level and tools, not the caller's.
+ */
+export function prepare(
+  args: Arguments,
+  ctx: ExtensionToolContext,
+  pi: ExtensionAPI,
+  previous?: Previous,
+): Omit<Request, "session" | "followUp"> {
   if (!args.task.trim()) throw new Error("comrade needs a task.");
   const chosen = args.model
     ? resolveModel(args.model, ctx)
-    : ctx.model && { provider: ctx.model.provider, model: ctx.model.id, thinking: undefined };
+    : previous
+      ? { provider: previous.provider, model: previous.model, thinking: undefined }
+      : ctx.model && { provider: ctx.model.provider, model: ctx.model.id, thinking: undefined };
   if (!chosen) throw new Error("No model is selected: pass comrade a model as provider/id.");
+  const cwd = resolveCwd(args.cwd ?? previous?.cwd, ctx.cwd);
   return {
     task: args.task,
     provider: chosen.provider,
     model: chosen.model,
-    thinking: args.thinking ?? chosen.thinking ?? ctx.thinkingLevel ?? pi.getThinkingLevel(),
-    tools: resolveTools(args.tools, pi),
+    thinking:
+      args.thinking ??
+      chosen.thinking ??
+      previous?.thinking ??
+      ctx.thinkingLevel ??
+      pi.getThinkingLevel(),
+    tools: resolveTools(args.tools ?? previous?.tools, pi),
     files: resolveFiles(args.files, ctx.cwd),
     output: resolveOutput(args.output, ctx.cwd),
     timeoutMs: args.timeout === undefined ? undefined : args.timeout * 1000,
-    cwd: ctx.cwd,
-    trusted: ctx.isProjectTrusted(),
+    cwd,
+    origin: ctx.cwd,
+    // The caller's trust covers its own project. Elsewhere, Pi loads no project-local files.
+    trusted: ctx.isProjectTrusted() && within(cwd, ctx.cwd),
   };
 }
