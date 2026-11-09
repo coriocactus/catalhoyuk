@@ -89,19 +89,21 @@ Collapsed, a comrade is one line: a status glyph, `Comrade #N`, the task's first
 ✓ Comrade #3  Review the parser for unhandled errors  $0.71 · 12m 43s
 ```
 
-While it runs, its glyph is Pi's working spinner in the accent colour, as on the editor and mirage's rows, its cost and a clock in whole seconds stay at the right, and a second line shows the turn (counted from Pi's turn starts, so a turn's tool calls belong to it), the number of calls, and what it is doing, read from the comrade's event stream. The row never grows while it runs.
+While it runs, its glyph is Pi's working spinner in the accent colour, as on the editor and mirage's rows, its cost and a clock in whole seconds stay at the right, and its second line is the finished row's meta line, live: the model and tools, then the turn (counted from Pi's turn starts, so a turn's tool calls belong to it), the number of calls, the tokens so far, and what it is doing, read from the comrade's event stream. When the comrade ends, that line settles into `3 turns · ↑938k ↓36k` without changing shape. The row never grows while it runs.
 
 ```text
 ⠋ Comrade #3  Review the parser for unhandled errors              $0.31 · 4m 12s
-turn 12 · 48 calls · Reading ~/project/src/parser.ts
+anthropic/claude-fable-5-1:xhigh · read, grep, find, ls · turn 12 · 48 calls · ↑412k ↓~9.8k · Reading ~/project/src/parser.ts
 ```
 
-| Second line | While |
+`↑` and `↓` are the finished messages' tokens plus the streaming message's, in Pi's footer format (`805`, `7.2k`, `41k`). Providers differ in what they count as they go: Google reports cumulative usage with every chunk, Anthropic reports the input at the start and the output only at the end, and OpenAI and OpenRouter report only at the end. So `↑` appears as soon as the provider has counted the input, and `↓` is estimated from the streamed characters at four per token and marked `~` until the provider's own count has moved, when it takes over exactly. An estimate shown is never left standing: each message's end replaces it with the provider's count.
+
+| Ends with | While |
 | --- | --- |
-| `starting anthropic/claude-fable-5-1` | Pi loads. |
-| `waiting for anthropic/claude-fable-5-1` | A request is out and nothing has streamed back. Some providers, such as Gemini through OpenRouter, send nothing until the reply is done, so this can last minutes on a long first turn. After the first turn it says how long the wait has lasted: `waiting 48s for …`. |
-| `thinking · ~2k tokens`, `writing · ~300 tokens` | The reply streams, with its tokens estimated from the streamed characters. Streamed text updates the row at most every 250ms. |
-| `calling edit · ~1k tokens` | The model writes a tool call's arguments. Each call starts its count over. |
+| `starting` | Pi loads. |
+| `waiting` | A request is out and nothing has streamed back. Some providers, such as Gemini through OpenRouter, send nothing until the reply is done, so this can last minutes on a long first turn. After the first turn it says how long the wait has lasted: `waiting 48s`. |
+| `thinking`, `writing` | The reply streams. Streamed text updates the row at most every 250ms. |
+| `calling edit` | The model writes a tool call's arguments. |
 | `Reading ~/x`, `$ npm test` | Its tools run: the latest call, as mirage names it. |
 | `retrying · 1/3 · 529 overloaded` | Pi retries a failed request. A retry that gives up leaves the row as it was until the comrade ends. |
 | `compacting its context` | Pi compacts the comrade's context. |

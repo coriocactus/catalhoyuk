@@ -130,8 +130,14 @@ switch (scenario) {
   case "stream": {
     // A turn as Pi streams it: retries, a compaction, thinking, tool calls, then the reply.
     // Pauses longer than the 250ms report interval let throttled text through.
-    const update = (type: string, extra: object = {}) =>
-      write({ type: "message_update", assistantMessageEvent: { type, contentIndex: 0, ...extra } });
+    // `usage` is the streaming message's cumulative usage, as Pi's JSON mode carries it.
+    const update = (type: string, extra: object = {}, usage?: object) =>
+      write({
+        type: "message_update",
+        ...(usage ? { usage } : {}),
+        assistantMessageEvent: { type, contentIndex: 0, ...extra },
+      });
+    const counted = (output: number) => ({ input: 100, output, cacheRead: 0, cacheWrite: 0 });
     write({ type: "agent_start" });
     write({ type: "turn_start" });
     write({
@@ -147,7 +153,11 @@ switch (scenario) {
     write({ type: "auto_retry_end", success: true });
     write({ type: "compaction_start", reason: "overflow" });
     write({ type: "compaction_end", reason: "overflow", aborted: false, willRetry: true });
-    write({ type: "message_start", message: { role: "assistant", content: [] } });
+    // Like Anthropic: the input is counted at the start, the output only at the end.
+    write({
+      type: "message_start",
+      message: { role: "assistant", content: [], usage: { input: 1000, output: 1 } },
+    });
     update("thinking_start");
     for (let i = 0; i < 20; i++) update("thinking_delta", { delta: "x".repeat(400) });
     await sleep(600);
@@ -161,8 +171,12 @@ switch (scenario) {
     start("1", "read", { path: "/tmp/a.ts" });
     end("1", "read");
     write({ type: "turn_start" });
+    // Like Google: the provider counts as it goes, so once its count has moved it is shown.
     update("text_start");
-    update("text_delta", { delta: "Done." });
+    update("text_delta", { delta: "Do" }, counted(2));
+    await sleep(400);
+    update("text_delta", { delta: "ne." }, counted(4));
+    await sleep(400);
     write(assistant([{ type: "text", text: "Done." }]));
     break;
   }

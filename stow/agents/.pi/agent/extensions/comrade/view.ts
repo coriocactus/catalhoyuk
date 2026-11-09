@@ -15,7 +15,7 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import type { Activity } from "./run.ts";
+import type { Activity, Streamed } from "./run.ts";
 import { homePath, type Row, summary, type Work } from "./work.ts";
 
 /** Everything the row shows besides the answer. Stored in tool result and message details. */
@@ -48,9 +48,10 @@ export interface Card {
   session?: string;
   /** This run continued an earlier conversation. */
   followUp?: boolean;
-  /** While it runs: when it started, and what it is doing. */
+  /** While it runs: when it started, what it is doing, and the message now streaming. */
   started?: number;
   activity?: Activity;
+  streamed?: Streamed;
 }
 
 export type Phase = "running" | "finished" | "failed" | "stopped" | "background" | "lost";
@@ -119,10 +120,13 @@ export function formatCost(cost: number): string {
   return `$${cost >= 0.01 ? cost.toFixed(2) : cost.toPrecision(2)}`;
 }
 
+/** Pi's footer format: `805`, `7.2k`, `41k`, `1.2M`. */
 export function formatTokens(count: number): string {
   if (count < 1000) return `${count}`;
+  if (count < 1e4) return `${(count / 1000).toFixed(1)}k`;
   if (count < 1e6) return `${Math.round(count / 1000)}k`;
-  return `${(count / 1e6).toFixed(count < 1e7 ? 1 : 0)}M`;
+  if (count < 1e7) return `${(count / 1e6).toFixed(1)}M`;
+  return `${Math.round(count / 1e6)}M`;
 }
 
 // Resets text styles but never the background, so a cut keeps the tool box's colour behind it.
@@ -287,79 +291,76 @@ function rowLine(row: Row, theme: Theme): string {
   return `  ${mark}${label}${row.error ? `  ${theme.fg("error", row.error)}` : ""}`;
 }
 
-const tokens = (count: number | undefined) =>
-  count ? `~${formatTokens(count)} token${count === 1 ? "" : "s"}` : "";
-
 /**
- * What a running comrade is doing: `waiting for anthropic/claude-fable-5-1`, `thinking · ~2k
- * tokens`, `Reading ~/x`. A wait after the first turn says how long it has lasted.
+ * What a running comrade is doing: `waiting`, `thinking`, `calling edit`, `Reading ~/x`. A
+ * wait after the first turn says how long it has lasted.
  */
 export function activityText(card: Card): string {
   const activity = card.activity;
   if (!activity) return card.work?.current ?? "";
-  const parts: string[] = [];
   switch (activity.state) {
     case "starting":
-      parts.push(`starting ${card.model}`);
-      break;
+      return "starting";
     case "waiting":
-      parts.push(
-        card.turns
-          ? `waiting ${formatElapsed(Date.now() - activity.since)} for ${card.model}`
-          : `waiting for ${card.model}`,
-      );
-      break;
+      return card.turns ? `waiting ${formatElapsed(Date.now() - activity.since)}` : "waiting";
     case "thinking":
     case "writing":
-      parts.push(activity.state, tokens(activity.tokens));
-      break;
+      return activity.state;
     case "calling":
-      parts.push(`calling ${activity.detail ?? "a tool"}`, tokens(activity.tokens));
-      break;
+      return `calling ${activity.detail ?? "a tool"}`;
     case "running":
-      parts.push(card.work?.current ?? "running tools");
-      break;
+      return card.work?.current ?? "running tools";
     case "retrying":
-      parts.push("retrying", activity.detail ?? "");
-      break;
+      return ["retrying", activity.detail ?? ""].filter(Boolean).join(" · ");
     case "compacting":
-      parts.push("compacting its context");
-      break;
+      return "compacting its context";
   }
-  return parts.filter(Boolean).join(" · ");
 }
 
-/** The second line of a running comrade: `turn 3 · 12 calls · thinking · ~2k tokens`. */
-function progressLine(card: Card, theme: Theme): string {
-  // Jobs adopted across a /reload from an older version report no activity.
-  const fresh = card.activity ? card.activity.state === "starting" : !card.turns && !card.calls;
-  if (fresh) return theme.fg("dim", `starting ${card.model}`);
+/**
+ * `↑150 ↓~2.1k`: the finished messages' tokens plus the streaming message's. The output is
+ * marked `~` while it is estimated from the streamed text. Each part shows once it is known.
+ */
+export function tokensText(card: Card, running: boolean): string {
+  const { usage, streamed } = card;
+  const input =
+    usage.input + usage.cacheRead + usage.cacheWrite + (running ? (streamed?.input ?? 0) : 0);
+  const output = usage.output + (running ? (streamed?.output ?? 0) : 0);
+  const estimated = running && Boolean(streamed?.output) && !streamed?.exact;
+  return [
+    input ? `↑${formatTokens(input)}` : "",
+    output ? `↓${estimated ? "~" : ""}${formatTokens(output)}` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+/**
+ * The second line. Finished: `model:level · tools · 3 turns · ↑938k ↓36k`. Running, the same
+ * line, live: `model:level · tools · turn 3 · 12 calls · ↑41k ↓~2.1k · thinking`.
+ */
+export function metaLine(card: Card, theme: Theme, running = false): string {
   const parts = [
-    `turn ${card.activity?.turn ?? card.turns + 1}`,
-    card.calls ? `${card.calls} call${card.calls === 1 ? "" : "s"}` : "",
-    activityText(card),
+    ...(card.followUp ? ["follow-up"] : []),
+    card.thinking ? `${card.model}:${card.thinking}` : card.model,
+    card.tools.length ? card.tools.join(", ") : "no tools",
+    ...(card.files ? [`${card.files} file${card.files === 1 ? "" : "s"} attached`] : []),
+    ...(card.cwd ? [`in ${homePath(card.cwd)}`] : []),
   ];
+  if (running) {
+    // Jobs adopted across a /reload from an older version report no activity.
+    const fresh = card.activity ? card.activity.state === "starting" : !card.turns && !card.calls;
+    if (fresh) parts.push("starting");
+    else
+      parts.push(
+        `turn ${card.activity?.turn ?? card.turns + 1}`,
+        card.calls ? `${card.calls} call${card.calls === 1 ? "" : "s"}` : "",
+        tokensText(card, true),
+        activityText(card),
+      );
+  } else if (card.turns)
+    parts.push(`${card.turns} turn${card.turns === 1 ? "" : "s"}`, tokensText(card, false));
   return theme.fg("dim", parts.filter(Boolean).join(" · "));
-}
-
-function metaLine(card: Card, theme: Theme): string {
-  const { usage } = card;
-  return theme.fg(
-    "dim",
-    [
-      ...(card.followUp ? ["follow-up"] : []),
-      card.thinking ? `${card.model}:${card.thinking}` : card.model,
-      card.tools.length ? card.tools.join(", ") : "no tools",
-      ...(card.files ? [`${card.files} file${card.files === 1 ? "" : "s"} attached`] : []),
-      ...(card.cwd ? [`in ${homePath(card.cwd)}`] : []),
-      ...(card.turns
-        ? [
-            `${card.turns} turn${card.turns === 1 ? "" : "s"}`,
-            `↑${formatTokens(usage.input + usage.cacheRead + usage.cacheWrite)} ↓${formatTokens(usage.output)}`,
-          ]
-        : []),
-    ].join(" · "),
-  );
 }
 
 /**
@@ -396,7 +397,7 @@ export function card(
   view.addChild(header(look, details, theme));
   const prompt = look.expanded && look.prompt && look.task.trim();
   if (running(look)) {
-    if (details) view.addChild(new Lines([progressLine(details, theme)]));
+    if (details) view.addChild(new Lines([metaLine(details, theme, true)]));
     // The row's size does not change while it runs: the task is the same from start to end.
     if (prompt) {
       view.addChild(new Spacer(1));

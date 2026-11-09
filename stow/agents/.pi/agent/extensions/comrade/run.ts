@@ -63,8 +63,6 @@ export interface Activity {
     | "compacting";
   /** When it entered this state. */
   since: number;
-  /** Tokens streamed in this state, estimated from their characters. */
-  tokens?: number;
   /** `calling`: the tool. `retrying`: the attempt and the error. */
   detail?: string;
   /** The turn it is in, counted from Pi's turn starts, so a turn's tools belong to it. */
@@ -73,12 +71,29 @@ export interface Activity {
 
 export const starting = (): Activity => ({ state: "starting", since: Date.now() });
 
+/**
+ * The message now streaming: its tokens so far. Providers that count as they go (Google)
+ * give exact numbers; the rest report only when the message ends, so until then the output
+ * is estimated from the streamed characters.
+ */
+export interface Streamed {
+  /** Input tokens the provider has reported for this message, with cache reads and writes. */
+  input: number;
+  /** Output tokens so far. */
+  output: number;
+  /** `output` is the provider's count, not an estimate. */
+  exact: boolean;
+}
+
 export interface Progress {
   turns: number;
   calls: number;
   /** What the comrade's calls did, summarised. */
   work: Work;
+  /** The finished messages' usage. */
   usage: Usage;
+  /** The message now streaming, between its start and its end. */
+  streamed?: Streamed;
   /** The latest non-empty assistant text: the answer once the run ends. */
   text: string;
   /** The model and thinking level the comrade reports using, once it has answered. */
@@ -167,7 +182,12 @@ export function run(
     reported = Date.now();
     state.work = ledger.snapshot();
     if (turn) state.activity.turn = turn;
-    onProgress({ ...state, usage: structuredClone(state.usage), activity: { ...state.activity } });
+    onProgress({
+      ...state,
+      usage: structuredClone(state.usage),
+      activity: { ...state.activity },
+      ...(state.streamed ? { streamed: { ...state.streamed } } : {}),
+    });
   };
   // Streamed text arrives many times a second: report it at most every STREAM_MS.
   const streamed = () => {
@@ -177,26 +197,45 @@ export function run(
     trailing = setTimeout(progress, wait);
     trailing.unref();
   };
+  // The streaming message: its characters so far, and the provider's output count, which is
+  // trusted once it has moved (Anthropic reports a token or two at the start, then nothing
+  // until the end; Google counts along).
   let chars = 0;
+  let counted = 0;
+  let counting = false;
+  const began = () => {
+    chars = 0;
+    counted = 0;
+    counting = false;
+    state.streamed = { input: 0, output: 0, exact: false };
+  };
+  /** Folds in the provider's cumulative usage for the streaming message. */
+  const count = (usage: Usage | undefined) => {
+    if (!usage || !state.streamed) return;
+    state.streamed.input = (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
+    if (usage.output > counted) {
+      if (counted > 0) counting = true;
+      counted = usage.output;
+    }
+  };
+  const tally = () => {
+    if (!state.streamed) return;
+    state.streamed.output = counting ? counted : Math.ceil(chars / CHARS_PER_TOKEN);
+    state.streamed.exact = counting;
+  };
   /**
-   * Enters a state, reporting it at once. Staying in it only adds to its streamed text, unless
-   * `fresh` starts it over, as each new tool call does.
+   * Enters a state, reporting it at once. Staying in it only adds to the streamed text, unless
+   * `fresh` starts the state over, as each new tool call does.
    */
   const enter = (next: Activity["state"], detail?: string, delta = "", fresh = false) => {
     const label = detail || undefined;
+    chars += delta.length;
+    tally();
     if (fresh || next !== state.activity.state || label !== state.activity.detail) {
-      chars = 0;
       state.activity = { state: next, since: Date.now(), ...(label ? { detail: label } : {}) };
-      if (delta) {
-        chars = delta.length;
-        state.activity.tokens = Math.ceil(chars / CHARS_PER_TOKEN);
-      }
       return progress();
     }
-    if (!delta) return;
-    chars += delta.length;
-    state.activity.tokens = Math.ceil(chars / CHARS_PER_TOKEN);
-    streamed();
+    if (delta) streamed();
   };
 
   // Pi's JSON mode writes one session event per line, in the shape its JsonAgentSessionEvent
@@ -210,10 +249,16 @@ export function run(
     }
     if (typeof event !== "object" || event === null) return;
     switch (event.type) {
+      case "message_start":
+        if (event.message?.role !== "assistant") return;
+        began();
+        count(event.message.usage);
+        return;
       case "message_end": {
         const message = event.message;
         if (message?.role !== "assistant") return;
         state.turns++;
+        state.streamed = undefined;
         addUsage(state.usage, message.usage);
         state.model = `${message.provider}/${message.model}`;
         state.thinking = message.thinkingLevel ?? state.thinking;
@@ -237,6 +282,9 @@ export function run(
         ledger.end(event.toolCallId, Boolean(event.isError), event.result);
         return progress();
       case "message_update": {
+        // The first update of a message Pi did not announce starts it.
+        if (!state.streamed) began();
+        count(event.usage);
         const update = event.assistantMessageEvent;
         switch (update?.type) {
           case "thinking_start":

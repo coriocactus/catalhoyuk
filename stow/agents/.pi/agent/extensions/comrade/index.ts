@@ -245,6 +245,7 @@ const live = (request: Request, progress: Progress, started: number): Details =>
   ...summary(request, progress),
   started,
   ...(progress.activity ? { activity: progress.activity } : {}),
+  ...(progress.streamed ? { streamed: progress.streamed } : {}),
 });
 
 const emptyProgress = (): Progress => ({
@@ -481,6 +482,9 @@ export function register(pi: ExtensionAPI, invocation: Invocation): void {
     const lines = [...jobs.values()].map((job) =>
       [
         `#${job.id}`,
+        job.request.thinking
+          ? `${job.request.provider}/${job.request.model}:${job.request.thinking}`
+          : `${job.request.provider}/${job.request.model}`,
         `turn ${job.progress.turns + 1}`,
         activityText(live(job.request, job.progress, job.started)) ||
           workSummary(job.progress.work.tallies) ||

@@ -375,6 +375,9 @@ test("comrades do not offer comrade", () => {
   }
 });
 
+/** The start of every running row's second line: the comrade's model and tools. */
+const M = "anthropic/claude-opus-5-5:xhigh · read, grep, find, ls · ";
+
 const render = (component: Component | undefined, width = 120) => {
   assert(component);
   return component
@@ -444,14 +447,14 @@ test("one header line, a fixed progress line while running, and the rest behind 
   assert(editing);
   assert.equal(
     result_(editing, true),
-    "⠋ Comrade #1  Review the diff in ~/notes  0s\nturn 1 · 5 calls · Editing /tmp/a.ts",
+    `⠋ Comrade #1  Review the diff in ~/notes  0s\n${M}turn 1 · 5 calls · Editing /tmp/a.ts`,
   );
   // Ctrl+O while it runs shows the whole task, as sent, under the progress line.
   assert.equal(
     result_(editing, true, true),
     [
       "⠋ Comrade #1  Review the diff in ~/notes  0s",
-      "turn 1 · 5 calls · Editing /tmp/a.ts",
+      `${M}turn 1 · 5 calls · Editing /tmp/a.ts`,
       "",
       `│ Review the diff in ${homedir()}/notes`,
       "│ with care",
@@ -562,7 +565,7 @@ test("a background comrade returns at once, then its answer arrives and wakes th
   // Its start row spins, with its clock and progress, while the comrade runs.
   assert.equal(
     render(startRow()),
-    "⠋ Comrade #1  ✓ survey the parser  background · 0s\nstarting anthropic/claude-opus-5-5",
+    `⠋ Comrade #1  ✓ survey the parser  background · 0s\n${M}starting`,
   );
 
   const [message] = await delivered(1);
@@ -1108,31 +1111,39 @@ test("the progress line says what the comrade is doing, from its event stream", 
   assert.equal(answer(result), "Done.");
   const lines = updates.map((update) => progressOf(tool, update));
   const shown = lines.filter((line, index) => line !== lines[index - 1]);
-  assert.deepEqual(shown, [
-    "starting anthropic/claude-opus-5-5",
-    "turn 1 · waiting for anthropic/claude-opus-5-5",
-    "turn 1 · retrying · 1/3 · 529 overloaded",
-    "turn 1 · waiting for anthropic/claude-opus-5-5",
-    "turn 1 · retrying",
-    "turn 1 · waiting for anthropic/claude-opus-5-5",
-    "turn 1 · compacting its context",
-    "turn 1 · waiting for anthropic/claude-opus-5-5",
-    "turn 1 · thinking",
-    // Streamed text is reported at most every 250ms, so the deltas arrive as one update.
-    "turn 1 · thinking · ~2k tokens",
-    "turn 1 · calling read",
-    "turn 1 · calling read · ~100 tokens",
-    // A second call starts its count over.
-    "turn 1 · calling read",
-    // The turn's message has ended, but its tools still belong to it.
-    "turn 1 · calling read · ~1 token",
-    "turn 1 · 1 call · Reading /tmp/a.ts",
-    "turn 1 · 1 call · Read /tmp/a.ts",
-    // A wait after the first turn says how long it has lasted.
-    "turn 2 · 1 call · waiting Ns for anthropic/claude-opus-5-5",
-    "turn 2 · 1 call · writing",
-    "turn 2 · 1 call · writing · ~2 tokens",
-  ]);
+  // The second line is the finished row's meta line, live: the model and tools, then the
+  // turn, calls, tokens and what it is doing.
+  assert.deepEqual(
+    shown.map((line) => line.replace(M, "… ")),
+    [
+      "… starting",
+      "… turn 1 · waiting",
+      "… turn 1 · retrying · 1/3 · 529 overloaded",
+      "… turn 1 · waiting",
+      "… turn 1 · retrying",
+      "… turn 1 · waiting",
+      "… turn 1 · compacting its context",
+      "… turn 1 · waiting",
+      // Like Anthropic, the provider counted the input at the start, and no output yet.
+      "… turn 1 · ↑1.0k · thinking",
+      // Streamed text is reported at most every 250ms, so the deltas arrive as one update,
+      // and their tokens are estimated, marked `~`.
+      "… turn 1 · ↑1.0k ↓~2.0k · thinking",
+      "… turn 1 · ↑1.0k ↓~2.0k · calling read",
+      "… turn 1 · ↑1.0k ↓~2.1k · calling read",
+      // The turn's message has ended: its usage is exact now, but its tools still belong to it.
+      "… turn 1 · ↑150 ↓10 · calling read",
+      "… turn 1 · 1 call · ↑150 ↓10 · Reading /tmp/a.ts",
+      "… turn 1 · 1 call · ↑150 ↓10 · Read /tmp/a.ts",
+      // A wait after the first turn says how long it has lasted.
+      "… turn 2 · 1 call · ↑150 ↓10 · waiting Ns",
+      "… turn 2 · 1 call · ↑150 ↓10 · writing",
+      // Like Google, the provider counts as it goes: once its count has moved, it is shown.
+      "… turn 2 · 1 call · ↑250 ↓~11 · writing",
+      "… turn 2 · 1 call · ↑250 ↓14 · writing",
+      "… turn 2 · 1 call · ↑300 ↓20 · writing",
+    ],
+  );
   assert.equal(details(result).activity, undefined, "a finished row keeps no activity");
 });
 
@@ -1163,10 +1174,10 @@ test("a running comrade's clock ticks in whole seconds beside its cost", async (
     );
   assert.match(
     draw(),
-    /^⠋ Comrade #1 {2}x {2}\$0\.02 · 0s\nturn 3 · 1 call · waiting 0s for anthropic\/claude-opus-5-5$/,
+    /^⠋ Comrade #1 {2}x {2}\$0\.02 · 0s\nanthropic\/claude-opus-5-5:xhigh · read, grep, find, ls · turn 3 · 1 call · ↑300 ↓20 · waiting 0s$/,
   );
   t.mock.timers.tick(12_500);
-  assert.match(draw(), / {2}\$0\.02 · 12s\n.* · waiting 12s for /);
+  assert.match(draw(), / {2}\$0\.02 · 12s\n.* · waiting 12s$/);
   t.mock.timers.tick(62_500);
   assert.match(draw(), / {2}\$0\.02 · 1m 15s\n/);
 });
@@ -1320,13 +1331,16 @@ test("conversations are kept beside the caller's session, or in tmp without one"
 test("the comrades listing says what each background comrade is doing", async (t) => {
   const { call, comrades, slash, notices } = fixture(t, "hang");
   await call({ task: "slow", background: true });
-  assert.match(text(await comrades({})), /^#1 · turn 1 · starting anthropic\/claude-opus-5-5 · /);
+  assert.match(
+    text(await comrades({})),
+    /^#1 · anthropic\/claude-opus-5-5:xhigh · turn 1 · starting · /,
+  );
   // The hang scenario starts a read and never finishes it.
   for (let i = 0; i < 50 && !text(await comrades({})).includes("Reading"); i++)
     await new Promise((wake) => setTimeout(wake, 20));
-  assert.match(text(await comrades({})), /^#1 · turn 1 · Reading \/tmp\/forever\.md · /);
+  assert.match(text(await comrades({})), /^#1 · [^·]+ · turn 1 · Reading \/tmp\/forever\.md · /);
   await slash("");
-  assert.match(notices.at(-1) ?? "", /^#1 · turn 1 · Reading \/tmp\/forever\.md · /);
+  assert.match(notices.at(-1) ?? "", /^#1 · [^·]+ · turn 1 · Reading \/tmp\/forever\.md · /);
   await comrades({ stop: [1] });
 });
 
@@ -1411,7 +1425,7 @@ test("a running job adopted from an older version shows its turn and calls", asy
   // Older versions reported no activity.
   assert.equal(details(result).activity, undefined);
   const running = { ...result, details: { ...details(result), started: Date.now() } };
-  assert.equal(progressOf(tool, running), "turn 2 · 11 calls");
+  assert.equal(progressOf(tool, running), `${M}turn 2 · 11 calls · ↑150 ↓10`);
 });
 
 test("a comrade can have only the tools active here, and the default shrinks to them", async (t) => {
