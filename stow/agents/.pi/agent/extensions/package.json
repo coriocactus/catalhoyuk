@@ -11,7 +11,7 @@
     "pi-diff": "node test/pi-diff.ts",
     "verify": "npm run check && npm run typecheck && npm test && npm run test:terminal && node test/pi-diff.ts --status"
   },
-  "piReviewed": "1.5.0",
+  "piReviewed": "1.5.1",
   "devEngines": {
     "runtime": {
       "name": "node",

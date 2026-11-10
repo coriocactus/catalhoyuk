@@ -1,6 +1,6 @@
 {
   "$schema": "https://pi.dev/schemas/settings.schema.json",
-  "lastChangelogVersion": "1.5.0",
+  "lastChangelogVersion": "1.5.1",
   "theme": "dark",
   "tuiMode": "fullscreen",
   "fullscreenScrollbar": "auto",
@@ -17,7 +17,7 @@
   "defaultModel": "claude-opus-5-5",
   "defaultThinkingLevel": "xhigh",
   "enabledModels": [
-    "anthropic/claude-fable-5-1",
+    "anthropic/claude-fable-5-2",
     "anthropic/claude-opus-5-5",
     "anthropic/claude-sonnet-5-5",
     "anthropic/claude-haiku-5-5",

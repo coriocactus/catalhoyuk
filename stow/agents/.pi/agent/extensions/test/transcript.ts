@@ -21,6 +21,7 @@ export interface TranscriptHost {
   renderSessionEntries: RenderEntries;
   setToolsExpanded(expanded: boolean): void;
   loadedResourcesContainer?: Container;
+  pendingMessagesContainer?: Container;
   builtInHeader?: Container;
   showStatus?: (message: string) => void;
 }

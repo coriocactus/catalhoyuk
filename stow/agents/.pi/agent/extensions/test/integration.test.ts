@@ -67,6 +67,7 @@ test("bounded pages share one growing group, preserving loaded rows and global e
       for (const header of headers) assert.equal(header.indexOf("✓"), padding);
     }
     f.host.loadedResourcesContainer = new tui.Container();
+    f.host.pendingMessagesContainer = new tui.Container();
     f.host.builtInHeader = new tui.Container();
     f.host.showStatus = () => {};
     f.host.setToolsExpanded(true);
@@ -163,6 +164,7 @@ test("a merge across pages keeps its header at the viewport top through expansio
     assert(!viewport().includes("BEFORE_11"), "older rows remain above the viewport");
     // Expanding the merged group must not scroll its header away.
     f.host.loadedResourcesContainer = new tui.Container();
+    f.host.pendingMessagesContainer = new tui.Container();
     f.host.builtInHeader = new tui.Container();
     f.host.showStatus = () => {};
     f.host.setToolsExpanded(true);
