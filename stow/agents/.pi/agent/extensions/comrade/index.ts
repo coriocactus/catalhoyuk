@@ -5,6 +5,7 @@ import type { Usage } from "@earendil-works/pi-ai";
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
+  defineTool,
   type ExtensionAPI,
   type ExtensionContext,
   formatSize,
@@ -13,7 +14,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Box, Container, isKeyRelease, matchesKey, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { type Previous, prepare, THINKING, type Thinking } from "./request.ts";
+import { modelDescription, type Previous, prepare, THINKING, type Thinking } from "./request.ts";
 import {
   emptyUsage,
   type Invocation,
@@ -56,77 +57,73 @@ const ORPHAN_MS = 2000;
 const frame = () => SPINNER[Math.floor(Date.now() / SPINNER_MS) % SPINNER.length];
 const MESSAGE = "comrade";
 
-const parameters = Type.Object({
-  task: Type.String({
-    description:
-      "Complete, self-contained instructions: every path, constraint, and the answer format " +
-      "you need. With to, only your next message to that comrade.",
-  }),
-  to: Type.Optional(
-    Type.Integer({
-      minimum: 1,
+/** comrade's parameters, whose model description names the models enabled in this session. */
+const parameters = (models: string) =>
+  Type.Object({
+    task: Type.String({
       description:
-        "Continue comrade #N's conversation: task is your next message to it. It keeps its brief, " +
-        "files, model, thinking, tools, cwd, and what it read and answered.",
+        "Complete, self-contained instructions: every path, constraint, and the answer format " +
+        "you need. With to, only your next message to that comrade.",
     }),
-  ),
-  model: Type.Optional(
-    Type.String({
-      description:
-        "provider/id exactly as Pi lists it, such as anthropic/claude-fable-5-1, optionally with " +
-        ":thinking. Bare names are refused. Default: your model, or the comrade's with to.",
-    }),
-  ),
-  // Pi's StringEnum schema (a plain string enum, which every provider accepts), typed for TypeBox.
-  thinking: Type.Optional(
-    Type.Unsafe<Thinking>({
-      type: "string",
-      enum: [...THINKING],
-      description: "Default: your thinking level, or the comrade's with to.",
-    }),
-  ),
-  tools: Type.Optional(
-    Type.Array(Type.String(), {
-      description:
-        'Default: read-only, ["read", "grep", "find", "ls"], or the comrade\'s with to. Add ' +
-        '"edit" and "write" to change files, "bash" to run commands. [] for none. Only tools ' +
-        "active here.",
-    }),
-  ),
-  files: Type.Optional(
-    Type.Array(Type.String(), {
-      description:
-        "Files to attach, text or images, as <file name=...> blocks after the task. Paths " +
-        "resolve from the working directory.",
-    }),
-  ),
-  output: Type.Optional(
-    Type.String({
-      description:
-        "Write the whole answer to this file and return only its first lines and the path.",
-    }),
-  ),
-  cwd: Type.Optional(
-    Type.String({
-      description:
-        "Directory the comrade runs in. Default: the working directory, or the comrade's with to.",
-    }),
-  ),
-  timeout: Type.Optional(
-    Type.Integer({
-      minimum: 1,
-      description:
-        "Seconds before the comrade is stopped. The result then says so and gives any text it had.",
-    }),
-  ),
-  background: Type.Optional(
-    Type.Boolean({
-      description:
-        "Return at once and deliver the answer later as a [comrade #N …] message. Only when you " +
-        "have other work to do before you need it.",
-    }),
-  ),
-});
+    to: Type.Optional(
+      Type.Integer({
+        minimum: 1,
+        description:
+          "Continue comrade #N's conversation: task is your next message to it. It keeps its brief, " +
+          "files, model, thinking, tools, cwd, and what it read and answered.",
+      }),
+    ),
+    model: Type.Optional(Type.String({ description: models })),
+    // Pi's StringEnum schema (a plain string enum, which every provider accepts), typed for TypeBox.
+    thinking: Type.Optional(
+      Type.Unsafe<Thinking>({
+        type: "string",
+        enum: [...THINKING],
+        description: "Default: your thinking level, or the comrade's with to.",
+      }),
+    ),
+    tools: Type.Optional(
+      Type.Array(Type.String(), {
+        description:
+          'Default: read-only, ["read", "grep", "find", "ls"], or the comrade\'s with to. Add ' +
+          '"edit" and "write" to change files, "bash" to run commands. [] for none. Only tools ' +
+          "active here.",
+      }),
+    ),
+    files: Type.Optional(
+      Type.Array(Type.String(), {
+        description:
+          "Files to attach, text or images, as <file name=...> blocks after the task. Paths " +
+          "resolve from the working directory.",
+      }),
+    ),
+    output: Type.Optional(
+      Type.String({
+        description:
+          "Write the whole answer to this file and return only its first lines and the path.",
+      }),
+    ),
+    cwd: Type.Optional(
+      Type.String({
+        description:
+          "Directory the comrade runs in. Default: the working directory, or the comrade's with to.",
+      }),
+    ),
+    timeout: Type.Optional(
+      Type.Integer({
+        minimum: 1,
+        description:
+          "Seconds before the comrade is stopped. The result then says so and gives any text it had.",
+      }),
+    ),
+    background: Type.Optional(
+      Type.Boolean({
+        description:
+          "Return at once and deliver the answer later as a [comrade #N …] message. Only when you " +
+          "have other work to do before you need it.",
+      }),
+    ),
+  });
 
 export interface Details extends Card {
   usage: Usage;
@@ -732,7 +729,8 @@ export function register(pi: ExtensionAPI, invocation: Invocation): void {
     return box;
   });
 
-  pi.registerTool({
+  let models = modelDescription();
+  const tool = defineTool({
     name: "comrade",
     label: "Comrade",
     description:
@@ -752,7 +750,7 @@ export function register(pi: ExtensionAPI, invocation: Invocation): void {
       "When a comrade needs more than a few files, pass them in files with tools: []. When its answer feeds a file or a build, set output and ask for the exact text, with no fences or commentary.",
       "A result whose first line starts [Comrade's answer is cut off or [Comrade timed out is not a finished answer.",
     ],
-    parameters,
+    parameters: parameters(models),
 
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const to = params.to;
@@ -919,6 +917,17 @@ export function register(pi: ExtensionAPI, invocation: Invocation): void {
       return card(look, shown, body, theme);
     },
   });
+  pi.registerTool(tool);
+  // Name the enabled models once the session is known, and again whenever /scoped-models
+  // changes them. Only a change re-registers, so the declared tools stay byte-identical.
+  const describe = (_event: unknown, ctx: ExtensionContext) => {
+    const next = modelDescription(ctx);
+    if (next === models) return;
+    models = next;
+    pi.registerTool({ ...tool, parameters: parameters(models) });
+  };
+  pi.on("session_start", describe);
+  pi.on("before_agent_start", describe);
 
   registerList(pi, jobs, listing);
 }

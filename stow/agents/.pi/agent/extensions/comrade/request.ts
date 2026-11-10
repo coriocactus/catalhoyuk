@@ -3,7 +3,11 @@
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import type { ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  ExtensionToolContext,
+} from "@earendil-works/pi-coding-agent";
 import type { Request } from "./run.ts";
 
 export const THINKING = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -79,38 +83,68 @@ export function resolveTools(requested: string[] | undefined, pi: ExtensionAPI):
 }
 
 /**
- * A model as `provider/id`, checked exactly against Pi's registry, with an optional
- * `:thinking` suffix. Bare names are refused: `anthropic/claude-fable-5-1` alone can name
+ * The models a comrade may use, the same set Pi's own model picker offers: the session's
+ * scoped models (`enabledModels` or `--models`), or with no scope, every model with credentials.
+ */
+export function enabledModels(ctx: Pick<ExtensionContext, "modelRegistry" | "scopedModels">) {
+  const scoped = ctx.scopedModels.length > 0;
+  const models = scoped
+    ? ctx.scopedModels.map((entry) => entry.model)
+    : ctx.modelRegistry.getAvailable();
+  return { scoped, models, names: models.map((model) => `${model.provider}/${model.id}`) };
+}
+
+/**
+ * What comrade's model parameter tells the calling model: every enabled model by name, or with
+ * no scope, which could be hundreds, the caller's own as the example. Without a session yet,
+ * no names at all.
+ */
+export function modelDescription(
+  ctx?: Pick<ExtensionContext, "model" | "modelRegistry" | "scopedModels">,
+): string {
+  const fallback = "Default: your model, or the comrade's with to.";
+  if (!ctx)
+    return `provider/id of a model enabled in this Pi, exactly as Pi lists it, optionally with :thinking. Bare names are refused. ${fallback}`;
+  const { scoped, names } = enabledModels(ctx);
+  if (scoped) return `One of: ${names.join(", ")}. Optionally with :thinking. ${fallback}`;
+  const example = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : names[0];
+  return `provider/id of a model with credentials in this Pi, exactly as Pi lists it${example ? `, such as ${example}` : ""}, optionally with :thinking. Bare names are refused. ${fallback}`;
+}
+
+/**
+ * A model as `provider/id`, with an optional `:thinking` suffix, that must be one of the
+ * enabled models. Bare names are refused: `anthropic/claude-fable-5-1` alone can name
  * Anthropic's model or OpenRouter's id of the same text.
  */
 export function resolveModel(
   name: string,
   ctx: Pick<ExtensionToolContext, "modelRegistry" | "scopedModels">,
 ): { provider: string; model: string; thinking?: Thinking } {
-  // Try each slash as the end of the provider, so provider ids containing one still work.
-  const exact = (text: string) => {
-    for (let slash = text.indexOf("/"); slash > 0; slash = text.indexOf("/", slash + 1)) {
-      const provider = text.slice(0, slash);
-      const model = text.slice(slash + 1);
-      if (ctx.modelRegistry.find(provider, model)) return { provider, model };
-    }
-    return undefined;
+  const { scoped, models: enabled, names } = enabledModels(ctx);
+  const pick = (text: string) => {
+    const model = enabled[names.indexOf(text)];
+    return model && { provider: model.provider, model: model.id };
   };
   const wanted = name.trim();
-  // An id may itself contain a colon, as OpenRouter's `:batch` variants do.
-  const found = exact(wanted);
-  if (found) return found;
   const suffix = thinkingSuffix(wanted);
-  const base = suffix ? exact(wanted.slice(0, wanted.lastIndexOf(":"))) : undefined;
-  if (base) return { ...base, thinking: suffix };
-  const known = (
-    ctx.scopedModels.length
-      ? ctx.scopedModels.map((scoped) => scoped.model)
-      : ctx.modelRegistry.getAvailable()
-  ).map((model) => `${model.provider}/${model.id}`);
-  throw new Error(
-    `Unknown model "${name}". Pass comrade's model as provider/id, such as ${known.join(", ") || "anthropic/claude-opus-5-5"}.`,
-  );
+  const base = suffix ? wanted.slice(0, wanted.lastIndexOf(":")) : undefined;
+  // An id may itself contain a colon, as OpenRouter's `:batch` variants do.
+  const found = pick(wanted);
+  if (found) return found;
+  const leveled = base === undefined ? undefined : pick(base);
+  if (leveled) return { ...leveled, thinking: suffix };
+  // Try each slash as the end of the provider, so provider ids containing one still work.
+  const registered = (text: string) => {
+    for (let slash = text.indexOf("/"); slash > 0; slash = text.indexOf("/", slash + 1))
+      if (ctx.modelRegistry.find(text.slice(0, slash), text.slice(slash + 1))) return true;
+    return false;
+  };
+  const list = names.join(", ") || "none";
+  if (registered(wanted) || (base !== undefined && registered(base)))
+    throw new Error(
+      `Model "${name}" is not ${scoped ? "enabled" : "available"} here, so a comrade cannot use it. ${scoped ? "Enabled" : "Available"}: ${list}.`,
+    );
+  throw new Error(`Unknown model "${name}". Pass comrade's model as provider/id, such as ${list}.`);
 }
 
 /** Where to write the answer. Its directory is created when the answer is written. */

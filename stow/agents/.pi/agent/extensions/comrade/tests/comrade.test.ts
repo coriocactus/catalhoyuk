@@ -71,6 +71,10 @@ function fixture(
     branch = undefined as SessionEntry[] | undefined,
     /** Tools this Pi has but does not offer the model, which a comrade cannot have either. */
     inactive = [] as string[],
+    /** The session's scoped models (`enabledModels`). Empty: no scope. */
+    scoped = [] as Model<Api>[],
+    /** The models with credentials, which a session with no scope may use. */
+    available = models,
   } = {},
 ) {
   const pi = fakePi();
@@ -126,10 +130,10 @@ function fixture(
     },
     model: current,
     thinkingLevel: "xhigh",
-    scopedModels: models.slice(0, 2).map((model) => ({ model })),
+    scopedModels: scoped.map((model) => ({ model })),
     modelRegistry: {
       find: (provider, id) => models.find((m) => m.provider === provider && m.id === id),
-      getAvailable: () => models,
+      getAvailable: () => available,
     },
     isProjectTrusted: () => trusted,
     hasPendingMessages: () => pending,
@@ -183,6 +187,8 @@ function fixture(
       } as never),
     );
   return {
+    pi,
+    ctx,
     remember,
     entries,
     tool,
@@ -689,7 +695,7 @@ test("the model is always provider/id, and the comrade runs it under that provid
 });
 
 test("bare or unknown model names are refused, with the names to use", async (t) => {
-  const { call } = fixture(t, "echo", { command: "/nonexistent/pi" });
+  const { call } = fixture(t, "echo", { command: "/nonexistent/pi", scoped: models.slice(0, 2) });
   for (const model of [
     "haiku",
     "claude-fable-5-1",
@@ -704,6 +710,71 @@ test("bare or unknown model names are refused, with the names to use", async (t)
       ),
       model,
     );
+});
+
+test("only the enabled models are allowed, or with no scope, those with credentials", async (t) => {
+  const scopedRun = fixture(t, "echo", { scoped: [models[1], models[3]] });
+  for (const model of ["anthropic/claude-opus-5-5", "openrouter/anthropic/claude-fable-5-1:high"])
+    await assert.rejects(
+      scopedRun.call({ task: "x", model }),
+      new RegExp(
+        `^Error: Model "${model}" is not enabled here, so a comrade cannot use it\\. Enabled: anthropic/claude-fable-5-1, openrouter/google/gemini-4-argon\\.$`,
+      ),
+      model,
+    );
+  const run = async (call: typeof scopedRun.call, params: Record<string, unknown>) =>
+    JSON.parse(answer(await call({ task: "✓", ...params }))).args.slice(4, 8);
+  assert.deepEqual(await run(scopedRun.call, { model: "anthropic/claude-fable-5-1:high" }), [
+    "--provider",
+    "anthropic",
+    "--model",
+    "claude-fable-5-1",
+  ]);
+  // The caller's own model is its choice, even outside the scope.
+  assert.deepEqual(await run(scopedRun.call, {}), [
+    "--provider",
+    "anthropic",
+    "--model",
+    "claude-opus-5-5",
+  ]);
+
+  const unscoped = fixture(t, "echo", { available: models.slice(0, 2) });
+  await assert.rejects(
+    unscoped.call({ task: "x", model: "openrouter/google/gemini-4-argon" }),
+    /^Error: Model "openrouter\/google\/gemini-4-argon" is not available here, so a comrade cannot use it\. Available: anthropic\/claude-opus-5-5, anthropic\/claude-fable-5-1\.$/,
+  );
+  assert.deepEqual(
+    (await run(unscoped.call, { model: "anthropic/claude-fable-5-1" }))[3],
+    "claude-fable-5-1",
+  );
+});
+
+test("the model parameter names the enabled models, and follows the scope as it changes", async (t) => {
+  const { pi, ctx, tool } = fixture(t, "echo", { scoped: [models[1], models[3]] });
+  const described = (registered = pi.tools.get("comrade")) => {
+    assert(registered, "comrade registered");
+    const schema = registered.parameters as { properties: { model: { description: string } } };
+    return schema.properties.model.description;
+  };
+  // Before the session is known, it names none.
+  assert.equal(
+    described(tool),
+    "provider/id of a model enabled in this Pi, exactly as Pi lists it, optionally with :thinking. Bare names are refused. Default: your model, or the comrade's with to.",
+  );
+  assert.equal(
+    described(),
+    "One of: anthropic/claude-fable-5-1, openrouter/google/gemini-4-argon. Optionally with :thinking. Default: your model, or the comrade's with to.",
+  );
+  const registered = pi.tools.get("comrade");
+  await pi.event("before_agent_start", {}, ctx);
+  assert.equal(pi.tools.get("comrade"), registered, "an unchanged scope registers nothing");
+  // /scoped-models clears the scope: every model with credentials, the caller's as the example.
+  Object.assign(ctx, { scopedModels: [] });
+  await pi.event("before_agent_start", {}, ctx);
+  assert.equal(
+    described(),
+    "provider/id of a model with credentials in this Pi, exactly as Pi lists it, such as anthropic/claude-opus-5-5, optionally with :thinking. Bare names are refused. Default: your model, or the comrade's with to.",
+  );
 });
 
 test("tool patterns must match a tool this Pi has", async (t) => {
