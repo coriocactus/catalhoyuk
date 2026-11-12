@@ -27,6 +27,7 @@ import { load, themes, tui } from "../../test/pi.ts";
 
 const {
   default: install,
+  currentPi,
   register,
   watchParent,
 } = await load<typeof import("../index.ts")>("../index.ts", import.meta.url);
@@ -60,7 +61,8 @@ function fixture(
   scenario: string,
   {
     trusted = true,
-    command = process.execPath,
+    /** A function is called again for each run. */
+    command = process.execPath as string | (() => string),
     mode = "tui" as ExtensionToolContext["mode"],
     entries = [] as SessionEntry[],
     sessionId = "session",
@@ -100,7 +102,12 @@ function fixture(
     getActiveTools: () =>
       [...toolNames, ...pi.tools.keys()].filter((name) => !inactive.includes(name)),
   };
-  register(api, { command, args: [standIn, scenario] });
+  register(
+    api,
+    typeof command === "function"
+      ? () => ({ command: command(), args: [standIn, scenario] })
+      : { command, args: [standIn, scenario] },
+  );
   const tool = pi.tools.get("comrade");
   const list = pi.tools.get("comrades");
   assert(tool && list, "comrade and comrades registered");
@@ -1588,6 +1595,37 @@ test("a comrade stops once its parent is gone", async (t) => {
   for (const pid of [Number.NaN, 0, 1, 1.5]) watchParent(pid, 5, () => stops++);
   await new Promise((wake) => setTimeout(wake, 30));
   assert.equal(stops, 0);
+});
+
+test("comrades run this Pi's script, under a runtime of the same name on PATH once it is gone", () => {
+  const script = "/pi/releases/1.5.2/dist/cli.js";
+  const cellar = "/opt/homebrew/Cellar/node/26.13.0_2/bin/node";
+  const present =
+    (...paths: string[]) =>
+    (path: string) =>
+      paths.includes(path);
+  assert.deepEqual(currentPi(cellar, script, present(cellar, script)), {
+    command: cellar,
+    args: [script],
+  });
+  // `brew upgrade node` deleted the running runtime.
+  assert.deepEqual(currentPi(cellar, script, present(script)), { command: "node", args: [script] });
+  // A compiled Pi is its own runtime; once it is gone, `pi` on PATH.
+  const compiled = "/usr/local/bin/pi";
+  assert.deepEqual(currentPi(compiled, "/$bunfs/root/pi", present(compiled)), {
+    command: compiled,
+    args: [],
+  });
+  assert.deepEqual(currentPi(compiled, "/$bunfs/root/pi", present()), { command: "pi", args: [] });
+  assert.deepEqual(currentPi(cellar, undefined, present(cellar)), { command: "pi", args: [] });
+});
+
+test("the command that starts Pi is resolved again for each run", async (t) => {
+  const commands = ["/nonexistent/node", process.execPath];
+  const { call } = fixture(t, "echo", { command: () => commands.shift() ?? process.execPath });
+  assert.match(answer(await call({ task: "✓" })), /^Could not start pi: .*ENOENT/);
+  const second = await call({ task: "✓" });
+  assert.notEqual(second.isError, true, answer(second));
 });
 
 test("the conversation's path is cut from its start, keeping the file name", async (t) => {

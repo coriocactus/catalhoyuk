@@ -179,13 +179,21 @@ const global = globalThis as { [PARKED]?: Map<string, Job[]> };
 global[PARKED] ??= new Map();
 const parked = global[PARKED];
 
-/** The running Pi itself, so comrades use the same release and extensions. */
-function currentPi(): Invocation {
-  const script = process.argv[1];
-  if (script && !script.startsWith("/$bunfs/") && existsSync(script))
-    return { command: process.execPath, args: [script] };
-  if (!/^(node|bun)(\.exe)?$/i.test(basename(process.execPath)))
-    return { command: process.execPath, args: [] };
+/**
+ * The running Pi itself, so comrades use the same release and extensions. Resolved for each
+ * run: an upgrade can delete the runtime under a running Pi (Homebrew removes the old Cellar
+ * version), and then the one of the same name on PATH takes its place.
+ */
+export function currentPi(
+  execPath = process.execPath,
+  script = process.argv[1],
+  exists: (path: string) => boolean = existsSync,
+): Invocation {
+  const runtime = exists(execPath) ? execPath : undefined;
+  if (script && !script.startsWith("/$bunfs/") && exists(script))
+    return { command: runtime ?? basename(execPath), args: [script] };
+  if (runtime && !/^(node|bun)(\.exe)?$/i.test(basename(runtime)))
+    return { command: runtime, args: [] };
   return { command: "pi", args: [] };
 }
 
@@ -430,7 +438,9 @@ function respond(
 const message = (id: number, status: Delivery["status"], task: string, body: string) =>
   `[comrade #${id} ${status}] ${taskLine(task).slice(0, 200)}\n\n${body}`;
 
-export function register(pi: ExtensionAPI, invocation: Invocation): void {
+/** `invocation` may be a function, to resolve it again for each run. */
+export function register(pi: ExtensionAPI, invocation: Invocation | (() => Invocation)): void {
+  const resolve = () => (typeof invocation === "function" ? invocation() : invocation);
   const jobs = new Map<number, Job>();
   // Foreground comrades running now, which a follow-up must wait for.
   const busy = new Set<number>();
@@ -552,7 +562,7 @@ export function register(pi: ExtensionAPI, invocation: Invocation): void {
       owner: finish,
     };
     jobs.set(job.id, job);
-    job.done = run(invocation, request, job.controller.signal, (update) => {
+    job.done = run(resolve(), request, job.controller.signal, (update) => {
       job.progress = update;
     })
       .then((outcome) => {
@@ -802,7 +812,7 @@ export function register(pi: ExtensionAPI, invocation: Invocation): void {
       // Show the row, and the model it will use, before the comrade has started.
       update(emptyProgress());
       busy.add(id);
-      const outcome = await run(invocation, request, signal, update).finally(() => {
+      const outcome = await run(resolve(), request, signal, update).finally(() => {
         busy.delete(id);
         returned.add(toolCallId);
       });
@@ -984,5 +994,5 @@ export default function (pi: ExtensionAPI) {
     watchParent(Number(parent));
     return;
   }
-  register(pi, currentPi());
+  register(pi, () => currentPi());
 }

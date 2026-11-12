@@ -25,7 +25,7 @@ With `files`, it also attaches files as `@file` arguments do, and with `output` 
 
 ## How it works
 
-Comrade spawns the same Pi release as the caller with `--mode json --session <file>` in the caller's working directory (or `cwd`), forwarding the caller's project trust setting (`--approve` or `--no-approve`). Context files, skills, and extensions load as usual. Because passing an explicit tool list replaces Pi's default tool set, `codemode` is disabled unless explicitly included in `tools`.
+Comrade spawns the same Pi release as the caller (its script, under the caller's runtime, or the runtime of the same name on `PATH` if an upgrade such as `brew upgrade node` has deleted it mid-session) with `--mode json --session <file>` in the caller's working directory (or `cwd`), forwarding the caller's project trust setting (`--approve` or `--no-approve`). Context files, skills, and extensions load as usual. Because passing an explicit tool list replaces Pi's default tool set, `codemode` is disabled unless explicitly included in `tools`.
 
 The `task` string is written verbatim to the child Pi process on standard input rather than passed through a shell. This avoids command-line argument length limits and ensures that a task beginning with `@` or `-` is never mistaken for a file reference or CLI option. Attached files are passed after the flags as `@/absolute/path` arguments. Pi builds the prompt as the task, then each file's `<file name="...">` block. Pi trims the task and appends the first block straight after its last character, so `…last line<file name="…">` is what the comrade reads; the tag delimits itself.
 
