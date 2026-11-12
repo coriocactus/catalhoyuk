@@ -196,23 +196,36 @@ export function showCommand(command: string, style: ShellPaint): ShownCommand {
     flush();
   } else {
     // A script: its own lines, with heredoc bodies counted.
-    const rows = [first, ...physical.slice(1).map(tokenize)];
-    for (let index = 0; index < rows.length; index++) {
-      const line = physical[index] ?? "";
-      let shown = paint(rows[index], style).trimEnd();
+    const shownLines: { index: number; stop?: number }[] = [];
+    for (let index = 0; index < physical.length; index++) {
       // `<<<word` is a here-string, not a heredoc: it has no body.
-      const heredoc = /(?:^|[^<])<<-?\s*(['"]?)([A-Za-z_]\w*)\1/.exec(line);
-      if (heredoc) {
-        const end = physical.findIndex(
-          (candidate, at) => at > index && candidate.trim() === heredoc[2],
-        );
-        const stop = end < 0 ? physical.length : end;
-        const count = stop - index - 1;
-        if (count > 0) {
-          shown += ` ${style.dim(`… ${count} line${count === 1 ? "" : "s"}`)}`;
-          elided = true;
-        }
-        index = stop;
+      const heredoc = /(?:^|[^<])<<-?\s*(['"]?)([A-Za-z_]\w*)\1/.exec(physical[index] ?? "");
+      if (!heredoc) {
+        shownLines.push({ index });
+        continue;
+      }
+      const end = physical.findIndex(
+        (candidate, at) => at > index && candidate.trim() === heredoc[2],
+      );
+      const stop = end < 0 ? physical.length : end;
+      shownLines.push({ index, stop });
+      index = stop;
+    }
+    // The indentation its later lines share goes, as when a chain is typed with each step
+    // indented: the row indents them itself. What one indents more than another stays.
+    const indents = shownLines
+      .slice(1)
+      .map(({ index }) => physical[index] ?? "")
+      .filter((line) => line.trim())
+      .map((line) => /^[ \t]*/.exec(line)?.[0].length ?? 0);
+    const indent = indents.length ? Math.min(...indents) : 0;
+    for (const { index, stop } of shownLines) {
+      const tokens = index === 0 ? first : tokenize((physical[index] ?? "").slice(indent));
+      let shown = paint(tokens, style).trimEnd();
+      const count = stop === undefined ? 0 : stop - index - 1;
+      if (count > 0) {
+        shown += ` ${style.dim(`… ${count} line${count === 1 ? "" : "s"}`)}`;
+        elided = true;
       }
       if (shown || index === 0) lines.push(shown);
     }

@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ROW_ANCHOR } from "../shared/anchors.ts";
 import { HISTORY_PAGE } from "../shared/history.ts";
+import { isNestedRowsRequest, NESTED_ROWS_EVENT } from "../shared/nested.ts";
 import { isOpenFileRequest, OPEN_FILE_EVENT } from "../shared/protocol.ts";
 import {
   CONTENT_START,
@@ -15,12 +16,15 @@ import { isTranscriptView, TRANSCRIPT_VIEW } from "../shared/transcript.ts";
 
 test("shared presentation identifiers use the owning extensions' namespaces", () => {
   assert.equal(OPEN_FILE_EVENT, "inspector:open");
+  assert.equal(NESTED_ROWS_EVENT, "mirage:nested-rows");
   assert.equal(TRANSCRIPT_VIEW, "rearview:transcript-view");
   assert.equal(Symbol.keyFor(HISTORY_PAGE), "rearview.history-page.v1");
   assert.equal(Symbol.keyFor(ROW_ANCHOR), "rearview.row-anchor.v1");
 });
 
 test("payload guards accept well-formed messages and reject malformed ones", () => {
+  assert(isNestedRowsRequest({}));
+  for (const invalid of [null, undefined, "rows", 1]) assert(!isNestedRowsRequest(invalid));
   const request = { path: "a.txt", cwd: "/tmp", tool: "read", accepted: false };
   assert(isOpenFileRequest(request));
   for (const invalid of [

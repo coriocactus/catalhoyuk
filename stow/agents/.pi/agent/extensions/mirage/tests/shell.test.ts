@@ -85,6 +85,19 @@ test("scripts keep their lines, and heredoc bodies are counted instead of shown"
   assert.deepEqual(lines("cat <<<word\nls\nEOF"), ["cat <<<word", "ls", "EOF"]);
   // A backslash-newline is one line continued, laid out like any chain.
   assert.deepEqual(lines("make \\\n  && make test"), ["make && \\", "make test"]);
+  // Indentation the later lines share goes, as the row indents them itself; more stays.
+  assert.deepEqual(lines("cd x &&\n     ls tests &&\n     wc -l *.ts"), [
+    "cd x &&",
+    "ls tests &&",
+    "wc -l *.ts",
+  ]);
+  assert.deepEqual(lines("  for f in *; do\n    echo $f\n\n  done"), [
+    "for f in *; do",
+    "  echo $f",
+    "done",
+  ]);
+  // A heredoc's body is not shown, so it does not count.
+  assert.deepEqual(lines("cat <<EOF\nbody\nEOF\n  ls\n  pwd"), ["cat <<EOF … 1 line", "ls", "pwd"]);
 });
 
 test("long commands stop after eight lines", () => {

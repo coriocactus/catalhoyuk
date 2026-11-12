@@ -1,11 +1,14 @@
 // What a comrade did, folded from its tool events into a small record: counts per kind, and
-// the calls worth naming (failures, changed files, commands). It stays a few KB however many
-// calls the comrade makes. Wording follows mirage's group summaries.
+// the calls worth naming (failures, changed files, commands). The record its row saves stays a
+// few KB however many calls the comrade makes; what the comrade said and every call it made
+// are in its own conversation. Wording follows mirage's group summaries.
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 
 export type Kind = "read" | "search" | "command" | "edit" | "write" | "script" | "tool";
 export type Status = "success" | "error" | "cancelled";
+/** A call still running, which only live rows show. */
+export type Live = Status | "running";
 
 export interface Tally {
   kind: Kind;
@@ -26,6 +29,8 @@ export interface Row {
   /** How often a command ran. */
   times?: number;
   error?: string;
+  /** A failed command's exit code, which Pi appends to its output: shown instead of its error. */
+  code?: string;
 }
 
 export interface Work {
@@ -36,9 +41,13 @@ export interface Work {
   omitted: number;
   /** The latest call, for the running row. Not kept once the comrade ends. */
   current?: string;
+  /** The latest calls, oldest first, for the running row. Not kept once the comrade ends. */
+  recent?: (Omit<Row, "status"> & { status: Live })[];
 }
 
 const KEPT_ROWS = 20;
+/** The latest calls a running row can show. */
+const RECENT = 8;
 const KINDS: Record<string, Kind> = {
   read: "read",
   edit: "edit",
@@ -132,6 +141,71 @@ interface Call {
   status?: Status;
   added: number;
   removed: number;
+  error?: string;
+}
+
+/** A call as it starts: its kind, path and the detail its label shows. */
+function callOf(tool: string, args: unknown, cwd: string): Call {
+  const record = typeof args === "object" && args !== null ? (args as Record<string, unknown>) : {};
+  const kind = KINDS[tool] ?? "tool";
+  const rawPath = text(record.path).replace(/^@/, "");
+  const path = rawPath ? clip(resolve(cwd, rawPath), 300) : undefined;
+  let detail: string;
+  // A command's first line, marked when more follow: joined, its lines could read as one.
+  if (kind === "command") {
+    const command = text(record.command).trim();
+    const more = firstLine(command) !== oneLine(command) ? " …" : "";
+    detail = clip(firstLine(command), 120 - more.length) + more;
+  } else if (tool === "grep" || tool === "find") detail = clip(oneLine(text(record.pattern)), 80);
+  else if (kind === "tool" || kind === "script") {
+    const key = ["command", "path", "pattern", "url", "query"].find(
+      (name) => typeof record[name] === "string",
+    );
+    detail = clip(oneLine(key ? text(record[key]) : JSON.stringify(args ?? {})), 80);
+  } else detail = "";
+  return {
+    kind,
+    tool,
+    path,
+    detail,
+    written: kind === "write" ? writtenLines(text(record.content)) : 0,
+    added: 0,
+    removed: 0,
+  };
+}
+
+/**
+ * One call as a row, in mirage's single-row wording: for a call mirage does not draw, or for
+ * every call where mirage is not loaded. `status` absent: still running. `details` is its
+ * result's, which hold an edit's diff.
+ */
+export function callRow(
+  tool: string,
+  args: unknown,
+  cwd: string,
+  status?: Status,
+  error?: string,
+  details?: unknown,
+): Omit<Row, "status"> & { status: Live } {
+  const call = { ...callOf(tool, args, cwd), status };
+  const ledger = new Ledger(cwd);
+  // What an edit or write that went through changed, as mirage counts it.
+  let changes = { added: 0, removed: 0 };
+  if (status === "success" && call.kind === "edit")
+    changes = diffCounts(text((details as { diff?: unknown } | undefined)?.diff));
+  else if (status === "success" && call.kind === "write") changes.added = call.written;
+  const code =
+    call.kind === "command" && error
+      ? /Command exited with code (\d+)\s*$/.exec(error)?.[1]
+      : undefined;
+  return {
+    kind: call.kind,
+    status: status ?? "running",
+    label: ledger.labelOf(call),
+    ...(changes.added ? { added: changes.added } : {}),
+    ...(changes.removed ? { removed: changes.removed } : {}),
+    ...(code ? { code } : error ? { error: clip(firstLine(error), 120) } : {}),
+  };
 }
 
 export class Ledger {
@@ -141,6 +215,7 @@ export class Ledger {
   private readonly changed = new Map<string, Row>();
   private readonly commands = new Map<string, Row>();
   private latest?: Call;
+  private readonly recent: Call[] = [];
   private readonly cwd: string;
 
   constructor(cwd: string) {
@@ -148,31 +223,12 @@ export class Ledger {
   }
 
   start(id: string, tool: string, args: unknown): void {
-    const record =
-      typeof args === "object" && args !== null ? (args as Record<string, unknown>) : {};
-    const kind = KINDS[tool] ?? "tool";
-    const rawPath = text(record.path).replace(/^@/, "");
-    const path = rawPath ? clip(resolve(this.cwd, rawPath), 300) : undefined;
-    let detail: string;
-    if (kind === "command") detail = clip(firstLine(text(record.command)), 120);
-    else if (tool === "grep" || tool === "find") detail = clip(oneLine(text(record.pattern)), 80);
-    else if (kind === "tool" || kind === "script") {
-      const key = ["command", "path", "pattern", "url", "query"].find(
-        (name) => typeof record[name] === "string",
-      );
-      detail = clip(oneLine(key ? text(record[key]) : JSON.stringify(args ?? {})), 80);
-    } else detail = "";
-    const call: Call = {
-      kind,
-      tool,
-      path,
-      detail,
-      written: kind === "write" ? writtenLines(text(record.content)) : 0,
-      added: 0,
-      removed: 0,
-    };
+    const call = callOf(tool, args, this.cwd);
+    const { kind, path } = call;
     this.calls.set(id, call);
     this.latest = call;
+    this.recent.push(call);
+    if (this.recent.length > RECENT) this.recent.shift();
     const tally = this.tallies.get(kind) ?? {
       kind,
       calls: 0,
@@ -254,11 +310,21 @@ export class Ledger {
       omitted: Math.max(0, rows.length - KEPT_ROWS),
     };
     if (running && this.latest) work.current = this.label(this.latest);
+    if (running && this.recent.length)
+      work.recent = this.recent.map((call) => ({
+        kind: call.kind,
+        status: call.status ?? "running",
+        label: this.label(call, false),
+        ...(call.added ? { added: call.added } : {}),
+        ...(call.removed ? { removed: call.removed } : {}),
+        ...(call.error ? { error: call.error } : {}),
+      }));
     return work;
   }
 
   private fail(call: Call, status: "error" | "cancelled", error?: string): void {
     call.status = status;
+    call.error = error || undefined;
     const tally = this.tallies.get(call.kind);
     if (tally) tally.failed++;
     this.failures.push({
@@ -269,8 +335,16 @@ export class Ledger {
     });
   }
 
-  /** Mirage's single-row forms: `Read ~/p`, `Editing ~/p`, `$ cmd`, `grep pattern ~/dir`. */
-  private label(call: Call): string {
+  /** A call's label without its line counts. */
+  labelOf(call: Call): string {
+    return this.label(call, false);
+  }
+
+  /**
+   * Mirage's single-row forms: `Read ~/p`, `Editing ~/p`, `$ cmd`, `grep pattern ~/dir`. Edits
+   * and writes end with their line counts unless `counts` is false.
+   */
+  private label(call: Call, counts = true): string {
     const path = call.path ? homePath(call.path) : "";
     if (call.kind === "read" || call.kind === "edit" || call.kind === "write") {
       const verbs = VERBS[call.kind];
@@ -279,9 +353,11 @@ export class Ledger {
         : call.status === "success"
           ? verbs.success
           : verbs.failed;
-      const changes = [call.added ? `+${call.added}` : "", call.removed ? `−${call.removed}` : ""]
-        .filter(Boolean)
-        .join(" ");
+      const changes = counts
+        ? [call.added ? `+${call.added}` : "", call.removed ? `−${call.removed}` : ""]
+            .filter(Boolean)
+            .join(" ")
+        : "";
       return [verb, path, changes].filter(Boolean).join(" ");
     }
     if (call.kind === "command") return `$ ${call.detail}`;

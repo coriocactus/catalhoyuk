@@ -6,7 +6,7 @@
     "check": "biome check . --error-on-warnings",
     "format": "biome format --write .",
     "typecheck": "node test/typecheck.ts",
-    "test": "node --test \"*/tests/*.test.ts\" \"test/*.test.ts\"",
+    "test": "node --test --test-timeout=60000 \"*/tests/*.test.ts\" \"test/*.test.ts\"",
     "test:terminal": "node test/e2e/terminal.ts",
     "pi-diff": "node test/pi-diff.ts",
     "verify": "npm run check && npm run typecheck && npm test && npm run test:terminal && node test/pi-diff.ts --status"

@@ -17,7 +17,31 @@ export const READ_ONLY = ["read", "grep", "find", "ls"];
 /** This extension's own tools, which comrades never get. */
 const OWN = ["comrade", "comrades"];
 
+/** The tools a comrade gets when the caller names none: the read-only ones active here. */
+export function defaultTools(active: string[]): string[] {
+  return READ_ONLY.filter((name) => active.includes(name));
+}
+
+/**
+ * What comrade's tools parameter tells the calling model. Pi's grep, find and ls are off unless
+ * enabled, so the default names only the read-only tools active here: naming the others would
+ * have the model ask for tools a comrade cannot have. Without a session yet, no list at all.
+ */
+export function toolsDescription(active?: string[]): string {
+  const rest =
+    'Add "edit" and "write" to change files, "bash" to run commands. [] for none. Only tools ' +
+    "active here.";
+  if (!active) return `Default: the read-only tools active here, or the comrade's with to. ${rest}`;
+  const tools = defaultTools(active);
+  const list = tools.length
+    ? `read-only, [${tools.map((name) => `"${name}"`).join(", ")}]`
+    : "none, as no read-only tool is active here";
+  return `Default: ${list}, or the comrade's with to. ${rest}`;
+}
+
 export interface Arguments {
+  /** A few words naming the job, which its row shows. */
+  title?: string;
   task: string;
   model?: string;
   thinking?: Thinking;
@@ -61,7 +85,7 @@ export function thinkingSuffix(model: string): Thinking | undefined {
  */
 export function resolveTools(requested: string[] | undefined, pi: ExtensionAPI): string[] {
   const active = pi.getActiveTools().filter((name) => !OWN.includes(name));
-  if (requested === undefined) return READ_ONLY.filter((name) => active.includes(name));
+  if (requested === undefined) return defaultTools(active);
   const tools = [...new Set(requested)];
   if (tools.some((tool) => OWN.includes(tool))) throw new Error("A comrade cannot start comrades.");
   const all = pi.getAllTools().map((tool) => tool.name);
@@ -167,6 +191,19 @@ function resolveCwd(requested: string | undefined, cwd: string): string {
   return directory;
 }
 
+/** The longest title a row keeps: a few words naming the job. */
+export const TITLE_MAX = 60;
+
+// biome-ignore lint/suspicious/noControlCharactersInRegex: a title is one plain line.
+const CONTROLS = /[\x00-\x1f\x7f]+/g;
+
+/** A title on one line, at most TITLE_MAX characters. */
+export function cleanTitle(title: string | undefined): string | undefined {
+  const line = title?.replace(CONTROLS, " ").replace(/\s+/g, " ").trim();
+  if (!line) return undefined;
+  return line.length > TITLE_MAX ? `${line.slice(0, TITLE_MAX - 1)}…` : line;
+}
+
 /** Whether `path` is `root` or inside it. */
 export function within(path: string, root: string): boolean {
   const rel = relative(root, path);
@@ -175,6 +212,7 @@ export function within(path: string, root: string): boolean {
 
 /** How a comrade ran, which its follow-ups keep unless they say otherwise. */
 export interface Previous {
+  title?: string;
   provider: string;
   model: string;
   thinking?: string;
@@ -188,7 +226,7 @@ export interface Previous {
  */
 export function prepare(
   args: Arguments,
-  ctx: ExtensionToolContext,
+  ctx: ExtensionContext,
   pi: ExtensionAPI,
   previous?: Previous,
 ): Omit<Request, "session" | "followUp"> {

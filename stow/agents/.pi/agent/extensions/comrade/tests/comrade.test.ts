@@ -7,215 +7,31 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
-import { fileURLToPath } from "node:url";
-import type { Api, Model } from "@earendil-works/pi-ai";
-import type {
-  ExtensionAPI,
-  ExtensionCommandContext,
-  ExtensionToolContext,
-  MessageRenderer,
-  SessionEntry,
-} from "@earendil-works/pi-coding-agent";
-import type { Component } from "@earendil-works/pi-tui";
+import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { fake, fakePi, type Tool } from "../../test/fake-pi.ts";
 import { load, themes, tui } from "../../test/pi.ts";
+import { fixture, models, render, standIn, toolNames } from "./fixture.ts";
 
 const {
   default: install,
   currentPi,
-  register,
   watchParent,
 } = await load<typeof import("../index.ts")>("../index.ts", import.meta.url);
+const resume = await load<typeof import("../resume.ts")>("../resume.ts", import.meta.url);
+const { interruption, interruptionNote, finished } = resume;
+const { lean, steering } = await load<typeof import("../run.ts")>("../run.ts", import.meta.url);
+const runs = await load<typeof import("../runs.ts")>("../runs.ts", import.meta.url);
 type Details = import("../index.ts").Details;
 type Delivery = import("../index.ts").Delivery;
 type Sent = Parameters<ExtensionAPI["sendMessage"]>;
-type Command = Parameters<ExtensionAPI["registerCommand"]>[1];
 type Result = Awaited<ReturnType<Tool["execute"]>>;
 type RenderContext = Parameters<NonNullable<Tool["renderResult"]>>[3];
-
-const standIn = fileURLToPath(new URL("./stand-in.ts", import.meta.url));
-const models = [
-  "anthropic/claude-opus-5-5",
-  "anthropic/claude-fable-5-1",
-  // OpenRouter's id for the same model is the text `anthropic/claude-fable-5-1`.
-  "openrouter/anthropic/claude-fable-5-1",
-  "openrouter/google/gemini-4-argon",
-  "openrouter/google/gemini-4-argon:batch",
-  // A provider whose own id contains a slash.
-  "corp/proxy/big-model",
-].map((ref) => {
-  const slash = ref.indexOf("/");
-  const split = ref.startsWith("corp/proxy/") ? "corp/proxy".length : slash;
-  return fake<Model<Api>>({ provider: ref.slice(0, split), id: ref.slice(split + 1) });
-});
-const current = models[0];
-const toolNames = ["read", "bash", "edit", "write", "grep", "find", "ls", "codemode"];
-
-function fixture(
-  t: TestContext,
-  scenario: string,
-  {
-    trusted = true,
-    /** A function is called again for each run. */
-    command = process.execPath as string | (() => string),
-    mode = "tui" as ExtensionToolContext["mode"],
-    entries = [] as SessionEntry[],
-    sessionId = "session",
-    reason = "startup",
-    /** The caller's session file, beside which comrades keep theirs. Null: an unsaved session. */
-    parent = "parent.jsonl" as string | null,
-    /** The current branch, when it is not every entry. */
-    branch = undefined as SessionEntry[] | undefined,
-    /** Tools this Pi has but does not offer the model, which a comrade cannot have either. */
-    inactive = [] as string[],
-    /** The session's scoped models (`enabledModels`). Empty: no scope. */
-    scoped = [] as Model<Api>[],
-    /** The models with credentials, which a session with no scope may use. */
-    available = models,
-  } = {},
-) {
-  const pi = fakePi();
-  const sent: Sent[] = [];
-  const waiting: (() => void)[] = [];
-  const commands = new Map<string, Command>();
-  const renderers = new Map<string, MessageRenderer<Delivery>>();
-  const notices: string[] = [];
-  const api: ExtensionAPI = {
-    ...pi.api,
-    sendMessage: ((...message: Sent) => {
-      sent.push(message);
-      for (const wake of waiting.splice(0)) wake();
-    }) as ExtensionAPI["sendMessage"],
-    registerCommand: (name, options) => commands.set(name, options),
-    registerMessageRenderer: ((type: string, renderer: MessageRenderer<Delivery>) =>
-      renderers.set(type, renderer)) as ExtensionAPI["registerMessageRenderer"],
-    getAllTools: () =>
-      [...toolNames, ...pi.tools.keys()].map((name) =>
-        fake<ReturnType<ExtensionAPI["getAllTools"]>[number]>({ name }),
-      ),
-    // Active in the caller: everything but what `inactive` names.
-    getActiveTools: () =>
-      [...toolNames, ...pi.tools.keys()].filter((name) => !inactive.includes(name)),
-  };
-  register(
-    api,
-    typeof command === "function"
-      ? () => ({ command: command(), args: [standIn, scenario] })
-      : { command, args: [standIn, scenario] },
-  );
-  const tool = pi.tools.get("comrade");
-  const list = pi.tools.get("comrades");
-  assert(tool && list, "comrade and comrades registered");
-  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "comrade-test-")));
-  t.after(() => rmSync(cwd, { recursive: true, force: true }));
-  const working: (string | undefined)[] = [];
-  const keys = new Set<(data: string) => unknown>();
-  let pending = false;
-  const ui = {
-    setStatus: () => assert.fail("comrade must not add a footer status"),
-    notify: (message: string) => void notices.push(message),
-    setWorkingMessage: (message?: string) => void working.push(message),
-    onTerminalInput: (handler: (data: string) => unknown) => {
-      keys.add(handler);
-      return () => keys.delete(handler);
-    },
-  };
-  const ctx = fake<ExtensionToolContext>({
-    cwd,
-    mode,
-    ui,
-    sessionManager: {
-      getEntries: () => entries,
-      getBranch: () => branch ?? entries,
-      getSessionId: () => sessionId,
-      getSessionFile: () => (parent === null ? undefined : join(cwd, parent)),
-    },
-    model: current,
-    thinkingLevel: "xhigh",
-    scopedModels: scoped.map((model) => ({ model })),
-    modelRegistry: {
-      find: (provider, id) => models.find((m) => m.provider === provider && m.id === id),
-      getAvailable: () => available,
-    },
-    isProjectTrusted: () => trusted,
-    hasPendingMessages: () => pending,
-  });
-  const updates: Result[] = [];
-  const call = (
-    params: Record<string, unknown>,
-    signal?: AbortSignal,
-    onUpdate?: () => void,
-    toolCallId = "call",
-  ) =>
-    tool.execute(
-      toolCallId,
-      params,
-      signal,
-      (update) => {
-        updates.push(update);
-        onUpdate?.();
-      },
-      ctx,
-    ) as Promise<Result>;
-  pi.emit("session_start", { reason }, ctx);
-  t.after(() => pi.emit("session_shutdown", { reason: "quit" }, ctx));
-  const comrades = (params: Record<string, unknown>) =>
-    list.execute("list", params, undefined, undefined, ctx) as Promise<Result>;
-  /** Resolves once `count` messages have been sent. */
-  const delivered = async (count: number) => {
-    while (sent.length < count) await new Promise<void>((wake) => waiting.push(wake));
-    return sent;
-  };
-  const slash = (args: string) => {
-    const comrades = commands.get("comrades");
-    assert(comrades, "/comrades registered");
-    return comrades.handler(args, fake<ExtensionCommandContext>({ ui }));
-  };
-  const shutdown = (why = "quit") => pi.emit("session_shutdown", { reason: why }, ctx);
-  /** The agent tries to end its turn. Resolves when Pi may let it. */
-  const settle = () => pi.event("agent_before_settle", {}, ctx);
-  const press = (data: string) => {
-    for (const handler of keys) handler(data);
-  };
-  const typed = () => {
-    pending = true;
-  };
-  /** Records a comrade's row in the session, as Pi does once the call returns. */
-  const remember = (result: Result) =>
-    entries.push(
-      fake<SessionEntry>({
-        type: "message",
-        message: { role: "toolResult", toolName: "comrade", details: result.details },
-      } as never),
-    );
-  return {
-    pi,
-    ctx,
-    remember,
-    entries,
-    tool,
-    cwd,
-    call,
-    updates,
-    sent,
-    delivered,
-    slash,
-    notices,
-    renderers,
-    shutdown,
-    comrades,
-    settle,
-    press,
-    typed,
-    working,
-    keys,
-  };
-}
 
 /** A background comrade's start, as the session records it. */
 const started = (id: number, task: string) => ({
@@ -241,7 +57,7 @@ const RUN = /\n\n\[comrade #\d+: [^\n]*\]$/;
 /** A result's text without its run line. */
 const answer = (result: Result) => text(result).replace(RUN, "");
 
-test("comrade sends the task verbatim on stdin and the run settings as Pi flags", async (t) => {
+test("comrade sends the task verbatim as its prompt and the run settings as Pi flags", async (t) => {
   const { call, cwd, updates } = fixture(t, "echo");
   const task = `@notes.md -- $(rm -rf ~) "double" 'single' ✓ é\n  second line`;
   const result = await call({ task });
@@ -250,7 +66,7 @@ test("comrade sends the task verbatim on stdin and the run settings as Pi flags"
   assert.equal(echoed.task, task);
   assert.deepEqual(echoed.args, [
     "--mode",
-    "json",
+    "rpc",
     "--session",
     join(cwd, "parent.comrades", "comrade-1.jsonl"),
     "--provider",
@@ -283,11 +99,16 @@ test("comrade sends the task verbatim on stdin and the run settings as Pi flags"
   });
   assert.deepEqual(
     updates.map((update) => [details(update).calls, details(update).turns]),
-    // Shown before the comrade starts, then on each call start and end and each turn.
+    // Shown before the comrade starts, once its Pi has started, when its run starts, once Pi
+    // has saved its prompt, on each turn, and on each call's start, end and result.
     [
       [0, 0],
-      [1, 0],
-      [1, 0],
+      [0, 0],
+      [0, 0],
+      [0, 0],
+      [0, 1],
+      [1, 1],
+      [1, 1],
       [1, 1],
       [1, 2],
     ],
@@ -319,7 +140,7 @@ test("invalid requests are rejected before anything starts", async (t) => {
   // Starting anything would report this missing command instead of rejecting.
   const { call } = fixture(t, "echo", { command: "/nonexistent/pi" });
   const cases: [Record<string, unknown>, RegExp][] = [
-    [{ task: " \n " }, /needs a task/],
+    [{ task: " \n ", title: "Blank" }, /needs a task/],
     [{ task: "x", tools: ["read", "comrade"] }, /cannot start comrades/],
     [{ task: "x", tools: ["comrades"] }, /cannot start comrades/],
     [
@@ -355,6 +176,10 @@ test("failures are errors that say why", async (t) => {
     ["error", /^Comrade failed: 529 overloaded$/],
     ["crash", /^pi exited with code 1\nError: Model .* not found$/],
     ["silent", /^Comrade finished without an answer\.$/],
+    // Pi refuses the prompt before any run, as without credentials.
+    ["rejected", /^Comrade failed: No API key found for anthropic$/],
+    // An extension command took the prompt: nothing ran.
+    ["handled", /^Comrade finished without an answer\.$/],
     ["echo", /^Could not start pi: .*ENOENT/, { command: "/nonexistent/pi" }],
   ];
   for (const [scenario, message, options] of outcomes) {
@@ -388,17 +213,6 @@ test("comrades do not offer comrade", () => {
   }
 });
 
-/** The start of every running row's second line: the comrade's model and tools. */
-const M = "anthropic/claude-opus-5-5:xhigh · read, grep, find, ls · ";
-
-const render = (component: Component | undefined, width = 120) => {
-  assert(component);
-  return component
-    .render(width)
-    .map((line) => tui.stripTerminalSequences(line).trimEnd())
-    .join("\n");
-};
-
 test("a comrade's calls are summarised like mirage's groups, with the ones worth naming", async (t) => {
   const { call } = fixture(t, "busy");
   const work = details(await call({ task: "✓" })).work;
@@ -417,60 +231,83 @@ test("a comrade's calls are summarised like mirage's groups, with the ones worth
       ["cancelled", "$ sleep 9", undefined],
       ["success", "Edited /tmp/a.ts", 2],
       ["success", "Wrote /tmp/c.md", 2],
-      ["success", "$ npm test", 2],
+      ["success", "$ npm test …", 2],
     ],
   );
   assert.equal(work?.current, undefined, "a finished comrade has no current call");
 });
 
-test("one header line, a fixed progress line while running, and the rest behind Ctrl+O", async (t) => {
+test("one line at rest, three while running, and its work behind Ctrl+O or a click", async (t) => {
   // A frozen clock holds the spinner on its first frame.
   t.mock.timers.enable({ apis: ["setInterval", "Date"] });
-  const { tool, call, updates, cwd } = fixture(t, "busy");
-  const args = { task: `Review the diff in ${homedir()}/notes\nwith care` };
+  const { tool, call, updates } = fixture(t, "busy");
+  const args = {
+    title: "Review the diff",
+    task: `Review the diff in ${homedir()}/notes\nwith care`,
+  };
   const state = {};
   let redraws = 0;
   const context = (isPartial: boolean, expanded = false, isError = false) =>
     fake<RenderContext>({
       args,
       state,
+      toolCallId: "call",
       isPartial,
       expanded,
       isError,
+      argsComplete: true,
+      executionStarted: true,
       durationMs: isPartial ? undefined : 754_000,
+      outputPad: 0,
       invalidate: () => redraws++,
     });
+  const component = (value: Result, isPartial: boolean, expanded = false, isError = false) =>
+    tool.renderResult?.(
+      value,
+      { expanded, isPartial },
+      themes.theme,
+      context(isPartial, expanded, isError),
+    );
   const call_ = () => render(tool.renderCall?.(args, themes.theme, context(true)));
   const result_ = (value: Result, isPartial: boolean, expanded = false, isError = false) =>
-    render(
-      tool.renderResult?.(
-        value,
-        { expanded, isPartial },
-        themes.theme,
-        context(isPartial, expanded, isError),
-      ),
-      // Wide enough for the conversation's path in the temporary directory.
-      expanded ? 400 : 120,
-    );
+    render(component(value, isPartial, expanded, isError));
 
-  // Before any result, the call slot is the header.
-  assert.equal(call_(), "⠋ Comrade  Review the diff in ~/notes");
-  const result = await call(args);
-  const editing = updates.find((update) => details(update).work?.current === "Editing /tmp/a.ts");
-  assert(editing);
+  // Before any result, the call slot is the header, named by its title.
+  assert.equal(call_(), "⠋ Comrade  Review the diff");
+  // Drawn as Pi draws it while the comrade works: when the edit is under way.
+  let running: string[] = [];
+  const result = await call(args, undefined, () => {
+    const update = updates.at(-1);
+    if (update && details(update).work?.current === "Editing /tmp/a.ts" && !running.length)
+      running = [result_(update, true), result_(update, true, true)];
+  });
+  // Running: the call it runs, and with nothing said in this turn, its tokens so far.
   assert.equal(
-    result_(editing, true),
-    `⠋ Comrade #1  Review the diff in ~/notes  0s\n${M}turn 1 · 5 calls · Editing /tmp/a.ts`,
+    running[0],
+    ["⠋ Comrade #1  Review the diff  $0.01 · 0s ▸", "  ⠋ Editing /tmp/a.ts", "  ↑150 ↓10"].join(
+      "\n",
+    ),
   );
-  // Ctrl+O while it runs shows the whole task, as sent, under the progress line.
+  // Expanded, its task and then its calls, which Pi started together, as they stand.
   assert.equal(
-    result_(editing, true, true),
+    running[1],
     [
-      "⠋ Comrade #1  Review the diff in ~/notes  0s",
-      `${M}turn 1 · 5 calls · Editing /tmp/a.ts`,
+      "⠋ Comrade #1  Review the diff  $0.01 · 0s ▾",
       "",
-      `│ Review the diff in ${homedir()}/notes`,
-      "│ with care",
+      `  │ Review the diff in ${homedir()}/notes`,
+      "  │ with care",
+      "",
+      "  ✓ Read /tmp/a.ts",
+      "  ✓ Read /tmp/b.ts",
+      "  ✓ Read /tmp/a.ts",
+      "  ✓ grep TODO /tmp",
+      "  ⠋ Editing /tmp/a.ts",
+      "  ⠋ Writing /tmp/c.md",
+      "  ⠋ npm test …",
+      "  ⠋ npm test …",
+      "  ⠋ false",
+      "  ⠋ Reading /tmp/d.ts",
+      "  ⠋ sleep 9",
     ].join("\n"),
   );
   // From then on the result slot owns the header, and the call slot is redrawn empty.
@@ -478,28 +315,39 @@ test("one header line, a fixed progress line while running, and the rest behind 
   assert.equal(redraws, 1);
   assert.equal(call_(), "");
 
-  assert.equal(result_(result, false), "✓ Comrade #1  Review the diff in ~/notes  $0.01 · 12m 34s");
+  assert.equal(result_(result, false), "✓ Comrade #1  Review the diff  $0.02 · 12m 34s ▸");
+  // Ended: its task, what it did in order, and its answer. The call Pi never finished is
+  // cancelled.
   assert.equal(
-    result_(result, false, true).replace(cwd, "<cwd>"),
+    result_(result, false, true),
     [
-      "✓ Comrade #1  Review the diff in ~/notes  $0.01 · 12m 34s",
+      "✓ Comrade #1  Review the diff  $0.02 · 12m 34s ▾",
       "",
-      "anthropic/claude-opus-5-5:xhigh · read, grep, find, ls · 1 turn · ↑150 ↓10",
-      "Conversation: <cwd>/parent.comrades/comrade-1.jsonl",
-      "✓ Read 3 files, ran 1 search, edited 1 file (+2 −1), wrote 1 file (+2), ran 4 commands",
+      `  │ Review the diff in ${homedir()}/notes`,
+      "  │ with care",
+      "",
+      "  ✓ Read /tmp/a.ts",
+      "  ✓ Read /tmp/b.ts",
+      "  ✓ Read /tmp/a.ts",
+      "  ✓ grep TODO /tmp",
+      "  ✓ Edited /tmp/a.ts +2 −1",
+      "  ✓ Wrote /tmp/c.md +2",
+      "  $ npm test …",
+      "  $ npm test …",
       "  $ false  exit code 1",
       "  ✗ Read /tmp/d.ts  ENOENT: no such file or directory",
       "  $ sleep 9",
-      "  Edited /tmp/a.ts +2 −1",
-      "  Wrote /tmp/c.md +2",
-      "  $ npm test ×2",
       "",
-      `│ Review the diff in ${homedir()}/notes`,
-      "│ with care",
-      "",
-      "Done.",
+      "  Done.",
     ].join("\n"),
   );
+
+  // Its header is Pi's to open and close, as any tool row's: the row leaves the click to Pi.
+  const row = component(result, false);
+  assert(row?.handleMouse);
+  // Pi draws a row before it can be clicked.
+  row.render(120);
+  assert.equal(row.handleMouse({ type: "click", button: "left", x: 3, y: 0 } as never), undefined);
 
   const stopped = {
     content: [{ type: "text" as const, text: "Comrade stopped." }],
@@ -507,26 +355,70 @@ test("one header line, a fixed progress line while running, and the rest behind 
   };
   assert.equal(
     result_(stopped, false, false, true),
-    "✓ Comrade #1  Review the diff in ~/notes  $0.01 · 12m 34s"
-      .replace("✓", "✗")
-      .replace("  $", "  stopped · $"),
+    "✗ Comrade #1  Review the diff  stopped · $0.02 · 12m 34s ▸",
   );
-  assert.match(result_(stopped, false, true, true), /\nStopped with Esc\.$/);
 
   const rejected = {
-    content: [{ type: "text" as const, text: "comrade needs a task." }],
+    content: [{ type: "text" as const, text: "comrade needs a task.\nPass one." }],
     details: {},
   };
-  assert.match(
+  assert.equal(
     result_(rejected, false),
-    /^✗ Comrade {2}Review the diff in ~\/notes {2}failed\n\ncomrade needs a task\.$/,
+    "✗ Comrade  Review the diff  failed ▸\n  comrade needs a task.",
+  );
+  assert.match(result_(rejected, false, true), /comrade needs a task\.\n {2}Pass one\.\n/);
+});
+
+test("a call Pi never finished, in a session opened again, is still", (t) => {
+  const { tool } = fixture(t, "echo");
+  const args = { title: "Review the diff", task: "Review it" };
+  const drawn = render(
+    tool.renderCall?.(
+      args,
+      themes.theme,
+      fake<RenderContext>({
+        args,
+        state: {},
+        toolCallId: "orphan",
+        argsComplete: true,
+        executionStarted: false,
+        invalidate() {},
+      }),
+    ),
+  );
+  assert.equal(drawn, "… Comrade  Review the diff");
+});
+
+test("a row without a title is named by its task's first line, dim", async (t) => {
+  const { tool, call } = fixture(t, "echo");
+  // A blank title, or a row saved before titles: nothing refuses it.
+  const args = { task: "Two files are attached.\nRead them.", title: " " };
+  const result = await call(args);
+  assert.equal(details(result).title, undefined);
+  assert.match(
+    render(
+      tool.renderResult?.(
+        result,
+        { expanded: false, isPartial: false },
+        themes.theme,
+        fake<RenderContext>({
+          args,
+          state: {},
+          isPartial: false,
+          expanded: false,
+          durationMs: 1000,
+          invalidate() {},
+        }),
+      ),
+    ),
+    /^✓ Comrade #1 {2}Two files are attached\. {2}\$0\.02 · 1\.0s ▸$/,
   );
 });
 
-test("the header keeps cost and duration visible by cutting the task", async (t) => {
+test("the header keeps how it went in view by cutting the title, narrow by dropping the cost", async (t) => {
   const { tool, call } = fixture(t, "echo");
   const args = { task: "✓ ".repeat(80) };
-  const result = await call(args);
+  const result = await call({ ...args, model: "anthropic/claude-fable-5-1" });
   const line = tool.renderResult?.(
     result,
     { expanded: false, isPartial: false },
@@ -541,17 +433,29 @@ test("the header keeps cost and duration visible by cutting the task", async (t)
       invalidate() {},
     }),
   );
-  const [raw] = line?.render(40) ?? [];
-  const header = tui.stripTerminalSequences(raw);
-  assert.equal(tui.visibleWidth(header), 40);
-  assert.match(header, /… {2}\$0\.02 · 1\.5s$/);
-  // A full reset would clear the tool box's background from the cut onwards.
-  assert(!raw.includes("\x1b[0m"), JSON.stringify(raw));
+  const header = (width: number) => {
+    line?.invalidate();
+    const [raw] = line?.render(width) ?? [];
+    // A full reset would clear any colour behind the row from the cut onwards.
+    assert(!raw.includes("\x1b[0m"), JSON.stringify(raw));
+    const plain = tui.stripTerminalSequences(raw);
+    assert(tui.visibleWidth(plain) <= width, plain);
+    return plain;
+  };
+  // Wide, the model the caller did not use is named after the title, which a row keeps short.
+  assert.match(
+    header(120),
+    /^✓ Comrade #1 {2}(✓ ){29}✓… {2}claude-fable-5-1 {2}\$0\.02 · 1\.5s ▸$/,
+  );
+  // Narrower, the title gives way, then the model, then the cost.
+  assert.match(header(70), /✓… {2}\$0\.02 · 1\.5s ▸$/);
+  assert.equal(tui.visibleWidth(header(70)), 70);
+  assert.match(header(40), /✓… {2}1\.5s ▸$/);
 });
 
 test("a background comrade returns at once, then its answer arrives and wakes the agent", async (t) => {
   t.mock.timers.enable({ apis: ["setInterval", "Date"] });
-  const { tool, call, delivered, renderers } = fixture(t, "echo");
+  const { tool, call, delivered, renderers, entries } = fixture(t, "echo");
   const args = { task: "✓ survey the parser\nin detail", background: true };
   const result = await call(args);
   assert.equal(
@@ -575,15 +479,26 @@ test("a background comrade returns at once, then its answer arrives and wakes th
         invalidate() {},
       }),
     );
-  // Its start row spins, with its clock and progress, while the comrade runs.
-  assert.equal(
-    render(startRow()),
-    `⠋ Comrade #1  ✓ survey the parser  background · 0s\n${M}starting`,
-  );
+  // Its start row is one line, spinning while the comrade runs: the widget shows its progress.
+  // Its clock ticks while its run goes on.
+  assert.equal(render(startRow()), "⠋ Comrade #1  ✓ survey the parser  background · 0s ▸");
 
   const [message] = await delivered(1);
-  // Then it is one line again: the answer is in the delivered message.
-  assert.equal(render(startRow()), "… Comrade #1  ✓ survey the parser  background");
+  // Then it is history, dim, and once the session holds the answer, says how it went.
+  assert.equal(render(startRow()), "↗ Comrade #1  ✓ survey the parser  background ▸");
+  entries.push(
+    fake<SessionEntry>({
+      type: "message",
+      message: {
+        role: "toolResult",
+        toolName: "comrade",
+        toolCallId: "call",
+        details: result.details,
+      },
+    } as never),
+    saved(message),
+  );
+  assert.equal(render(startRow()), "↗ Comrade #1  ✓ survey the parser  background · finished ▸");
   assert.deepEqual(message[1], { deliverAs: "followUp", triggerTurn: true });
   assert.equal(message[0].customType, "comrade");
   assert.match(body(message), /^\[comrade #1 finished\] ✓ survey the parser\n\n\{"args"/);
@@ -600,10 +515,10 @@ test("a background comrade returns at once, then its answer arrives and wakes th
         themes.theme,
       ),
     ).trim();
-  assert.match(shown(false), /^✓ Comrade #1 {2}✓ survey the parser {2}\$0\.02 · \d+\.\ds$/);
+  assert.match(shown(false), /^✓ Comrade #1 {2}✓ survey the parser {2}\$0\.02 · \d+\.\ds ▸$/);
   assert.match(
     shown(true),
-    /^✓ Comrade #1 .*\n\nanthropic\/claude-opus-5-5:xhigh · read, grep, find, ls · 2 turns · ↑300 ↓20\nConversation: .*\/comrade-1\.js.*\n✓ Explored 1 file\n\n\{"args"/,
+    /^✓ Comrade #1 .* ▾\n\n {2}│ ✓ survey the parser\n\n {2}✓ Read \/tmp\/notes\.md\n\n {2}\{"args".*\}$/s,
   );
 });
 
@@ -612,7 +527,10 @@ test("/comrades lists and stops background comrades without waking the agent", a
   await call({ task: "first", background: true });
   await call({ task: "second", background: true });
   await slash("");
-  assert.match(notices.at(-1) ?? "", /^#1 .*· first\n#2 .*· second\n2 running · \$0\.00 so far$/);
+  assert.match(
+    notices.at(-1) ?? "",
+    /^#1 · first · .*\n#2 · second · .*\n2 running · \$0\.00 so far$/,
+  );
 
   await slash("stop #1");
   const [first] = await delivered(1);
@@ -784,6 +702,41 @@ test("the model parameter names the enabled models, and follows the scope as it 
   );
 });
 
+test("the tools parameter names only the read-only tools active here", async (t) => {
+  const inactive = ["grep", "find", "ls"];
+  const { pi, ctx, tool } = fixture(t, "echo", { inactive });
+  const described = (registered = pi.tools.get("comrade")) => {
+    assert(registered, "comrade registered");
+    const schema = registered.parameters as { properties: { tools: { description: string } } };
+    return schema.properties.tools.description;
+  };
+  const rest =
+    'Add "edit" and "write" to change files, "bash" to run commands. [] for none. Only tools active here.';
+  // Before the session is known, it names none.
+  assert.equal(
+    described(tool),
+    `Default: the read-only tools active here, or the comrade's with to. ${rest}`,
+  );
+  // Pi's default tool set has no grep, find or ls: naming them would invite a refused call.
+  assert.equal(described(), `Default: read-only, ["read"], or the comrade's with to. ${rest}`);
+  const registered = pi.tools.get("comrade");
+  await pi.event("before_agent_start", {}, ctx);
+  assert.equal(pi.tools.get("comrade"), registered, "unchanged tools register nothing");
+  // /tools turns them on.
+  inactive.splice(0);
+  await pi.event("before_agent_start", {}, ctx);
+  assert.equal(
+    described(),
+    `Default: read-only, ["read", "grep", "find", "ls"], or the comrade's with to. ${rest}`,
+  );
+  inactive.push("read", "grep", "find", "ls");
+  await pi.event("before_agent_start", {}, ctx);
+  assert.equal(
+    described(),
+    `Default: none, as no read-only tool is active here, or the comrade's with to. ${rest}`,
+  );
+});
+
 test("tool patterns must match a tool this Pi has", async (t) => {
   const { call } = fixture(t, "echo");
   const { args } = JSON.parse(answer(await call({ task: "✓", tools: ["gr*", "bash"] })));
@@ -797,14 +750,14 @@ test("the comrades tool lists and stops background comrades, and a stop sends no
   await call({ task: "second", background: true });
   assert.match(
     text(await comrades({})),
-    /^#1 .*· first\n#2 .*· second\n2 running · \$0\.00 so far$/,
+    /^#1 · first · .*\n#2 · second · .*\n2 running · \$0\.00 so far$/,
   );
 
   const stopped = await comrades({ stop: [1, 9] });
   assert.equal(text(stopped), "Stopped comrade #1. No running comrade #9.");
   assert.equal(stopped.isError, false);
   assert.deepEqual(stopped.details, { stopped: [1] });
-  assert.match(text(await comrades({})), /^#2 .*· second$/);
+  assert.match(text(await comrades({})), /^#2 · second · /);
 
   const missing = await comrades({ stop: [9] });
   assert.equal(missing.isError, true);
@@ -834,7 +787,7 @@ test("background comrades keep running across /reload and report to the reloaded
     entries: [started(1, "survives")] as unknown as SessionEntry[],
   });
   assert.equal(after.sent.length, 0, "still running, so not lost");
-  assert.match(text(await after.comrades({})), /^#1 .*· survives$/);
+  assert.match(text(await after.comrades({})), /^#1 · survives · /);
   assert.equal(details(await after.call({ task: "next", background: true })).id, 2);
   assert.equal(text(await after.comrades({ stop: [1, 2] })), "Stopped comrade #1, #2.");
   assert.equal(before.sent.length, 0);
@@ -925,7 +878,7 @@ test("a running comrade spins with Pi's working spinner until its result arrives
     "in Pi's accent colour",
   );
 
-  assert.match(draw(result, false), /^✓ Comrade #1 {2}Spin {2}\$0\.02 · 1\.0s$/);
+  assert.match(draw(result, false), /^✓ Comrade #1 {2}Spin {2}\$0\.02 · 1\.0s ▸$/);
   const done = redraws;
   t.mock.timers.tick(800);
   assert.equal(redraws, done, "no redraws once it has finished");
@@ -952,7 +905,7 @@ test("Esc or a typed message ends the wait at once, and the comrades keep runnin
   const started = Date.now();
   await waiting;
   assert(Date.now() - started < 1000);
-  assert.match(text(await esc.comrades({})), /^#1 .*· first$/, "still running");
+  assert.match(text(await esc.comrades({})), /^#1 · first · /, "still running");
 
   const typed = fixture(t, "hang");
   await typed.call({ task: "second", background: true });
@@ -1031,6 +984,7 @@ const row = (tool: Tool, result: Result, task: string, expanded = false) =>
       fake<RenderContext>({
         args: { task },
         state: {},
+        toolCallId: "call",
         isPartial: false,
         expanded,
         isError: Boolean(result.isError),
@@ -1040,24 +994,34 @@ const row = (tool: Tool, result: Result, task: string, expanded = false) =>
     ),
   );
 
-test("files follow the task as @file arguments, resolved from the working directory", async (t) => {
+test("files follow the task as <file> blocks, as Pi's @file arguments build them", async (t) => {
   const { call, cwd } = fixture(t, "echo");
-  writeFileSync(join(cwd, "notes.md"), "notes");
-  // The same file twice, and one named from the home directory.
+  writeFileSync(join(cwd, "notes.md"), "\uFEFFnotes");
+  writeFileSync(join(cwd, "empty.md"), "");
+  // A PNG's signature and header: enough for Pi to tell an image.
+  const png = "89504e470d0a1a0a0000000d494844520000000100000001080600000000000000";
+  writeFileSync(join(cwd, "pixel.png"), Buffer.from(png, "hex"));
+  // The same file twice, one named from the home directory, an empty one, and an image.
   const fromHome = standIn.startsWith(`${homedir()}/`)
     ? `~${standIn.slice(homedir().length)}`
     : standIn;
-  const result = await call({ task: "✓", tools: [], files: ["notes.md", fromHome, "./notes.md"] });
-  const { args, task } = JSON.parse(answer(result));
-  assert.equal(task, "✓", "the task stays on stdin");
-  assert.deepEqual(args.slice(-4), [
-    "--no-tools",
-    "--approve",
-    `@${join(cwd, "notes.md")}`,
-    `@${standIn}`,
-  ]);
-  assert.equal(details(result).files, 2);
-  assert.match(row(tool(t), result, "✓", true), /· no tools · 2 files attached ·/);
+  const files = ["notes.md", fromHome, "./notes.md", "empty.md", "pixel.png"];
+  const result = await call({ task: "✓", tools: [], files });
+  const { args, task, images } = JSON.parse(answer(result));
+  assert.deepEqual(args.slice(-2), ["--no-tools", "--approve"], "RPC mode takes no @file");
+  // Text inline without its byte-order mark, the empty file skipped, the image attached.
+  assert(
+    task.startsWith(`✓\n\n<file name="${join(cwd, "notes.md")}">\nnotes\n</file>\n`),
+    task.slice(0, 200),
+  );
+  assert.deepEqual(
+    [...task.matchAll(/<file name="([^"]+)">/g)].map((match) => match[1]),
+    [join(cwd, "notes.md"), standIn, join(cwd, "pixel.png")],
+  );
+  assert(task.endsWith(`<file name="${join(cwd, "pixel.png")}"></file>`));
+  assert.deepEqual(images, ["image/png"]);
+  assert.equal(details(result).files, 4);
+  assert.match(row(tool(t), result, "✓", true), /\n\n {2}│ ✓\n {2}4 files attached\n\n/);
 });
 
 /** A tool to render with: rendering does not depend on the scenario. */
@@ -1089,9 +1053,11 @@ test("a run line ends the result for the calling model, and the row does not rep
   const result = await call({ task: "✓" });
   assert.match(
     text(result),
-    /\n\n\[comrade #1: anthropic\/claude-opus-5-5:xhigh · 1 turn · 11 calls · read 3 files, ran 1 search, edited 1 file \(\+2 −1\), wrote 1 file \(\+2\), ran 4 commands · ↑150 ↓10 · \$0\.01 · \d+\.\ds · stop\]$/,
+    /\n\n\[comrade #1: anthropic\/claude-opus-5-5:xhigh · 2 turns · 11 calls · read 3 files, ran 1 search, edited 1 file \(\+2 −1\), wrote 1 file \(\+2\), ran 4 commands · ↑300 ↓20 · \$0\.02 · \d+\.\ds · stop\]$/,
   );
-  assert.match(row(tool, result, "✓", true), /\n\nDone\.$/);
+  const shown = row(tool, result, "✓", true);
+  assert.match(shown, /\n\n {2}Done\.$/);
+  assert.doesNotMatch(shown, /turn|calls|↑/);
   // Failures that ran end with it too.
   const failed = await fixture(t, "error").call({ task: "✓" });
   assert.match(text(failed), /^Comrade failed: 529 overloaded\n\n\[comrade #1: .* · error\]$/);
@@ -1106,8 +1072,11 @@ test("an answer cut off at the output limit says so first, and is not an error",
     /^\[Comrade's answer is cut off: its last turn ended with stopReason "length", the model's output token limit\. It is not a final answer\.\]\n\nThe first half of an\n\n\[comrade #1: .* · length\]$/,
   );
   assert.equal(details(result).stopReason, "length");
-  assert.equal(row(tool, result, "✓"), "✓ Comrade #1  ✓  cut off · $0.01 · 1.0s");
-  assert.match(row(tool, result, "✓", true), /\n\nThe first half of an$/);
+  assert.equal(
+    row(tool, result, "✓"),
+    "! Comrade #1  ✓  cut off · $0.01 · 1.0s ▸\n  Reached its output token limit. The answer is partial.",
+  );
+  assert.match(row(tool, result, "✓", true), /\n\n {2}│ ✓\n\n {2}The first half of an$/);
 });
 
 test("output writes the whole answer to its file and returns the first lines and the path", async (t) => {
@@ -1145,8 +1114,15 @@ test("a comrade past its timeout is stopped, and its last text is marked as not 
   );
   assert.equal(details(result).timedOut, true);
   assert.equal(details(result).stopped, undefined, "a timeout is not an Esc");
-  assert.equal(row(slow.tool, result, "x"), "✗ Comrade #1  x  timed out · $0.01 · 1.0s");
-  assert.match(row(slow.tool, result, "x", true), /\n\nNotes so far\.$/);
+  assert.equal(
+    row(slow.tool, result, "x"),
+    "✗ Comrade #1  x  timed out · $0.01 · 1.0s ▸\n  Stopped at its 1.0s limit. Its last text is kept.",
+  );
+  // What it said, and the call it was stopped in.
+  assert.match(
+    row(slow.tool, result, "x", true),
+    /\n\n {2}Notes so far\.\n\n {2}✗ Read \/tmp\/forever\.md$/,
+  );
 
   const silent = await fixture(t, "hang").call({ task: "x", timeout: 1 });
   assert.match(text(silent), /^Comrade timed out after 1\.0s and was stopped\.\n\n\[comrade #1: /);
@@ -1180,48 +1156,53 @@ const progressOf = (tool: Tool, update: Result) =>
       }),
     ),
   )
-    .split("\n")[1]
-    ?.replace(/\b\d+s\b/g, "Ns");
+    .split("\n")
+    .slice(1)
+    .map((line) => line.trim())
+    .join(" | ")
+    .replace(/\b\d+s\b/g, "Ns");
 
 test("the progress line says what the comrade is doing, from its event stream", async (t) => {
   const { tool, call, updates } = fixture(t, "stream");
-  const result = await call({ task: "x" });
+  // Drawn as each update arrives, as Pi draws it.
+  const lines: string[] = [];
+  const result = await call({ task: "x" }, undefined, () => {
+    const update = updates.at(-1);
+    if (update) lines.push(progressOf(tool, update).replace(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/g, "⠋"));
+  });
   assert.equal(answer(result), "Done.");
-  const lines = updates.map((update) => progressOf(tool, update));
   const shown = lines.filter((line, index) => line !== lines[index - 1]);
-  // The second line is the finished row's meta line, live: the model and tools, then the
-  // turn, calls, tokens and what it is doing.
-  assert.deepEqual(
-    shown.map((line) => line.replace(M, "… ")),
-    [
-      "… starting",
-      "… turn 1 · waiting",
-      "… turn 1 · retrying · 1/3 · 529 overloaded",
-      "… turn 1 · waiting",
-      "… turn 1 · retrying",
-      "… turn 1 · waiting",
-      "… turn 1 · compacting its context",
-      "… turn 1 · waiting",
-      // Like Anthropic, the provider counted the input at the start, and no output yet.
-      "… turn 1 · ↑1.0k · thinking",
-      // Streamed text is reported at most every 250ms, so the deltas arrive as one update,
-      // and their tokens are estimated, marked `~`.
-      "… turn 1 · ↑1.0k ↓~2.0k · thinking",
-      "… turn 1 · ↑1.0k ↓~2.0k · calling read",
-      "… turn 1 · ↑1.0k ↓~2.1k · calling read",
-      // The turn's message has ended: its usage is exact now, but its tools still belong to it.
-      "… turn 1 · ↑150 ↓10 · calling read",
-      "… turn 1 · 1 call · ↑150 ↓10 · Reading /tmp/a.ts",
-      "… turn 1 · 1 call · ↑150 ↓10 · Read /tmp/a.ts",
-      // A wait after the first turn says how long it has lasted.
-      "… turn 2 · 1 call · ↑150 ↓10 · waiting Ns",
-      "… turn 2 · 1 call · ↑150 ↓10 · writing",
-      // Like Google, the provider counts as it goes: once its count has moved, it is shown.
-      "… turn 2 · 1 call · ↑250 ↓~11 · writing",
-      "… turn 2 · 1 call · ↑250 ↓14 · writing",
-      "… turn 2 · 1 call · ↑300 ↓20 · writing",
-    ],
-  );
+  // Two lines under the header: the call it runs, or what it waits on, or the last call it ran;
+  // then the last complete thing it said, or until it has said anything, its tokens so far.
+  assert.deepEqual(shown, [
+    "starting | ",
+    "waiting | ",
+    "retrying · 1/3 · 529 overloaded | ",
+    "waiting | ",
+    "retrying | ",
+    "waiting | ",
+    "compacting its context | ",
+    "waiting | ",
+    // Like Anthropic, the provider counted the input at the start, and no output yet.
+    "thinking | ↑1.0k",
+    // Streamed text is reported at most every 250ms, so the deltas arrive as one update, and
+    // their tokens are estimated, marked `~`. Its thinking has no complete sentence to show.
+    "thinking | ↑1.0k ↓~2.0k",
+    "calling read | ↑1.0k ↓~2.0k",
+    "calling read | ↑1.0k ↓~2.1k",
+    // The turn's message has ended, asking for the call: its usage is exact now.
+    "calling read | ↑150 ↓10",
+    "⠋ Reading /tmp/a.ts | ↑150 ↓10",
+    "✓ Read /tmp/a.ts | ↑150 ↓10",
+    // A wait after the first turn says how long it has lasted.
+    "waiting Ns | ↑150 ↓10",
+    "writing | ↑150 ↓10",
+    // Like Google, the provider counts as it goes: once its count has moved, it is shown.
+    "writing | ↑250 ↓~11",
+    "writing | ↑250 ↓14",
+    // Its reply, once whole, is what it said last; above it, the last call it ran.
+    "✓ Read /tmp/a.ts | Done.",
+  ]);
   assert.equal(details(result).activity, undefined, "a finished row keeps no activity");
 });
 
@@ -1250,14 +1231,11 @@ test("a running comrade's clock ticks in whole seconds beside its cost", async (
         }),
       ),
     );
-  assert.match(
-    draw(),
-    /^⠋ Comrade #1 {2}x {2}\$0\.02 · 0s\nanthropic\/claude-opus-5-5:xhigh · read, grep, find, ls · turn 3 · 1 call · ↑300 ↓20 · waiting 0s$/,
-  );
+  assert.equal(draw(), "⠋ Comrade #1  x  $0.02 · 0s ▸\n  waiting 0s\n  ↑300 ↓20");
   t.mock.timers.tick(12_500);
-  assert.match(draw(), / {2}\$0\.02 · 12s\n.* · waiting 12s$/);
+  assert.match(draw(), / {2}\$0\.02 · 12s ▸\n {2}waiting 12s\n/);
   t.mock.timers.tick(62_500);
-  assert.match(draw(), / {2}\$0\.02 · 1m 15s\n/);
+  assert.match(draw(), / {2}\$0\.02 · 1m 15s ▸\n/);
 });
 
 test("to: N continues a comrade's conversation, with its own model, thinking and tools", async (t) => {
@@ -1291,10 +1269,16 @@ test("to: N continues a comrade's conversation, with its own model, thinking and
   assert.equal(details(second).id, 1);
   assert.equal(details(second).followUp, true);
   assert.match(text(second), /\n\n\[comrade #1: anthropic\/claude-fable-5-1:low · /);
-  assert.match(row(tool, second, "Now the lexer"), /^✓ Comrade #1 {2}Now the lexer {2}/);
+  // It keeps its title, and says what it ran with that is not the caller's.
+  assert.equal(details(second).title, "Read the parser");
+  assert.match(
+    row(tool, second, "Now the lexer"),
+    /^✓ Comrade #1 {2}Read the parser {2}claude-fable-5-1:low {2}\$/,
+  );
+  // Opened, the follow-up's task and what it did then, not its earlier runs.
   assert.match(
     row(tool, second, "Now the lexer", true),
-    /\n\nfollow-up · anthropic\/claude-fable-5-1:low · no tools · /,
+    /▾\n\n {2}│ Now the lexer\n\n {2}✓ Read \/tmp\/notes\.md\n\n {2}\{"args"/,
   );
 
   // Settings passed with the follow-up still win, and the conversation keeps growing.
@@ -1314,7 +1298,7 @@ test("to: N continues a comrade's conversation, with its own model, thinking and
   assert.equal(details(fresh).session, join(cwd, "parent.comrades", "comrade-2.jsonl"));
 });
 
-test("a follow-up needs a comrade on this branch that kept its conversation and is idle", async (t) => {
+test("a follow-up needs a comrade on this branch that kept its conversation", async (t) => {
   const missing = "/nonexistent/comrade-8.jsonl";
   const entries = [
     started(7, "Ran before conversations were kept"),
@@ -1339,10 +1323,6 @@ test("a follow-up needs a comrade on this branch that kept its conversation and 
   );
   const running = await call({ task: "slow", background: true });
   assert.equal(details(running).id, 9, "numbered past every comrade the session has seen");
-  await assert.rejects(
-    call({ task: "x", to: 9 }),
-    /^Error: Comrade #9 is still running in the background\. Wait for its answer, or stop it with the comrades tool\.$/,
-  );
   await comrades({ stop: [9] });
 });
 
@@ -1357,7 +1337,8 @@ test("a comrade continued in the background delivers each answer as #N", async (
   assert.equal(delivery(message).status, "finished");
   assert.equal(delivery(message).followUp, true);
   const [head, json] = body(message).split("\n\n");
-  assert.equal(head, "[comrade #1 finished] second");
+  // Named by the comrade's title, which its follow-up kept.
+  assert.equal(head, "[comrade #1 finished] first");
   assert.deepEqual(JSON.parse(json).history, ["first"]);
 });
 
@@ -1411,28 +1392,126 @@ test("the comrades listing says what each background comrade is doing", async (t
   await call({ task: "slow", background: true });
   assert.match(
     text(await comrades({})),
-    /^#1 · anthropic\/claude-opus-5-5:xhigh · turn 1 · starting · /,
+    /^#1 · slow · anthropic\/claude-opus-5-5:xhigh · turn 1 · starting · /,
   );
   // The hang scenario starts a read and never finishes it.
   for (let i = 0; i < 50 && !text(await comrades({})).includes("Reading"); i++)
     await new Promise((wake) => setTimeout(wake, 20));
-  assert.match(text(await comrades({})), /^#1 · [^·]+ · turn 1 · Reading \/tmp\/forever\.md · /);
+  assert.match(
+    text(await comrades({})),
+    /^#1 · slow · [^·]+ · turn 1 · Reading \/tmp\/forever\.md · /,
+  );
   await slash("");
-  assert.match(notices.at(-1) ?? "", /^#1 · [^·]+ · turn 1 · Reading \/tmp\/forever\.md · /);
+  assert.match(notices.at(-1) ?? "", /^#1 · slow · [^·]+ · turn 1 · Reading \/tmp\/forever\.md · /);
   await comrades({ stop: [1] });
 });
 
-test("a foreground comrade cannot be continued while it runs", async (t) => {
-  const { call } = fixture(t, "hang");
-  const controller = new AbortController();
-  const running = call({ task: "slow" }, controller.signal);
-  await new Promise((wake) => setTimeout(wake, 20));
-  await assert.rejects(
-    call({ task: "x", to: 1 }),
-    /^Error: Comrade #1 is still running\. Wait for its answer\.$/,
+test("a message to a running comrade reaches it, and its answer comes as it would have", async (t) => {
+  const { tool, call, delivered, sent } = fixture(t, "steer");
+  // Foreground: sent at once, before its Pi has even started, and held until it has.
+  const running = call({ task: "Survey the parser" });
+  const told = await call({ task: "Only the lexer", to: 1 }, undefined, undefined, "tell");
+  assert.equal(
+    text(told),
+    "Sent to comrade #1. It reads your message once its current tool calls finish, before its next model request. Its answer returns from the call that started it.",
   );
+  assert.deepEqual(told.details, { id: 1, steered: true, title: "Survey the parser" });
+  // Its row names the comrade by its title, and the message, sent.
+  assert.equal(
+    row(tool, told, "Only the lexer"),
+    '→ Comrade #1  Survey the parser  "Only the lexer"  sent ▸',
+  );
+  assert.match(row(tool, told, "Only the lexer", true), /sent ▾\n\n {2}│ Only the lexer$/);
+  // Asked to cover its task and the message in its answer, which may be all that comes back.
+  assert.equal(answer(await running), `Heard: ${steering("Only the lexer")}`);
+
+  // Background: its answer arrives as its message.
+  await call({ task: "Survey the tests", background: true });
+  const later = await call({ task: "Only the slow ones", to: 2 });
+  assert.match(text(later), /Its answer will arrive as a \[comrade #2 …\] message, as before\.$/);
+  const [message] = await delivered(1);
+  assert.match(
+    body(message),
+    /^\[comrade #2 finished\] Survey the tests\n\nHeard: \[A message from the agent that started you, .*\]\n\nOnly the slow ones\n\n/,
+  );
+  assert.equal(sent.length, 1);
+});
+
+test("a message to a running comrade carries only its task, and needs a comrade still running", async (t) => {
+  const { call, comrades } = fixture(t, "hang");
+  await call({ task: "slow", background: true });
+  await assert.rejects(
+    call({ task: "x", to: 1, model: "anthropic/claude-fable-5-1", tools: [] }),
+    /^Error: Comrade #1 is running, so a message to it can carry only task\. Wait for its answer to change its model, tools\.$/,
+  );
+  await assert.rejects(call({ task: " ", to: 1 }), /needs a task/);
+  await comrades({ stop: [1] });
+});
+
+test("a message the comrade had not read when it answered is taken before it settles", async (t) => {
+  // Pi takes what is still queued before the run settles.
+  const { call } = fixture(t, "deaf");
+  const running = call({ task: "Survey the parser" });
+  await call({ task: "Then the lexer", to: 1 });
+  const result = await running;
+  assert.equal(answer(result), `Heard late: ${steering("Then the lexer")}`);
+  assert.equal(details(result).turns, 2);
+});
+
+test("a message on its way as the comrade settles starts a run of its own", async (t) => {
+  const { call } = fixture(t, "late");
+  const running = call({ task: "Survey the parser" });
+  await call({ task: "Then the lexer", to: 1 });
+  const result = await running;
+  const echoed = JSON.parse(answer(result));
+  assert.equal(echoed.task, steering("Then the lexer"));
+  assert.deepEqual(echoed.history, ["Survey the parser"]);
+  assert.equal(details(result).turns, 2);
+});
+
+test("a message an extension in the comrade takes instead is not reported as sent", async (t) => {
+  const { call, comrades } = fixture(t, "ignored");
+  await call({ task: "Survey the parser", background: true });
+  await assert.rejects(
+    call({ task: "Then the lexer", to: 1 }),
+    /^Error: Comrade #1 did not take your message: an extension in its Pi took it instead\.$/,
+  );
+  await comrades({ stop: [1] });
+});
+
+test("Esc ends the wait for a message to be taken, not the comrade", async (t) => {
+  const { call, comrades } = fixture(t, "hang");
+  await call({ task: "slow", background: true });
+  const controller = new AbortController();
   controller.abort();
-  assert.equal(text(await running), "Comrade #1 stopped.");
+  await assert.rejects(
+    call({ task: "x", to: 1 }, controller.signal),
+    /^Error: Stopped waiting for comrade #1 to take your message\. It may still reach it\.$/,
+  );
+  assert.match(text(await comrades({})), /^#1 /);
+  await comrades({ stop: [1] });
+});
+
+test("a run that fails before it starts still ends, with why", async (t) => {
+  const result = await fixture(t, "unstarted").call({ task: "✓" });
+  assert.equal(answer(result), "Comrade failed: No model selected");
+});
+
+test("once a comrade has answered, its answer stands while its Pi shuts down", async (t) => {
+  const began = Date.now();
+  const result = await fixture(t, "slowexit").call({ task: "✓", timeout: 1 });
+  assert.equal(result.isError, undefined);
+  assert.equal(answer(result), "All done.");
+  assert(Date.now() - began >= 1400, "it waited for Pi to exit, past the timeout");
+});
+
+test("an extension's dialog in a comrade is cancelled, as no one can answer it", async (t) => {
+  const result = await fixture(t, "dialog").call({ task: "✓" });
+  assert.deepEqual(JSON.parse(answer(result)), {
+    type: "extension_ui_response",
+    id: "ask-1",
+    cancelled: true,
+  });
 });
 
 test("comrades are numbered across branches, but continued only on the current one", async (t) => {
@@ -1483,8 +1562,8 @@ test("only the latest background run of a comrade shows live progress", async (t
         }),
       ),
     );
-  assert.equal(startRow(first, "a"), "… Comrade #1  a  background");
-  assert.match(startRow(second, "b"), /^⠋ Comrade #1 {2}b {2}background · 0s\n/);
+  assert.equal(startRow(first, "a"), "↗ Comrade #1  #scenario echo  background ▸");
+  assert.equal(startRow(second, "b"), "⠋ Comrade #1  #scenario echo  background · 0s ▸");
   await comrades({ stop: [1] });
 });
 
@@ -1497,13 +1576,14 @@ test("nothing is reported after the result, even with streamed text pending", as
   assert.equal(updates.length, count);
 });
 
-test("a running job adopted from an older version shows its turn and calls", async (t) => {
+test("a running job adopted from an older version shows its calls", async (t) => {
   const { tool, call } = fixture(t, "busy");
   const result = await call({ task: "x" });
   // Older versions reported no activity.
   assert.equal(details(result).activity, undefined);
   const running = { ...result, details: { ...details(result), started: Date.now() } };
-  assert.equal(progressOf(tool, running), `${M}turn 2 · 11 calls · ↑150 ↓10`);
+  // The last call it ran, and its tokens.
+  assert.equal(progressOf(tool, running).replace(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/g, "⠋"), "⠋ sleep 9 | ↑300 ↓20");
 });
 
 test("a comrade can have only the tools active here, and the default shrinks to them", async (t) => {
@@ -1555,7 +1635,8 @@ test("cwd runs the comrade elsewhere, trusted only inside the caller's project",
   assert.equal(ran.cwd, join(cwd, "packages", "a"));
   assert(ran.args.includes("--approve"), "the caller's trust covers its own project");
   assert.equal(details(inside).cwd, join(cwd, "packages", "a"));
-  assert.match(row(tool, inside, "x", true), /· in \//);
+  // Named from the caller's directory, in its header.
+  assert.match(row(tool, inside, "x"), /^✓ Comrade #1 {2}x {2}in packages\/a {2}\$/);
 
   const outside = await call({ task: "x", cwd: elsewhere });
   const away = JSON.parse(answer(outside));
@@ -1568,7 +1649,7 @@ test("cwd runs the comrade elsewhere, trusted only inside the caller's project",
   assert.equal(JSON.parse(answer(followUp)).cwd, elsewhere);
   const home = await call({ task: "x" });
   assert.equal(details(home).cwd, undefined);
-  assert.doesNotMatch(row(tool, home, "x", true), /· in /);
+  assert.doesNotMatch(row(tool, home, "x", true), / in /);
 
   await assert.rejects(call({ task: "x", cwd: "missing" }), /cwd "missing" is not a directory/);
   await assert.rejects(call({ task: "x", cwd: "  " }), /cwd needs a directory path/);
@@ -1628,27 +1709,1224 @@ test("the command that starts Pi is resolved again for each run", async (t) => {
   assert.notEqual(second.isError, true, answer(second));
 });
 
-test("the conversation's path is cut from its start, keeping the file name", async (t) => {
-  const { tool, call } = fixture(t, "echo");
+test("a row never prints its conversation's path, nor the settings it shares with the caller", async (t) => {
+  const { tool, call } = fixture(t, "busy");
   const result = await call({ task: "✓" });
-  const lines = tool
-    .renderResult?.(
-      result,
+  const expanded = row(tool, result, "✓", true);
+  assert(!expanded.includes("comrade-1.jsonl"), expanded);
+  assert(!expanded.includes("claude-opus-5-5"), "the caller's own model");
+  assert(!expanded.includes("read, grep"), "the read-only default");
+  assert.match(expanded, /\n\n {2}Done\.$/);
+});
+
+/** A comrade's start row as Pi saves it: the call's details, under its tool call id. */
+const startRow = (result: Result, toolCallId = "call") =>
+  ({
+    type: "message",
+    message: { role: "toolResult", toolName: "comrade", toolCallId, details: result.details },
+  }) as unknown as SessionEntry;
+/** A delivered message as Pi saves it. */
+const saved = (message: Sent) =>
+  ({
+    type: "custom_message",
+    customType: "comrade",
+    content: message[0].content,
+    display: true,
+    details: message[0].details,
+  }) as unknown as SessionEntry;
+const until = async (ready: () => boolean) => {
+  for (let i = 0; i < 500 && !ready(); i++) await new Promise((wake) => setTimeout(wake, 10));
+  assert(ready(), "in time");
+};
+/** The comrade's run records, beside its conversation. */
+const records = (result: Result) => runs.readRuns<Delivery>(details(result).session ?? "");
+/** A background comrade whose Pi exited mid-call: its record, and its conversation as Pi left it. */
+async function cutMidCall(t: TestContext, task = "Survey the parser") {
+  const first = fixture(t, "hang");
+  const started = await first.call({ task, background: true, timeout: 600 });
+  await until(() => records(started)[0]?.phase === "asked");
+  // Leaving the session waits for its comrades to stop, and Pi records, as each stops, the
+  // aborted call and the reply it would have requested.
+  await first.pi.event("session_shutdown", { reason: "quit" }, first.ctx);
+  assert.match(readFileSync(details(started).session ?? "", "utf8"), /"stopReason":"aborted"/);
+  return { first, started, session: details(started).session ?? "" };
+}
+
+test("a comrade's record says which Pi runs it, and goes once its answer is in the session", async (t) => {
+  const { call, entries, pi, ctx } = fixture(t, "steer");
+  // Foreground: recorded while it runs, gone once its call returns.
+  const running = call({ task: "Survey the parser" });
+  const file = join(ctx.cwd, "parent.comrades", "comrade-1.jsonl");
+  await until(() => runs.readRuns(file)[0]?.phase === "asked");
+  const [record] = runs.readRuns(file);
+  assert.equal(record.owner, process.pid);
+  assert.equal(typeof record.child, "number");
+  assert.equal(record.background, false);
+  await call({ task: "Only the lexer", to: 1 });
+  await running;
+  assert.deepEqual(runs.readRuns(file), []);
+
+  // Background: kept with its answer until the session holds the message.
+  const echo = fixture(t, "echo");
+  const started = await echo.call({ task: "✓", background: true });
+  const [message] = await echo.delivered(1);
+  assert.equal(records(started)[0].phase, "done");
+  assert.equal(
+    records(started)[0].answer?.body,
+    body(message).slice(body(message).indexOf("\n\n") + 2),
+  );
+  echo.entries.push(saved(message));
+  await echo.pi.event("agent_settled", { aborted: false }, echo.ctx);
+  assert.deepEqual(records(started), []);
+  void entries;
+  void pi;
+});
+
+test("an answer Pi exited before saving is delivered when the session next starts", async (t) => {
+  // Sent, but the session never held it, as with an answer queued behind a turn Pi exited during.
+  const first = fixture(t, "echo");
+  const started = await first.call({ task: "✓ survey", background: true });
+  const [message] = await first.delivered(1);
+  first.shutdown();
+
+  const again = fixture(t, "echo", { entries: [startRow(started)] });
+  assert.equal(again.sent.length, 1, "delivered, not carried on");
+  assert.equal(body(again.sent[0]), body(message));
+  assert.deepEqual(again.sent[0][1], { deliverAs: "followUp", triggerTurn: false });
+  assert.equal(delivery(again.sent[0]).run, "call");
+
+  // Once the session holds it, its record goes.
+  const third = fixture(t, "echo", { entries: [startRow(started), saved(message)] });
+  assert.equal(third.sent.length, 0);
+  assert.deepEqual(records(started), []);
+});
+
+test("an answer the session dropped from behind a turn is sent again once the agent is idle", async (t) => {
+  const { call, delivered, sent, pi, ctx, entries } = fixture(t, "echo");
+  await call({ task: "✓", background: true });
+  const [message] = await delivered(1);
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() });
+  // Esc, or Pi's dequeue key, which ends no turn: once the agent has settled, idle, a moment
+  // later, the session does not hold it, so it is sent again, without starting a turn.
+  await pi.event("agent_settled", { aborted: false }, ctx);
+  assert.equal(sent.length, 1, "not at once: one sent as the agent settled is still on its way");
+  t.mock.timers.tick(1000);
+  assert.equal(sent.length, 2);
+  assert.equal(body(sent[1]), body(message));
+  assert.deepEqual(sent[1][1], { deliverAs: "followUp", triggerTurn: false });
+  // Once the session holds it, it is not sent again.
+  entries.push(saved(sent[1]));
+  await pi.event("agent_settled", { aborted: true }, ctx);
+  t.mock.timers.tick(1000);
+  assert.equal(sent.length, 2);
+});
+
+test("an answer delivered on another branch is delivered here too, not run again", async (t) => {
+  const first = fixture(t, "echo");
+  const started = await first.call({ task: "✓ survey", background: true });
+  const [message] = await first.delivered(1);
+  first.entries.push(saved(message));
+  await first.pi.event("agent_settled", { aborted: false }, first.ctx);
+  // Back before the answer arrived, on a branch of its own.
+  const again = fixture(t, "echo", {
+    entries: [startRow(started), saved(message)],
+    branch: [startRow(started)],
+  });
+  assert.equal(again.sent.length, 1);
+  assert.equal(again.sent[0][0].content, message[0].content);
+  assert.deepEqual(again.sent[0][1], { deliverAs: "followUp", triggerTurn: false });
+  assert.equal(text(await again.comrades({})), "No background comrades are running.");
+});
+
+test("a background comrade Pi exited during carries on, told which calls may not have run", async (t) => {
+  const { started } = await cutMidCall(t);
+  const again = fixture(t, "echo", { entries: [startRow(started)] });
+  const [resumed] = again.sent;
+  assert.deepEqual(resumed[1], { deliverAs: "followUp", triggerTurn: false });
+  assert.equal(
+    body(resumed),
+    "[comrade #1 resumed] Survey the parser\n\nPi exited while this comrade ran, so it carries on from where it stopped. Its answer will arrive as another [comrade #1 …] message.",
+  );
+  const renderer = again.renderers.get("comrade");
+  assert(renderer);
+  const shown = (message: Sent, expanded: boolean) =>
+    render(
+      renderer(
+        { ...message[0], role: "custom", display: true, timestamp: 0, details: delivery(message) },
+        { expanded, outputPad: 0, keyHint: () => "", keyText: () => "" },
+        themes.theme,
+      ),
+    ).trim();
+  assert.equal(shown(resumed, false), "↻ Comrade #1  Survey the parser  resumed ▸");
+  assert.match(
+    shown(resumed, true),
+    /^↻ Comrade #1 {2}Survey the parser {2}resumed ▾\n {2}Pi exited while this comrade ran, so it carries on from where it stopped\. Its answer will arrive as another \[comrade\n {2}#1 …\] message\.$/,
+  );
+  const [, finished] = await again.delivered(2);
+  assert.deepEqual(finished[1], { deliverAs: "followUp", triggerTurn: true });
+  const [head, json] = body(finished).split("\n\n");
+  assert.equal(head, "[comrade #1 finished] Survey the parser");
+  const echoed = JSON.parse(json);
+  assert.equal(
+    echoed.task,
+    "[Your previous run was cut off before it finished: the Pi that started you exited. These calls had not finished cleanly when it stopped, so each may or may not have taken effect: `Read /tmp/forever.md`. Check what they did before repeating any that change files or run commands.]\n\nCarry on with your task from where you stopped, and end with your final answer as before.",
+  );
+  assert.deepEqual(echoed.history, ["Survey the parser"], "the same conversation");
+  assert.match(echoed.args.join(" "), /--model claude-opus-5-5 --thinking xhigh --tools read,grep/);
+  assert.equal(delivery(finished).run, delivery(resumed).run);
+  assert.equal(delivery(finished).resumed, true);
+  // Opened, its answer shows what both runs did: the call it was cut off in, the note it was
+  // sent, and what it did then.
+  const both = shown(finished, true);
+  assert.match(both, /\n {2}✗ Read \/tmp\/forever\.md {2}Operation aborted\n/);
+  assert.match(both, /\n {2}│ \[Your previous run was cut off before it finished/);
+
+  // Its answer is saved for a session that never held it, which delivers it.
+  const later = fixture(t, "hang", { entries: [startRow(started), saved(resumed)] });
+  assert.equal(body(later.sent[0]), body(finished));
+  // Once it has answered here, it is done; and print mode never carries one on.
+  const done = [startRow(started), saved(resumed), saved(finished)];
+  assert.equal(fixture(t, "echo", { entries: done }).sent.length, 0);
+  assert.equal(fixture(t, "echo", { entries: [startRow(started)], mode: "print" }).sent.length, 0);
+});
+
+test("a run whose prompt never reached the comrade is sent it again, even a resumed one", async (t) => {
+  const { started, session } = await cutMidCall(t);
+  // As if Pi had exited before the comrade's Pi saved its prompt.
+  runs.updateRun(session, "call", { phase: "starting" });
+  const again = fixture(t, "hang", { entries: [startRow(started)] });
+  const [resumed] = again.sent;
+  await until(() => runs.readRuns(session).some((record) => record.phase === "asked"));
+  again.shutdown();
+  const sentAgain = runs.readRuns(session).find((record) => record.run === delivery(resumed).run);
+  assert.equal(sentAgain?.task, "Survey the parser", "its own task, again");
+
+  // That run is cut off before its prompt reached the comrade too: its own prompt, once more.
+  runs.updateRun(session, delivery(resumed).run ?? "", { phase: "starting" });
+  const third = fixture(t, "echo", { entries: [startRow(started), saved(resumed)] });
+  const [, finished] = await third.delivered(2);
+  assert.equal(JSON.parse(body(finished).split("\n\n")[1]).task, "Survey the parser");
+});
+
+test("a run its conversation shows answered is delivered from there, without running again", async (t) => {
+  const { started, session } = await cutMidCall(t);
+  const [record] = runs.readRuns(session);
+  // Its comrade answered, but Pi exited before the answer came back.
+  const reply = {
+    type: "message",
+    id: "late",
+    parentId: null,
+    message: {
+      role: "assistant",
+      stopReason: "stop",
+      provider: "anthropic",
+      model: "claude-opus-5-5",
+      content: [{ type: "text", text: "The parser is fine." }],
+      usage: {
+        input: 10,
+        output: 5,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 15,
+        cost: { total: 0.5 },
+      },
+      timestamp: Date.now(),
+    },
+  };
+  const lines = readFileSync(session, "utf8").trimEnd().split("\n");
+  // Its last reply, in place of the aborted one.
+  const kept = lines.filter(
+    (line) => !line.includes('"aborted"') && !line.includes("Operation aborted"),
+  );
+  reply.parentId = JSON.parse(kept.at(-1) ?? "{}").id ?? null;
+  writeFileSync(session, `${[...kept, JSON.stringify(reply)].join("\n")}\n`);
+  const again = fixture(t, "hang", { entries: [startRow(started)] });
+  assert.equal(again.sent.length, 1);
+  assert.equal(delivery(again.sent[0]).status, "finished");
+  assert.match(
+    body(again.sent[0]),
+    /^\[comrade #1 finished\] Survey the parser\n\nThe parser is fine\.\n\n\[comrade #1: anthropic\/claude-opus-5-5:xhigh · 2 turns · /,
+  );
+  assert.deepEqual(again.sent[0][1], { deliverAs: "followUp", triggerTurn: false });
+  assert.equal(text(await again.comrades({})), "No background comrades are running.");
+  assert.equal(record.phase, "asked");
+});
+
+test("a run cut off while Pi retried a failed request carries on", async (t) => {
+  const { started, session } = await cutMidCall(t);
+  const lines = readFileSync(session, "utf8").trimEnd().split("\n");
+  const last = JSON.parse(lines.at(-1) ?? "{}");
+  // The failed request Pi was about to retry, then the edit Pi records with it.
+  last.message = {
+    role: "assistant",
+    stopReason: "error",
+    errorMessage: "529 overloaded",
+    content: [],
+  };
+  lines[lines.length - 1] = JSON.stringify(last);
+  lines.push(JSON.stringify({ type: "context_edit", id: "edit", parentId: last.id }));
+  writeFileSync(session, `${lines.join("\n")}\n`);
+  const again = fixture(t, "echo", { entries: [startRow(started)] });
+  const [, finished] = await again.delivered(2);
+  assert.match(
+    JSON.parse(body(finished).split("\n\n")[1]).task,
+    /^\[Your previous run was cut off before it finished: the Pi that started you exited\. These calls had not finished cleanly .*`Read \/tmp\/forever\.md`.*\]\n\nCarry on with your task/,
+  );
+});
+
+test("a run cut off more than a day ago is reported, not carried on", async (t) => {
+  const { started, session } = await cutMidCall(t);
+  const old = Date.now() - 25 * 3600_000;
+  runs.saveRun(session, { ...runs.readRuns(session)[0], started: old });
+  // Its record and its conversation last changed a day ago.
+  const file = runs.runsFile(session);
+  const record = JSON.parse(readFileSync(file, "utf8"));
+  record[0].at = old;
+  writeFileSync(file, JSON.stringify(record));
+  utimesSync(session, old / 1000, old / 1000);
+  const again = fixture(t, "echo", { entries: [startRow(started)] });
+  assert.match(
+    body(again.sent[0]),
+    /^\[comrade #1 lost\] Survey the parser\n\nPi exited or switched sessions while this comrade ran, and it was not carried on: it stopped 25h 0m \d+s ago\. Its conversation is saved: continue it with to: 1\.$/,
+  );
+  assert.deepEqual(runs.readRuns(session), [], "reported once");
+});
+
+test("a run another Pi is running is left to it, and cannot be continued meanwhile", async (t) => {
+  const { started, session } = await cutMidCall(t);
+  // Another Pi, which is alive, owns it, and its comrade's Pi has not started yet.
+  runs.saveRun(session, { ...runs.readRuns(session)[0], owner: process.ppid, child: undefined });
+  const again = fixture(t, "echo", { entries: [startRow(started)] });
+  assert.equal(again.sent.length, 0);
+  assert.match(
+    again.notices.at(-1) ?? "",
+    /^Comrade #1 is still running in another Pi \(process \d+\)\.$/,
+  );
+  await assert.rejects(
+    again.call({ task: "x", to: 1 }),
+    /^Error: Comrade #1 is running in another Pi \(process \d+\)\. Wait for its answer there, or start a new comrade\.$/,
+  );
+  // Once that Pi is gone, it is this one's to carry on.
+  runs.saveRun(session, { ...runs.readRuns(session)[0], owner: 2 ** 22 + 12345 });
+  assert.equal(
+    delivery(fixture(t, "echo", { entries: [startRow(started)] }).sent[0]).status,
+    "resumed",
+  );
+});
+
+test("a comrade that cannot carry on is reported, saying why and whether it can be continued", async (t) => {
+  const { started } = await cutMidCall(t);
+  const moved = {
+    ...started,
+    details: { ...(started.details as Details), cwd: "/nonexistent/dir" },
+  };
+  const again = fixture(t, "echo", { entries: [startRow(moved)] });
+  assert.equal(
+    body(again.sent[0]),
+    "[comrade #1 lost] Survey the parser\n\nPi exited or switched sessions while this comrade ran, and it was not carried on: its directory /nonexistent/dir is gone. Its conversation is saved: continue it with to: 1.",
+  );
+});
+
+test("a damaged record is passed over, and the other comrades still carry on", async (t) => {
+  const one = await cutMidCall(t, "First");
+  writeFileSync(runs.runsFile(one.session), '[{"run":"call"},');
+  const two = await cutMidCall(t, "Second");
+  const twoRow = startRow(
+    { ...two.started, details: { ...(two.started.details as Details), id: 2 } },
+    "call-2",
+  );
+  runs.saveRun(two.session, { ...runs.readRuns(two.session)[0], run: "call-2" });
+  const again = fixture(t, "echo", { entries: [startRow(one.started), twoRow] });
+  assert.deepEqual(
+    again.sent.map((message) => [delivery(message).id, delivery(message).status]),
+    [
+      [1, "resumed"],
+      [2, "resumed"],
+    ],
+  );
+  await again.delivered(4);
+});
+
+test("a comrade continued in the foreground after Pi exited is not carried on as well", async (t) => {
+  const { started } = await cutMidCall(t);
+  const later = { ...(started.details as Details), background: undefined, followUp: true };
+  const continued = startRow({ ...started, details: later }, "later");
+  assert.equal(fixture(t, "echo", { entries: [startRow(started), continued] }).sent.length, 0);
+});
+
+/** A conversation as Pi saves it, cut off while a reply's calls ran. */
+function cutOff(file: string, cwd: string) {
+  const line = (entry: object) => JSON.stringify(entry);
+  const call = (id: string, name: string, args: object) => ({
+    type: "toolCall",
+    id,
+    name,
+    arguments: args,
+  });
+  const result = (id: string, isError: boolean) => ({
+    type: "message",
+    id: `r-${id}`,
+    parentId: id === "b" ? "a" : "r-b",
+    message: { role: "toolResult", toolCallId: id, isError, content: [] },
+  });
+  writeFileSync(
+    file,
+    [
+      line({ type: "session", version: 3, id: "s", cwd }),
+      line({
+        type: "message",
+        id: "u",
+        parentId: null,
+        message: { role: "user", content: "go", timestamp: Date.now() },
+      }),
+      line({
+        type: "message",
+        id: "a",
+        parentId: "u",
+        message: {
+          role: "assistant",
+          stopReason: "toolUse",
+          content: [
+            call("b", "read", { path: "b.ts" }),
+            call("c", "bash", { command: "npm run deploy" }),
+            call("d", "edit", { path: "src/a.ts" }),
+          ],
+        },
+      }),
+      // The read finished, the edit was aborted, the command never reported.
+      line(result("b", false)),
+      line({ ...result("d", true), parentId: "r-b" }),
+      "",
+    ].join("\n"),
+  );
+}
+
+test("a comrade continued after a cut-off run first reads what may or may not have run", async (t) => {
+  const { call, remember, cwd } = fixture(t, "echo");
+  remember(await call({ task: "Deploy it" }));
+  const conversation = join(cwd, "parent.comrades", "comrade-1.jsonl");
+  cutOff(conversation, cwd);
+  const hours = Date.now() / 1000 - 2 * 3600;
+  utimesSync(conversation, hours, hours);
+  const echoed = JSON.parse(answer(await call({ task: "Carry on", to: 1 })));
+  assert.match(
+    echoed.task,
+    new RegExp(
+      `^\\[Your previous run was cut off before it finished\\. These calls had not finished cleanly when it stopped, so each may or may not have taken effect: \`\\$ npm run deploy\`, \`Edit ${join(cwd, "src/a.ts").replaceAll("/", "\\/")}\`\\. Check what they did before repeating any that change files or run commands\\. That was 2h 0m \\d+s ago, so files may have changed since\\.\\]\\n\\nCarry on$`,
+    ),
+  );
+});
+
+test("a run is cut off when its last reply asked for tools or was aborted", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "comrade-cut-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "c.jsonl");
+  const write = (...messages: object[]) =>
+    writeFileSync(
+      file,
+      messages
+        .map((message, index) =>
+          JSON.stringify({
+            type: "message",
+            id: `${index}`,
+            parentId: index ? `${index - 1}` : null,
+            message,
+          }),
+        )
+        .join("\n"),
+    );
+  const user = { role: "user", content: "go" };
+  assert.equal(interruption(join(dir, "missing.jsonl")), undefined);
+  write(user);
+  assert.deepEqual(interruption(file)?.calls, [], "its task came, and no reply yet");
+  write(user, { role: "assistant", stopReason: "stop", content: [] });
+  assert.equal(interruption(file), undefined, "finished");
+  write(user, { role: "assistant", stopReason: "length", content: [] });
+  assert.equal(interruption(file), undefined, "cut off by its output limit, not by Pi");
+  write(user, { role: "assistant", stopReason: "aborted", content: [] });
+  assert.deepEqual(interruption(file)?.calls, [], "aborted while it wrote");
+  const reply = {
+    role: "assistant",
+    stopReason: "toolUse",
+    content: [{ type: "toolCall", id: "x", name: "ls", arguments: { path: "/tmp" } }],
+  };
+  write(user, reply, { role: "toolResult", toolCallId: "x", isError: false, content: [] });
+  assert.deepEqual(interruption(file)?.calls, [], "between turns, with every call answered");
+  write(user, reply);
+  assert.deepEqual(interruption(file)?.calls, ["ls /tmp"]);
+  // Pi stopped mid-call: it aborts the calls, then the reply it was about to request.
+  const two = {
+    ...reply,
+    content: [
+      { type: "toolCall", id: "r", name: "read", arguments: { path: "/etc/hosts" } },
+      { type: "toolCall", id: "s", name: "bash", arguments: { command: "sleep 30" } },
+    ],
+  };
+  const aborted = (id: string, text: string) => ({
+    role: "toolResult",
+    toolCallId: id,
+    isError: true,
+    content: [{ type: "text", text }],
+  });
+  const empty = { role: "assistant", stopReason: "aborted", content: [] };
+  write(user, two, aborted("r", "Operation aborted"), aborted("s", "Command aborted"), empty);
+  assert.deepEqual(interruption(file)?.calls, ["Read /etc/hosts", "$ sleep 30"]);
+  // A call the aborted reply was still writing never ran.
+  const writing = {
+    ...empty,
+    content: [{ type: "toolCall", id: "w", name: "bash", arguments: {} }],
+  };
+  write(user, reply, { role: "toolResult", toolCallId: "x", isError: false, content: [] }, writing);
+  assert.deepEqual(interruption(file)?.calls, []);
+  // A line cut short by a killed process is skipped.
+  write(user, reply);
+  writeFileSync(file, `${readFileSync(file, "utf8")}\n{"type":"mess`);
+  assert.deepEqual(interruption(file)?.calls, ["ls /tmp"]);
+
+  // A failed request Pi was retrying, and the entries Pi writes beside messages.
+  write(
+    user,
+    reply,
+    { role: "toolResult", toolCallId: "x", isError: false, content: [] },
+    {
+      role: "assistant",
+      stopReason: "error",
+      content: [],
+    },
+  );
+  writeFileSync(
+    file,
+    `${readFileSync(file, "utf8")}\n${JSON.stringify({ type: "context_edit", id: "e", parentId: "3" })}\n${JSON.stringify({ type: "message", id: "c", parentId: "e", message: { role: "custom", content: "x" } })}`,
+  );
+  assert.deepEqual(interruption(file)?.calls, [], "cut off while Pi retried");
+
+  // A run that finished: its answer, from the messages since it started.
+  write(
+    { ...user, timestamp: 1000 },
+    { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "old" }] },
+    { ...user, timestamp: 5000 },
+    {
+      role: "assistant",
+      stopReason: "toolUse",
+      content: [{ type: "toolCall", id: "y", name: "read", arguments: {} }],
+      usage: {
+        input: 1,
+        output: 2,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 3,
+        cost: { total: 0.1 },
+      },
+    },
+    { role: "toolResult", toolCallId: "y", isError: false, content: [] },
+    {
+      role: "assistant",
+      stopReason: "stop",
+      provider: "p",
+      model: "m",
+      content: [{ type: "text", text: "new" }],
+      usage: {
+        input: 4,
+        output: 5,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 9,
+        cost: { total: 0.2 },
+      },
+    },
+  );
+  const done = finished(file, 4000);
+  assert.equal(done?.text, "new");
+  assert.equal(done?.turns, 2);
+  assert.equal(done?.calls, 1);
+  assert.equal(done?.usage.output, 7);
+  assert.equal(done?.model, "p/m");
+  assert.equal(finished(file, 9000), undefined, "nothing asked since");
+
+  assert.equal(interruptionNote(undefined), "[Your previous run was cut off before it finished.]");
+  assert.equal(
+    interruptionNote({ calls: ["$ make"], saved: 0 }, "it was stopped", 60_000),
+    "[Your previous run was cut off before it finished: it was stopped. These calls had not finished cleanly when it stopped, so each may or may not have taken effect: `$ make`. Check what they did before repeating any that change files or run commands.]",
+  );
+});
+
+const view = await load<typeof import("../view.ts")>("../view.ts", import.meta.url);
+const { lastSaid } = await load<typeof import("../run.ts")>("../run.ts", import.meta.url);
+const { cleanTitle } = await load<typeof import("../request.ts")>("../request.ts", import.meta.url);
+
+test("a background comrade has a line in the widget above the editor until its answer is in", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "Date"] });
+  const { call, widgets, delivered, entries, pi, ctx, settle, working, comrades } = fixture(
+    t,
+    "echo",
+  );
+  const result = await call({
+    task: "#scenario hang\nSurvey",
+    title: "Survey the parser",
+    background: true,
+  });
+  const factory = widgets.at(-1);
+  assert(factory, "set when a background comrade starts");
+  let requested = 0;
+  const widget = factory({ requestRender: () => requested++ }, themes.theme);
+  const first = render(widget, 80);
+  // One column in, as Pi's own lines are.
+  assert.match(first, /^ • #1 {2}Survey the parser {2}starting {2,}\$0\.00 · 0s$/);
+  assert.equal(tui.visibleWidth(first), 79, "its cost and clock at the right");
+  // Its clock ticks once a second.
+  t.mock.timers.tick(1000);
+  assert.equal(requested, 1);
+  assert.match(render(widget, 80), / {2}\$0\.00 · 1s$/);
+  // Narrow, what it is doing goes first, then the title shrinks; the clock stays.
+  assert.match(render(widget, 50), /^ • #1 {2}Survey the parser {2,}\$0\.00 · 1s$/);
+  assert.match(render(widget, 30), /^ • #1 {2}Survey th… {2}\$0\.00 · 1s$/);
+  // Narrower, the title goes, then the cost; the clock stays.
+  assert.match(render(widget, 20), /^ • #1 {2,}\$0\.00 · 1s$/);
+  assert.match(render(widget, 12), /^ • #1 {2,}1s$/);
+  for (const width of [80, 50, 30, 20, 12])
+    assert(tui.visibleWidth(render(widget, width)) < width, `fits ${width} columns`);
+  // A turn waiting for it says which, the widget listing them all.
+  void settle();
+  await new Promise((wake) => setImmediate(wake));
+  assert.equal(working.find(Boolean), "Waiting for comrade #1");
+  t.mock.timers.reset();
+  await comrades({ stop: [1] });
+  assert.equal(widgets.at(-1), undefined, "gone once none runs");
+
+  // A finished one stays, its answer queued, until the session holds it.
+  const finished = fixture(t, "echo");
+  await finished.call({ task: "Quick", background: true });
+  const [message] = await finished.delivered(1);
+  const line = finished.widgets.at(-1)?.({ requestRender() {} }, themes.theme);
+  assert.match(render(line, 80), /^ ✓ #1 {2}Quick {2}finished · answer queued {2,}\$0\.02 · \d+s$/);
+  finished.entries.push(saved(message));
+  await finished.pi.event("agent_settled", { aborted: false }, finished.ctx);
+  assert.equal(finished.widgets.at(-1), undefined);
+  void result;
+  void delivered;
+  void entries;
+  void pi;
+  void ctx;
+});
+
+test("no widget where no one could see it", async (t) => {
+  const { call, widgets, delivered } = fixture(t, "echo", { mode: "rpc" });
+  await call({ task: "✓", background: true });
+  await delivered(1);
+  assert.deepEqual(widgets, []);
+});
+
+test("a delivered answer's row shows the task its start row was given, and opens on a click", async (t) => {
+  const { call, delivered, renderers, entries } = fixture(t, "echo");
+  const task = Array.from({ length: 9 }, (_, i) => `step ${i + 1}`).join("\n");
+  const result = await call({ task, title: "Many steps", background: true });
+  const [message] = await delivered(1);
+  entries.push(
+    fake<SessionEntry>({
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call", name: "comrade", arguments: { task } }],
+      },
+    } as never),
+    startRow(result),
+  );
+  const renderer = renderers.get("comrade");
+  assert(renderer);
+  const component = renderer(
+    { ...message[0], role: "custom", display: true, timestamp: 0, details: delivery(message) },
+    { expanded: false, outputPad: 0, keyHint: () => "", keyText: () => "" },
+    themes.theme,
+  );
+  assert(component?.handleMouse);
+  assert.match(render(component), /^✓ Comrade #1 {2}Many steps {2}\$0\.02 · [\d.]+s ▸$/);
+  component.handleMouse({ type: "click", button: "left", x: 0, y: 0 } as never);
+  const opened = render(component).split("\n");
+  assert.match(opened[0], /▾$/);
+  // Its first six lines, then a toggle for the rest.
+  const toggle = opened.indexOf("  … 3 more lines ▸");
+  assert.deepEqual(opened.slice(toggle - 6, toggle), [
+    "  │ step 1",
+    "  │ step 2",
+    "  │ step 3",
+    "  │ step 4",
+    "  │ step 5",
+    "  │ step 6",
+  ]);
+  component.handleMouse({ type: "click", button: "left", x: 2, y: toggle } as never);
+  assert.match(render(component), /│ step 9\n {2}show fewer lines ▴/);
+});
+
+test("a running row says the call it runs and the last complete thing its comrade said", () => {
+  const theme = themes.theme;
+  const card = {
+    title: "Review parser error paths",
+    model: "anthropic/claude-opus-5-5",
+    thinking: "xhigh",
+    tools: ["read"],
+    turns: 3,
+    calls: 7,
+    usage: { input: 1000, output: 100, cacheRead: 0, cacheWrite: 0, cost: { total: 0.12 } },
+    activity: { state: "thinking" as const, since: 0, turn: 4 },
+    said: "parseList swallows the error that parseBlock rethrows.",
+    work: {
+      tallies: [{ kind: "read" as const, calls: 7, failed: 0, files: 5, added: 0, removed: 0 }],
+      rows: [],
+      omitted: 0,
+      recent: [
+        { kind: "read" as const, status: "success" as const, label: "Read /src/a.ts" },
+        {
+          kind: "command" as const,
+          status: "error" as const,
+          label: "$ npm test",
+          error: "exit code 1",
+        },
+        { kind: "read" as const, status: "running" as const, label: "Reading /src/b.ts" },
+      ],
+    },
+  };
+  const look = {
+    phase: "running" as const,
+    task: "Review it",
+    expanded: false,
+    id: 3,
+    spinner: "⠋",
+    durationMs: 61_000,
+  };
+  assert.equal(
+    render(new view.CardView(look, card, "", theme, 1, { row() {} })),
+    [
+      " ⠋ Comrade #3  Review parser error paths  $0.12 · 1m 1s ▸",
+      "   ⠋ Reading /src/b.ts",
+      "   parseList swallows the error that parseBlock rethrows.",
+    ].join("\n"),
+  );
+  // What it thought shows only where Pi shows thinking. Elsewhere, what it last wrote, or with
+  // nothing written yet, its tokens.
+  const thought = { ...card, saidThinking: true };
+  assert.match(
+    render(new view.CardView(look, thought, "", theme, 1)),
+    /\n {3}⠋ Reading \/src\/b\.ts\n {3}↑1\.0k ↓100$/,
+  );
+  assert.match(
+    render(new view.CardView(look, { ...thought, spoke: "The parser is next." }, "", theme, 1)),
+    /\n {3}The parser is next\.$/,
+  );
+  assert.match(
+    render(new view.CardView({ ...look, thinking: true }, thought, "", theme, 1)),
+    /\n {3}parseList swallows the error that parseBlock rethrows\.$/,
+  );
+  // Between calls, what it waits on, over what it said, kept from an earlier turn, dimmer.
+  const ended = {
+    ...card,
+    saidBefore: true,
+    work: { ...card.work, recent: card.work.recent.slice(0, 2) },
+  };
+  const waiting = {
+    ...ended,
+    activity: { state: "waiting" as const, since: Date.now() - 61_500, turn: 5 },
+  };
+  const lines = new view.CardView(look, waiting, "", theme, 1).render(120);
+  assert.deepEqual(lines.slice(1).map(tui.stripTerminalSequences), [
+    "   waiting 1m 1s",
+    "   parseList swallows the error that parseBlock rethrows.",
+  ]);
+  const fresh = new view.CardView(look, { ...waiting, saidBefore: false }, "", theme, 1);
+  assert.notEqual(fresh.render(120)[2], lines[2], "a sentence from this turn is brighter");
+  // A retry, in the warning colour, in place of what it waits on.
+  const retrying = {
+    ...ended,
+    activity: { state: "retrying" as const, since: 0, detail: "1/3 · 529" },
+  };
+  assert.match(
+    render(new view.CardView(look, retrying, "", theme, 0)),
+    /\n {2}retrying · 1\/3 · 529\n {2}parseList/,
+  );
+  // While the words it is writing show below, the line above names the last call, not "writing".
+  const writing = {
+    ...ended,
+    saidBefore: false,
+    activity: { state: "writing" as const, since: 0, turn: 5 },
+  };
+  assert.match(
+    render(new view.CardView(look, writing, "", theme, 0)),
+    /\n {2}\$ npm test {2}exit code 1\n/,
+  );
+});
+
+test("a running row shows the newest of what it said when not all of it fits", () => {
+  assert.equal(view.fitted("I read it. Now the lexer.", 40), "I read it. Now the lexer.");
+  assert.equal(
+    view.fitted("I read the parser. Next the lexer, then the tests.", 34),
+    "Next the lexer, then the tests.",
+  );
+  assert.equal(
+    tui.stripTerminalSequences(view.fitted("One very long sentence about the parser.", 20)),
+    "One very long sente…",
+  );
+});
+
+test("an open row shows its task, then its work in order, mirage's rows among it", () => {
+  const theme = themes.theme;
+  const clicks: { x: number; y: number }[] = [];
+  // Mirage's rows for a group of calls, as the nested rows service returns them.
+  const rows = {
+    render: () => ["⠋ Run 2 commands ▸"],
+    invalidate() {},
+    handleMouse: (event: { x: number; y: number }) => {
+      clicks.push({ x: event.x, y: event.y });
+      return { handled: true };
+    },
+  };
+  const blocks: import("../view.ts").Block[] = [
+    { kind: "thinking", text: "The parser first." },
+    { kind: "text", text: "Reading the **parser**." },
+    { kind: "call", row: { kind: "read", status: "success", label: "Read /src/a.ts" } },
+    { kind: "message", text: "Also the lexer" },
+    { kind: "rows", component: rows, calls: 2, running: 2 },
+  ];
+  const card = {
+    title: "Review parser error paths",
+    model: "anthropic/claude-opus-5-5",
+    thinking: "xhigh",
+    tools: ["read"],
+    turns: 3,
+    calls: 3,
+    usage: { input: 1000, output: 100, cacheRead: 0, cacheWrite: 0, cost: { total: 0.12 } },
+    activity: { state: "running" as const, since: 0, turn: 4 },
+  };
+  const look = {
+    phase: "running" as const,
+    task: "Review it",
+    expanded: true,
+    id: 3,
+    spinner: "⠋",
+    durationMs: 61_000,
+    blocks,
+  };
+  const row = new view.CardView(look, card, "", theme, 1);
+  assert.equal(
+    render(row),
+    [
+      " ⠋ Comrade #3  Review parser error paths  $0.12 · 1m 1s ▾",
+      "",
+      "   │ Review it",
+      "",
+      "   The parser first.",
+      "",
+      "   Reading the parser.",
+      "",
+      "   ✓ Read /src/a.ts",
+      "",
+      "   │ Also the lexer",
+      "",
+      "   ⠋ Run 2 commands ▸",
+    ].join("\n"),
+  );
+  // A click on mirage's rows is theirs, where they sit in the row.
+  assert.deepEqual(row.handleMouse({ type: "click", button: "left", x: 5, y: 12 } as never), {
+    handled: true,
+  });
+  assert.deepEqual(clicks, [{ x: 2, y: 0 }]);
+  // Elsewhere, Pi's to open and close the row.
+  assert.equal(row.handleMouse({ type: "click", button: "left", x: 5, y: 6 } as never), undefined);
+  // Closed, it says the calls it runs, mirage's line for them without its caret, as a click
+  // there opens the comrade, not the group.
+  assert.equal(
+    render(new view.CardView({ ...look, expanded: false }, card, "", theme, 1)),
+    [
+      " ⠋ Comrade #3  Review parser error paths  $0.12 · 1m 1s ▸",
+      "   ⠋ Run 2 commands",
+      "   ↑1.0k ↓100",
+    ].join("\n"),
+  );
+});
+
+test("what a comrade said is its last complete sentence or line, without Markdown's marks", () => {
+  assert.equal(lastSaid("Reading the parser now"), undefined, "half a sentence");
+  assert.equal(lastSaid("I read it. Now the lex"), "I read it.");
+  assert.equal(lastSaid("I read it. All good: the not"), "I read it.", "a colon mid-line");
+  assert.equal(lastSaid("I read it. Three issues:\n1. The"), "I read it. Three issues:");
+  assert.equal(lastSaid("First line\n**Second** line\nthird, unfinished"), "Second line");
+  assert.equal(lastSaid("## Plan\n- check `parse()` callers\n"), "check parse() callers");
+  assert.equal(lastSaid("Done", true), "Done", "a whole text ends complete");
+  assert.equal(lastSaid(`${"x".repeat(300)}. `)?.length, 200);
+});
+
+test("a title is one line of at most 60 characters", () => {
+  assert.equal(cleanTitle("  Review\nthe   parser  "), "Review the parser");
+  assert.equal(cleanTitle(" "), undefined);
+  assert.equal(cleanTitle("x".repeat(80))?.length, 60);
+});
+
+test("a new comrade's title names its row, and a follow-up keeps it unless given another", async (t) => {
+  const { call, remember } = fixture(t, "echo");
+  const first = await call({ task: "x", title: "Map the lexer" });
+  assert.equal(details(first).title, "Map the lexer");
+  remember(first);
+  const kept = await call({ task: "more", to: 1 });
+  assert.equal(details(kept).title, "Map the lexer");
+  remember(kept);
+  const renamed = await call({ task: "now tests", to: 1, title: "Map the tests" });
+  assert.equal(details(renamed).title, "Map the tests");
+});
+
+/** A finished comrade's row, opened, as Pi draws it. */
+const opened = (tool: Tool, result: Result, task: string) =>
+  tool.renderResult?.(
+    result,
+    { expanded: true, isPartial: false },
+    themes.theme,
+    fake<RenderContext>({
+      args: { task },
+      state: {},
+      toolCallId: "call",
+      isPartial: false,
+      expanded: true,
+      isError: false,
+      durationMs: 1000,
+      invalidate() {},
+    }),
+  );
+
+test("a comrade's thinking shows only where Pi shows thinking", async (t) => {
+  for (const hide of [true, false]) {
+    const { tool, call } = fixture(t, "work", { settings: { hideThinkingBlock: hide } });
+    const shown = render(opened(tool, await call({ task: "Check the notes" }), "Check the notes"));
+    assert.equal(shown.includes("The notes come first."), !hide);
+    assert(shown.includes("Reading the notes."));
+  }
+});
+
+test("without mirage, a comrade's calls are a row each, in mirage's words", async (t) => {
+  const { tool, call } = fixture(t, "work");
+  const result = await call({ task: "Check the notes", title: "Check notes" });
+  assert.match(
+    render(opened(tool, result, "Check the notes")),
+    /\n\n {2}✓ Read \/tmp\/notes\.md\n {2}\$ cd \/tmp && …\n {2}\$ false \(exit code: 1\)\n\n {2}All good/,
+  );
+});
+
+test("after a restart, an opened row reads what its comrade did from its conversation", async (t) => {
+  const first = fixture(t, "work");
+  const started = await first.call({ task: "Check the notes", background: true });
+  const [message] = await first.delivered(1);
+  const foreground = await first.call({ task: "Check again" }, undefined, undefined, "again");
+  // Pi opened again: nothing in memory, the session's entries and the comrades' conversations.
+  const again = fixture(t, "echo", {
+    entries: [startRow(started), saved(message), startRow(foreground, "again")],
+  });
+  const renderer = again.renderers.get("comrade");
+  assert(renderer);
+  const answer = render(
+    renderer(
+      { ...message[0], role: "custom", display: true, timestamp: 0, details: delivery(message) },
+      { expanded: true, outputPad: 0, keyHint: () => "", keyText: () => "" },
+      themes.theme,
+    ),
+  );
+  assert.match(
+    answer,
+    /▾\n\n {2}│ Check the notes\n\n {2}The notes come first\.\n\n {2}Reading the notes\.\n\n {2}✓ Read \/tmp\/notes\.md\n/,
+  );
+  // A foreground row, its run alone, though its comrade's conversation holds others.
+  const row = render(
+    again.tool.renderResult?.(
+      foreground,
       { expanded: true, isPartial: false },
       themes.theme,
       fake<RenderContext>({
-        args: { task: "✓" },
+        args: { task: "Check again" },
         state: {},
+        toolCallId: "again",
         isPartial: false,
         expanded: true,
         isError: false,
         durationMs: 1000,
         invalidate() {},
       }),
-    )
-    ?.render(60)
-    .map((line) => tui.stripTerminalSequences(line));
-  const conversation = lines?.find((line) => line.startsWith("Conversation: "));
-  assert.match(conversation ?? "", /^Conversation: ….*\/parent\.comrades\/comrade-1\.jsonl$/);
-  assert.equal(tui.visibleWidth(conversation ?? ""), 60);
+    ),
+  );
+  assert.match(row, /▾\n\n {2}│ Check again\n\n {2}The notes come first\.\n/);
+  assert.equal(row.match(/Reading the notes/g)?.length, 1);
+});
+
+test("a running row keeps a comrade's thinking to itself where Pi hides thinking", async (t) => {
+  for (const hide of [true, false]) {
+    const { tool, call, updates } = fixture(t, "thinks", { settings: { hideThinkingBlock: hide } });
+    const lines: string[] = [];
+    await call({ task: "Plan it" }, undefined, () => {
+      const update = updates.at(-1);
+      if (update) lines.push(progressOf(tool, update));
+    });
+    assert.equal(
+      lines.some((line) => line.includes("The plan is a secret.")),
+      !hide,
+      `thinking hidden: ${hide}`,
+    );
+  }
+});
+
+test("a row that did not succeed says why in up to three lines until opened", () => {
+  const theme = themes.theme;
+  const note = `Tool "grep" is not active here, so a comrade cannot have it. Active: ${Array.from({ length: 30 }, (_, i) => `tool${i}`).join(", ")}.`;
+  const look = { phase: "failed" as const, task: "x", title: "Review", expanded: false, note };
+  const closed = render(new view.CardView(look, undefined, "", theme, 0), 60).split("\n");
+  assert.equal(closed.length, 4);
+  assert.match(closed[1], /^ {2}Tool "grep" is not active here, so a comrade cannot have/);
+  assert.match(closed[3], /…$/);
+  const open = render(new view.CardView({ ...look, expanded: true }, undefined, "", theme, 0), 60);
+  assert(open.includes("tool29."), "whole once opened");
+});
+
+test("an open row shows its latest work, and the rest on a click", () => {
+  const theme = themes.theme;
+  const blocks = Array.from({ length: 30 }, (_, i) => ({
+    kind: "text" as const,
+    text: `Step ${i}.`,
+  }));
+  const look = { phase: "finished" as const, task: "x", expanded: true, blocks };
+  const toggled: string[] = [];
+  const toggles = { earlier: () => void toggled.push("earlier") };
+  const row = new view.CardView(look, undefined, "", theme, 0, toggles);
+  const lines = render(row).split("\n");
+  const toggle = lines.indexOf("  … 6 earlier ▸");
+  assert(toggle > 0, lines.join("\n"));
+  assert(
+    !lines.includes("  Step 5.") && lines.includes("  Step 6.") && lines.includes("  Step 29."),
+  );
+  assert.deepEqual(row.handleMouse({ type: "click", button: "left", x: 4, y: toggle } as never), {
+    handled: true,
+  });
+  assert.deepEqual(toggled, ["earlier"]);
+  const all = render(
+    new view.CardView({ ...look, earlierOpen: true }, undefined, "", theme, 0, toggles),
+  );
+  assert(all.includes("  show only the latest ▴") && all.includes("  Step 0."));
+});
+
+test("a running group of one call is named as that call, not as mirage's group", () => {
+  const theme = themes.theme;
+  const rows = { render: () => ["✓ Ran 1 command ▸"], invalidate() {} };
+  const last = {
+    kind: "command" as const,
+    status: "error" as const,
+    label: "$ cd /src && …",
+    code: "2",
+  };
+  const card = {
+    model: "m",
+    thinking: "off",
+    tools: [],
+    turns: 1,
+    calls: 1,
+    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } },
+    activity: { state: "running" as const, since: 0 },
+  };
+  const look = {
+    phase: "running" as const,
+    task: "x",
+    expanded: false,
+    spinner: "⠋",
+    blocks: [{ kind: "rows" as const, component: rows, calls: 1, running: 0, last }],
+  };
+  assert.match(
+    render(new view.CardView(look, card, "", theme, 0)),
+    /\n {2}\$ cd \/src && … \(exit code: 2\)\n/,
+  );
+});
+
+test("control bytes in what a comrade thought, or in a title, never reach the terminal", (t) => {
+  const theme = themes.theme;
+  const block = {
+    kind: "thinking" as const,
+    text: "Clear\x1b[2J the\tscreen\x07 \x1b]0;title\x07now.",
+  };
+  const look = { phase: "finished" as const, task: "x", expanded: true, blocks: [block] };
+  const lines = new view.CardView(look, undefined, "", theme, 0).render(80);
+  for (const line of lines) {
+    for (const bad of ["\x1b[2J", "\x07", "\t", "\x1b]0;"])
+      assert(!line.includes(bad), JSON.stringify(line));
+  }
+  const { tool } = fixture(t, "echo");
+  const args = { title: "Bad\x1b[2J\ntitle", task: "x" };
+  const drawn = tool.renderCall?.(
+    args,
+    theme,
+    fake<RenderContext>({ args, state: {}, toolCallId: "c", argsComplete: false, invalidate() {} }),
+  );
+  const [header, ...rest] = drawn?.render(80) ?? [];
+  assert.equal(rest.length, 0);
+  assert(!header?.includes("\x1b[2J") && !header?.includes("\n"), JSON.stringify(header));
+});
+
+test("an opened row shows its own run of a conversation, not the run next to it", (t) => {
+  const file = join(fixture(t, "echo").cwd, "comrade-1.jsonl");
+  let parentId: string | null = null;
+  const message = (role: string, text: string, timestamp: number) => {
+    const entry = {
+      type: "message",
+      id: String(timestamp),
+      parentId,
+      message: { role, content: [{ type: "text", text }], timestamp },
+    };
+    parentId = entry.id;
+    return JSON.stringify(entry);
+  };
+  writeFileSync(
+    file,
+    [
+      JSON.stringify({ type: "session", version: 3, id: "s" }),
+      message("user", "one", 1_000),
+      message("assistant", "ANSWER ONE.", 1_500),
+      // A follow-up started half a second after the first ended.
+      message("user", "two", 2_000),
+      message("assistant", "ANSWER TWO.", 2_500),
+    ].join("\n"),
+  );
+  const texts = (since: number, until?: number) =>
+    resume
+      .runMessages(file, since, until)
+      ?.map((m) => ((m as { content: { text: string }[] }).content[0] ?? { text: "" }).text);
+  assert.deepEqual(texts(900, 1_600), ["one", "ANSWER ONE."]);
+  assert.deepEqual(texts(1_900, 2_600), ["two", "ANSWER TWO."]);
+  // A run refused before its prompt was saved has nothing of its own.
+  assert.equal(texts(2_700, 2_800), undefined);
+});
+
+test("without mirage, a comrade's thinking follows Ctrl+T, which Pi saves in its settings", async (t) => {
+  const { tool, call, cwd } = fixture(t, "work");
+  const result = await call({ task: "Check the notes" });
+  const row = opened(tool, result, "Check the notes");
+  assert(render(row).includes("The notes come first."));
+  writeFileSync(join(cwd, ".agent", "settings.json"), JSON.stringify({ hideThinkingBlock: true }));
+  await new Promise((wake) => setTimeout(wake, 300));
+  assert(!render(row).includes("The notes come first."));
+});
+
+test("a running background comrade's open start row shows its work after /reload", async (t) => {
+  const before = fixture(t, "hang", { sessionId: "reloaded-work" });
+  const result = await before.call(
+    { task: "survives", background: true },
+    undefined,
+    undefined,
+    "s",
+  );
+  await until(() => records(result)[0]?.phase === "asked");
+  before.shutdown("reload");
+  const after = fixture(t, "hang", {
+    sessionId: "reloaded-work",
+    reason: "reload",
+    entries: [startRow(result, "s")],
+  });
+  t.after(() => after.comrades({ stop: [1] }));
+  await until(() => {
+    const row = render(
+      after.tool.renderResult?.(
+        result,
+        { expanded: true, isPartial: false },
+        themes.theme,
+        fake<RenderContext>({
+          args: { task: "survives" },
+          state: {},
+          toolCallId: "s",
+          isPartial: false,
+          expanded: true,
+          isError: false,
+          invalidate() {},
+        }),
+      ),
+    );
+    return (
+      /\n {2}⠋ Reading \/tmp\/forever\.md|\n {2}… Read/.test(row) || row.includes("forever.md")
+    );
+  });
+});
+
+test("outside the terminal, an answer is not sent again after the agent settles", async (t) => {
+  const { call, delivered, sent, pi, ctx } = fixture(t, "echo", { mode: "rpc" });
+  await call({ task: "✓", background: true });
+  await delivered(1);
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() });
+  await pi.event("agent_settled", { aborted: true }, ctx);
+  t.mock.timers.tick(1000);
+  assert.equal(sent.length, 1, "an RPC abort leaves it queued: sending it again doubles it");
+});
+
+test("a resumed run reported lost tells its start row so", async (t) => {
+  const { started, session } = await cutMidCall(t);
+  // Carried on, then cut off again, a day ago.
+  const again = fixture(t, "hang", { entries: [startRow(started)] });
+  const [resumed] = again.sent;
+  const run = delivery(resumed).run ?? "";
+  await until(() => runs.readRuns(session).some((r) => r.run === run && r.phase === "asked"));
+  await again.pi.event("session_shutdown", { reason: "quit" }, again.ctx);
+  const old = Date.now() - 25 * 3600_000;
+  const file = runs.runsFile(session);
+  const records = JSON.parse(readFileSync(file, "utf8")) as { started: number; at: number }[];
+  for (const record of records) Object.assign(record, { started: old, at: old });
+  writeFileSync(file, JSON.stringify(records));
+  utimesSync(session, old / 1000, old / 1000);
+  const entries = [startRow(started), saved(resumed)];
+  const third = fixture(t, "echo", { entries });
+  const [lost] = third.sent;
+  assert.equal(delivery(lost).status, "lost");
+  assert.equal(delivery(lost).row, "call");
+  entries.push(saved(lost));
+  const row = render(
+    third.tool.renderResult?.(
+      started,
+      { expanded: false, isPartial: false },
+      themes.theme,
+      fake<RenderContext>({
+        args: { task: "Survey the parser" },
+        state: {},
+        toolCallId: "call",
+        isPartial: false,
+        expanded: false,
+        isError: false,
+        invalidate() {},
+      }),
+    ),
+  );
+  assert.match(row, /background · lost/);
+});
+
+test("a run keeps its comrade's messages lean: no images, and long results cut", () => {
+  const image = { type: "image" as const, data: "x".repeat(1000), mimeType: "image/png" };
+  const prompt = lean(
+    fake<Parameters<typeof lean>[0]>({
+      role: "user",
+      content: [{ type: "text", text: "Look" }, image],
+      timestamp: 0,
+    }),
+  );
+  assert.deepEqual((prompt as { content: unknown[] }).content, [{ type: "text", text: "Look" }]);
+  // Cut where the cut would split an emoji in two: before it.
+  const long = `${"a".repeat(31_999)}😀${"b".repeat(100)}`;
+  const result = lean(
+    fake<Parameters<typeof lean>[0]>({
+      role: "toolResult",
+      toolCallId: "r",
+      toolName: "read",
+      content: [{ type: "text", text: long }, image],
+      isError: false,
+      timestamp: 0,
+    }),
+  ) as { content: { type: string; text: string }[] };
+  assert.equal(result.content.length, 1);
+  assert.equal(result.content[0].text, `${"a".repeat(31_999)}\n…`);
+});
+
+test("without mirage, rows ask for it once, not on every draw", async (t) => {
+  const { tool, call, pi } = fixture(t, "work");
+  let asked = 0;
+  pi.events.on("mirage:nested-rows", () => void asked++);
+  const result = await call({ task: "Check the notes" });
+  const row = opened(tool, result, "Check the notes");
+  for (let i = 0; i < 5; i++) {
+    row?.invalidate();
+    render(row);
+  }
+  assert.equal(asked, 1);
 });

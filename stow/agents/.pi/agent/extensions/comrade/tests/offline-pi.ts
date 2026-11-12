@@ -1,6 +1,7 @@
 // The model inside a real Pi run by a test: an offline provider whose only model answers with
 // what reached it (the prompt's first line, its tools, attached files, and how long the
-// conversation is), after one read when the prompt asks for it. No HTTP requests are made.
+// conversation is), after one read when the prompt asks for it, and slowly if it says so. No
+// HTTP requests are made.
 import { type AssistantMessage, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -64,6 +65,9 @@ export default function (pi: ExtensionAPI) {
                 .flatMap((part) => (part.type === "text" ? [part.text] : []))
                 .join("\n");
         const results = context.messages.filter((message) => message.role === "toolResult");
+        // `#slow`: the first request takes a while, so a message can be sent while it runs.
+        if (/^#slow$/m.test(prompt) && !results.length)
+          await new Promise((wake) => setTimeout(wake, 500));
         // Tool declarations ride on the transcript's system messages.
         const tools = new Set<string>();
         for (const message of context.messages) {
@@ -71,17 +75,21 @@ export default function (pi: ExtensionAPI) {
           for (const tool of message.toolsAdded ?? []) tools.add(tool.name);
           for (const tool of message.toolsRemoved ?? []) tools.delete(tool.name);
         }
+        // `#read PATH` asks for a read, and `#bash COMMAND` for a command, before answering.
         const wanted = /^#read (.+)$/m.exec(prompt)?.[1];
-        if (wanted && tools.has("read") && !results.length) {
+        const command = /^#bash (.+)$/m.exec(prompt)?.[1];
+        const call =
+          wanted && tools.has("read") ? "read" : command && tools.has("bash") ? "bash" : "";
+        if (call && !results.length) {
           const block = {
             type: "toolCall" as const,
-            id: "fixture-read",
-            name: "read",
+            id: `fixture-${call}`,
+            name: call,
             arguments: {} as Record<string, string>,
           };
           const contentIndex = output.content.push(block) - 1;
           stream.push({ type: "toolcall_start", contentIndex, partial: structuredClone(output) });
-          block.arguments = { path: wanted };
+          block.arguments = call === "read" ? { path: wanted ?? "" } : { command: command ?? "" };
           stream.push({
             type: "toolcall_end",
             contentIndex,

@@ -7,9 +7,9 @@ Local TypeScript extensions for the Pi terminal coding agent, installed at `~/.p
 - [`inspector`](inspector/README.md): Opens clicked tool filenames in Vim inside the same terminal, including while Pi is working.
 - `interupt`: Requires a second `Esc` press within 1.5 seconds to stop a running response. The first `Esc` arms interruption.
 - [`echo`](echo/README.md): Expands `@@name` tokens into Markdown snippets from `~/.pi/agent/echo/*.md` at the editor cursor.
-- [`comrade`](comrade/README.md): Provides a tool that delegates a self-contained task to a fresh Pi process and returns its final answer, with live progress and follow-ups that continue the comrade's conversation.
+- [`comrade`](comrade/README.md): Provides a tool that delegates a self-contained task to a fresh Pi process and returns its final answer, with live progress, follow-ups that continue the comrade's conversation, messages to a comrade while it runs, and background comrades that carry on after Pi exits. Opened, a comrade's row shows its conversation, its calls drawn by mirage where mirage is loaded.
 - [`prose`](prose/README.md): Draws Markdown code blocks without fence lines and keeps wrapped lines indented. In fullscreen, every selection stops at the text and starts at a row's content, and a copy joins wrapped rows back into their lines.
-- `shared`: Defines the internal filename-opening, read-only transcript presentation, and selection-marker protocols shared across extensions.
+- `shared`: Defines the internal filename-opening, read-only transcript presentation, nested tool row, and selection-marker protocols shared across extensions.
 
 ## After upgrading Pi
 
@@ -45,7 +45,7 @@ npm run format
 npm run verify
 ```
 
-`npm run verify` runs Biome, strict TypeScript typechecking, unit and integration tests, and the headless terminal suite, then checks whether `piReviewed` matches the installed Pi version. You can also run the individual steps with `npm run check`, `npm run typecheck`, `npm test`, `npm run test:terminal`, and `npm run pi-diff`.
+`npm run verify` runs Biome, strict TypeScript typechecking, unit and integration tests, and the headless terminal suite, then checks whether `piReviewed` matches the installed Pi version. You can also run the individual steps with `npm run check`, `npm run typecheck`, `npm test`, `npm run test:terminal`, and `npm run pi-diff`. `npm test` fails any test that runs longer than a minute, so a test that hangs is named instead of stalling the suite.
 
 Typechecking covers every extension entry point, test file, and support module with `erasableSyntaxOnly` and `verbatimModuleSyntax` enabled: enums, namespaces, and parameter properties are disallowed, and type-only imports must use `import type`.
 
@@ -53,7 +53,7 @@ Tests are written in TypeScript and executed directly by Node using native type 
 
 - `<extension>/tests/*.test.ts`: Unit tests for a single extension. Each suite imports only its own extension, `shared/`, and `test/`, so deleting an extension never breaks another extension's tests (only the cross-extension files in `test/` need updating).
 - `<extension>/tests/*.ts` (without `.test`): Shared test fixtures for that extension.
-- `test/*.test.ts`: Cross-extension tests covering `shared/` contracts, `mirage` × `rearview` integration, a layout guard verifying that Pi autoloads only the seven extensions (and never `test/` or `shared/`, which must not contain an `index.ts`), and a guard verifying that `pi-diff` can trace every Pi import.
+- `test/*.test.ts`: Cross-extension tests covering `shared/` contracts, `mirage` × `rearview` integration, `comrade` × `mirage` copies, a layout guard verifying that Pi autoloads only the seven extensions (and never `test/` or `shared/`, which must not contain an `index.ts`), and a guard verifying that `pi-diff` can trace every Pi import.
 - `test/e2e/`: The end-to-end terminal suite and its offline fixture provider.
 - `test/pi.ts`, `test/fake-pi.ts`, `test/transcript.ts`, `test/headless-terminal.ts`: Shared test support. Extension code is loaded through `jiti` against the installed Pi package just as Pi loads it at runtime, and test fakes are typed against Pi's own declarations so that an upstream API rename fails `npm run typecheck` at the fake.
 

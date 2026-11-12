@@ -11,6 +11,7 @@ import {
 import type { Component } from "@earendil-works/pi-tui";
 import { type AnchorState, ROW_ANCHOR } from "../shared/anchors.ts";
 import { HISTORY_PAGE, type HistoryPage, type HistoryRenderState } from "../shared/history.ts";
+import { isNestedRowsRequest, NESTED_ROWS_EVENT, type NestedRows } from "../shared/nested.ts";
 import { type FileReference, OPEN_FILE_EVENT, type OpenFileRequest } from "../shared/protocol.ts";
 import { isTranscriptView, TRANSCRIPT_VIEW, type TranscriptView } from "../shared/transcript.ts";
 import { isComplete, TOOL_NAMES, ToolGroups, type ToolName, type ToolRow } from "./model.ts";
@@ -231,6 +232,7 @@ export default function (pi: ExtensionAPI) {
     ticker = undefined;
     spinning.clear();
     unsubscribeTranscript();
+    unsubscribeNested();
     transcript = undefined;
     releaseRendering?.();
     releaseRendering = undefined;
@@ -274,6 +276,52 @@ export default function (pi: ExtensionAPI) {
       redraw(
         groups.updateNested(event.toolCallId, event.result, false, event.isError, event.durationMs),
       );
+  });
+
+  // Another extension's agent's calls, drawn as these rows, so they look the same everywhere:
+  // see shared/nested.ts. Each transcript is its own model, grouped by the same rules, starting
+  // collapsed whatever Ctrl+O says, and following Ctrl+T as this transcript's rows do.
+  const nested: NestedRows = {
+    transcript(cwd, frame) {
+      const model = new ToolGroups();
+      model.setThinkingHidden(thinkingHidden);
+      models.add(new WeakRef(model));
+      const views = new Map<string, ToolGroupView>();
+      return {
+        add(message) {
+          model.startMessage(message, cwd);
+          model.finishMessage(message, cwd);
+          // Pi runs a reply's calls once it ends: they are under way, not waiting to start.
+          if (message.role !== "assistant" || message.stopReason !== "toolUse") return;
+          for (const block of message.content) {
+            const row = block.type === "toolCall" ? model.rows.get(block.id) : undefined;
+            if (row) model.markStarted(row);
+          }
+        },
+        draws: (name) => TOOL_NAMES.has(name),
+        row(id, theme) {
+          const row = model.rows.get(id);
+          if (!row || row.group.rows[0] !== row) return undefined;
+          let view = views.get(id);
+          if (view?.row !== row) {
+            view = new ToolGroupView(row, model, {
+              toggle: (target) => model.toggle(target),
+              openFile,
+              outputPad: () => 0,
+              renderImages: () => [],
+              spinner: frame,
+            });
+            views.set(id, view);
+          }
+          view.configure(theme, false);
+          return view;
+        },
+      };
+    },
+    thinkingHidden: () => thinkingHidden,
+  };
+  const unsubscribeNested = pi.events.on(NESTED_ROWS_EVENT, (value) => {
+    if (isNestedRowsRequest(value)) value.rows = nested;
   });
 
   function openFile(file: FileReference): void {
