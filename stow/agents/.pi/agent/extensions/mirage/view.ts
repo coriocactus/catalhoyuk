@@ -1,5 +1,3 @@
-import { homedir } from "node:os";
-import { sep } from "node:path";
 import {
   formatReadLineRange,
   getLanguageFromPath,
@@ -20,6 +18,15 @@ import {
   truncateToWidth,
 } from "@earendil-works/pi-tui";
 import type { RowAnchor } from "../shared/anchors.ts";
+import { paint } from "../shared/colours.ts";
+import {
+  diffCounts,
+  exitCode,
+  formatCost,
+  formatDuration,
+  homePath,
+  writtenLines,
+} from "../shared/format.ts";
 import type { FileReference } from "../shared/protocol.ts";
 import { CONTENT_START, findMarker } from "../shared/selection.ts";
 import {
@@ -34,9 +41,10 @@ import {
 } from "./model.ts";
 import { scriptOutput } from "./nested.ts";
 import { type ShellPaint, showCommand } from "./shell.ts";
+import { colouredDiff } from "./style.ts";
 
-import { colouredDiff, paint } from "./style.ts";
-
+/** What the link that marks a filename for hit testing points to. */
+const FILE_LINK = "mirage:file:";
 // biome-ignore lint/suspicious/noControlCharactersInRegex: OSC 8 links use ESC/BEL delimiters.
 const FILE_LINK_OPEN = /\x1b\]8;[^;\x07\x1b]*;mirage:file:[^\x07\x1b]*(?:\x07|\x1b\\)/g;
 const FILE_VERBS = {
@@ -77,6 +85,10 @@ interface ViewActions {
   renderImages(row: ToolRow, width: number): string[];
   /** The working spinner's current frame while Pi is working, for calls still in progress. */
   spinner?(): string | undefined;
+  /** Told each time a frame draws the row with its spinner. */
+  spun?(): void;
+  /** Whether Pi is redrawing the row for its spinner alone, with nothing else changed. */
+  animating?(): boolean;
 }
 
 function text(value: unknown): string {
@@ -140,48 +152,16 @@ const PLAIN: ShellPaint = {
   dim: keep,
 };
 
-/** The exit code Pi appends to a failed command's output. */
-function exitCode(row: ToolRow): string | undefined {
+/** The exit code of a failed command. */
+function failureCode(row: ToolRow): string | undefined {
   const output = (row.result?.content ?? [])
     .map((part) => (part.type === "text" ? text(part.text) : ""))
     .join("\n");
-  return /Command exited with code (\d+)\s*$/.exec(output)?.[1];
+  return exitCode(output);
 }
 
-/** Formats a duration as Pi's bash rows do: `1.2s`, `2m 5s`, `1h 2m 5s`. */
-export function formatDuration(ms: number): string {
-  const seconds = ms / 1000;
-  if (seconds < 60) return `${seconds.toFixed(1)}s`;
-  const total = Math.floor(seconds);
-  const minutes = Math.floor(total / 60);
-  if (minutes < 60) return `${minutes}m ${total % 60}s`;
-  return `${Math.floor(minutes / 60)}h ${minutes % 60}m ${total % 60}s`;
-}
-
-/** Formats a cost as Pi does: cents from one cent up, two significant digits below a cent. */
-function formatCost(cost: number): string {
-  return `$${cost >= 0.01 ? cost.toFixed(2) : cost.toPrecision(2)}`;
-}
-
-/**
- * Counts the lines in a write's content. Pi reports no diff for writes, and an overwrite's old
- * content is unknown.
- */
-export function writtenLines(content: string): number {
-  if (!content) return 0;
-  const lines = content.split("\n").length;
-  return content.endsWith("\n") ? lines - 1 : lines;
-}
-
-export function diffCounts(value: string): { added: number; removed: number } {
-  let added = 0,
-    removed = 0;
-  for (const line of value.split("\n")) {
-    if (/^\+\s*\d+ /.test(line)) added++;
-    else if (/^-\s*\d+ /.test(line)) removed++;
-  }
-  return { added, removed };
-}
+/** Lines at the top of a streaming write that are highlighted together, as Pi's own row does. */
+const STREAM_BLOCK_LINES = 50;
 
 /** What a group's summary counts: a script's tool calls, or the script when it made none. */
 function leaves(rows: readonly ToolRow[]): ToolRow[] {
@@ -208,7 +188,14 @@ export class ToolGroupView implements Component {
     frame: string;
     lines: string[];
   };
-  private bodies = new Map<string, { revision: number; component: Text }>();
+  private bodies = new Map<string, { revision: number; text: string; component: Text }>();
+  /** Each row's costly step, highlighting or colouring a diff: its last input and what it made. */
+  private made = new Map<string, { input: string; variant: string; output: string }>();
+  /** Writes whose content still streams: what is highlighted so far, line by line. */
+  private streaming = new Map<
+    string,
+    { source: string; language: string; head: string; lines: string[] }
+  >();
   /** The spinner frame this render paints, the same one its cache key records. */
   private frame = "";
   readonly row: ToolRow;
@@ -228,10 +215,14 @@ export class ToolGroupView implements Component {
   }
 
   invalidate(): void {
+    // A spinner frame changes nothing drawn but the frame, which render() reads from the clock.
+    if (this.actions.animating?.()) return;
     this.cache = undefined;
     // Keep hit targets for the last painted frame until render replaces them.
     // Clearing them here swallows clicks during asynchronous theme/grammar loads.
     this.bodies.clear();
+    this.made.clear();
+    this.streaming.clear();
   }
 
   render(width: number): string[] {
@@ -242,6 +233,7 @@ export class ToolGroupView implements Component {
     // A group with calls in progress redraws for each spinner frame. A finished one stays cached.
     const frame = group.rows.every(isComplete) ? "" : (this.actions.spinner?.() ?? "");
     this.frame = frame;
+    if (frame) this.actions.spun?.();
     if (
       this.cache?.group === group &&
       this.cache.width === width &&
@@ -272,7 +264,9 @@ export class ToolGroupView implements Component {
     // Hit testing uses these padded lines, including after invalidation until
     // the next render. Reserve the same inset on the right as Pi.
     this.rawLines = this.rawLines.map((line) => " ".repeat(padding) + line);
-    const lines = this.rawLines.map((line) => line.replace(FILE_LINK_OPEN, ""));
+    const lines = this.rawLines.map((line) =>
+      line.includes(FILE_LINK) ? line.replace(FILE_LINK_OPEN, "") : line,
+    );
     this.cache = {
       group,
       width,
@@ -374,10 +368,8 @@ export class ToolGroupView implements Component {
       const note = argumentsNote(row);
       let filename = note ? this.theme.fg("dim", note) : "…";
       if (row.file) {
-        const path = row.file.path;
-        const home = homedir();
-        const display = path.startsWith(home + sep) ? `~${path.slice(home.length)}` : path;
-        const url = `mirage:file:${encodeURIComponent(row.id)}`;
+        const display = homePath(row.file.path);
+        const url = `${FILE_LINK}${encodeURIComponent(row.id)}`;
         this.files.set(url, row.file);
         filename = hyperlink(
           this.theme.underline(paint(this.theme, "blue", clean(display).replace(/\n/g, " "))),
@@ -453,12 +445,8 @@ export class ToolGroupView implements Component {
     const shown = showCommand(clean(text(row.args.command)), this.shellPaint());
     const note = (value: string) => this.theme.italic(this.theme.fg("dim", value));
     const trailer: string[] = [];
-    if (shown.cwd) {
-      const home = homedir();
-      const cwd = shown.cwd.startsWith(`${home}/`) ? `~${shown.cwd.slice(home.length)}` : shown.cwd;
-      trailer.push(note(`(in ${cwd})`));
-    }
-    const code = row.status === "error" ? exitCode(row) : undefined;
+    if (shown.cwd) trailer.push(note(`(in ${homePath(shown.cwd)})`));
+    const code = row.status === "error" ? failureCode(row) : undefined;
     if (code !== undefined)
       trailer.push(`${note("(exit code: ")}${paint(this.theme, "red", code)}${note(")")}`);
     const pad = " ".repeat(indent);
@@ -513,7 +501,10 @@ export class ToolGroupView implements Component {
         this.block(
           `${row.id}\0source`,
           row.revision,
-          () => highlightCode(source, "javascript").join("\n"),
+          () =>
+            this.once(`${row.id}\0source`, "javascript", source, () =>
+              highlightCode(source, "javascript").join("\n"),
+            ),
           row.source,
           width,
           indent + 2,
@@ -550,11 +541,16 @@ export class ToolGroupView implements Component {
       } else if (row.status === "cancelled") {
         output = this.theme.fg("muted", output || "Cancelled when the script ended.");
       } else if (row.kind === "edit" && diff(row)) {
-        output = colouredDiff(this.theme, clean(diff(row)));
+        const changes = clean(diff(row));
+        output = this.once(row.id, "diff", changes, () => colouredDiff(this.theme, changes));
         if (details(row)?.rebuilt)
           output += `\n${this.theme.fg("dim", "Rebuilt from saved arguments, with line numbers relative to the replaced text.")}`;
       } else if (row.kind === "write") {
-        output = this.code(clean(text(row.args.content)), row.file?.path);
+        const content = clean(text(row.args.content));
+        if (isComplete(row)) this.streaming.delete(row.id);
+        output = isComplete(row)
+          ? this.code(row.id, content, row.file?.path)
+          : this.streamedCode(row.id, content, row.file?.path);
       } else if (row.kind === "bash") {
         // The header shows the command, unless it had to leave part of it out.
         const command = clean(text(row.args.command));
@@ -571,7 +567,7 @@ export class ToolGroupView implements Component {
       } else if (missing) {
         output = unkept;
       } else if (row.kind === "read") {
-        output = this.code(output, row.file?.path);
+        output = this.code(row.id, output, row.file?.path);
       } else if (row.kind === "codemode" || row.kind === "tool") {
         // Colouring nothing would still emit escape codes, and an empty row.
         if (output) output = this.theme.fg("toolOutput", output);
@@ -612,11 +608,26 @@ export class ToolGroupView implements Component {
 
   private cachedText(key: string, revision: number, build: () => string): Text {
     let cached = this.bodies.get(key);
-    if (!cached || cached.revision !== revision) {
-      cached = { revision, component: new Text(build(), 0, 0) };
+    if (cached?.revision === revision) return cached.component;
+    const text = build();
+    // A revision counts events, not changes: Pi reports a result the row already showed again
+    // when it records it. Text that came out the same keeps its component, and the lines that
+    // component wrapped.
+    if (cached?.text === text) cached.revision = revision;
+    else {
+      cached = { revision, text, component: new Text(text, 0, 0) };
       this.bodies.set(key, cached);
     }
     return cached.component;
+  }
+
+  /** A row's costly step, done again only when its input is no longer what it was. */
+  private once(key: string, variant: string, input: string, make: () => string): string {
+    const known = this.made.get(key);
+    if (known?.input === input && known.variant === variant) return known.output;
+    const output = make();
+    this.made.set(key, { input, variant, output });
+    return output;
   }
 
   private addLines(lines: readonly string[], target: ToggleTarget, indent: number): void {
@@ -628,10 +639,39 @@ export class ToolGroupView implements Component {
     }
   }
 
-  private code(source: string, path?: string): string {
+  /**
+   * Code that grows by appending, as a write's content does while it streams. Each frame
+   * highlights only its new lines, so a long write costs each line once, not once per frame.
+   * Its first lines are also highlighted together, so a comment or string that spans lines is
+   * coloured whole; they stop changing once the content is longer. The finished write is
+   * highlighted whole.
+   */
+  private streamedCode(key: string, source: string, path?: string): string {
+    const language = path ? getLanguageFromPath(path) : undefined;
+    if (!language) return this.theme.fg("toolOutput", source);
+    let known = this.streaming.get(key);
+    if (!known || known.language !== language || !source.startsWith(known.source)) {
+      known = { source: "", language, head: "", lines: [] };
+      this.streaming.set(key, known);
+    }
+    const lines = source.split("\n");
+    // The last line known may still have been growing: redo it and every line after it.
+    for (let i = Math.max(0, known.lines.length - 1); i < lines.length; i++)
+      known.lines[i] = highlightCode(lines[i], language)[0] ?? "";
+    const head = lines.slice(0, STREAM_BLOCK_LINES).join("\n");
+    if (head !== known.head) {
+      const block = highlightCode(head, language);
+      for (let i = 0; i < block.length; i++) known.lines[i] = block[i];
+      known.head = head;
+    }
+    known.source = source;
+    return known.lines.join("\n");
+  }
+
+  private code(key: string, source: string, path?: string): string {
     const language = path ? getLanguageFromPath(path) : undefined;
     return language
-      ? highlightCode(source, language).join("\n")
+      ? this.once(key, language, source, () => highlightCode(source, language).join("\n"))
       : this.theme.fg("toolOutput", source);
   }
 }

@@ -1,6 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { once } from "node:events";
 import { stat } from "node:fs/promises";
+import { basename } from "node:path";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
@@ -52,7 +53,7 @@ export default function (pi: ExtensionAPI) {
     editorProcess = child;
     try {
       const [code, signal] = await once(child, "close");
-      if (code !== 0) throw new Error(`Vim exited with ${signal ?? code}.`);
+      if (code !== 0) throw new Error(`${basename(editor)} exited with ${signal ?? code}.`);
     } finally {
       if (editorProcess === child) editorProcess = undefined;
     }
@@ -70,7 +71,7 @@ export default function (pi: ExtensionAPI) {
       if (sessionContext !== ctx) return;
       const info = await stat(path);
       if (sessionContext !== ctx) return;
-      if (!info.isFile()) throw new Error("Only regular files can be opened in Vim.");
+      if (!info.isFile()) throw new Error("Only regular files can be opened in the editor.");
 
       const failure = await ctx.ui.custom<{ error: unknown } | undefined>(
         async (tui, _theme, _keys, done) => {

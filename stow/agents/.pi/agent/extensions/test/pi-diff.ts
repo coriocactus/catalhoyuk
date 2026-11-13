@@ -8,7 +8,8 @@
 //
 // No file list is kept by hand. Every Pi symbol that extension code imports, including types,
 // is traced through Pi's re-exports to the module that defines it. An adapter that patches a
-// Pi class must import it, so its module is watched as soon as the adapter exists.
+// Pi class must import it, so its module is watched as soon as the adapter exists. A module Pi
+// does not export, loaded by its path under Pi's package directory, is watched by that path.
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -64,14 +65,41 @@ export function importsIn(file: string, source: string, imports: Imports = new M
   return imports;
 }
 
-/** Pi imports of extension code: everything except tests and test support. */
+/**
+ * The Pi modules one file loads by path: each `"dist/….js"` literal it names, without the
+ * extension. Throws on a dynamic import in a file that names none, which could not be watched.
+ */
+export function pathsIn(file: string, source: string): string[] {
+  const paths = [...source.matchAll(/["'`](dist\/[\w./-]+)\.js["'`]/g)].map(([, path]) => path);
+  if (/\bimport\s*\(/.test(source) && !paths.length)
+    throw new Error(
+      `${file}: a dynamic import must name the Pi module it loads as a "dist/….js" literal, so upgrade review watches it.`,
+    );
+  return paths;
+}
+
+/** Extension code: everything except tests and test support. */
+function sources(): [file: string, source: string][] {
+  return globSync("**/*.ts", { cwd: root })
+    .filter((file) => !/^(?:node_modules|test)\//.test(file) && !file.includes("/tests/"))
+    .sort()
+    .map((file) => [file, readFileSync(join(root, file), "utf8")]);
+}
+
+/** Pi imports of extension code. */
 export function piImports(): Imports {
   const imports: Imports = new Map();
-  const files = globSync("**/*.ts", { cwd: root })
-    .filter((file) => !/^(?:node_modules|test)\//.test(file) && !file.includes("/tests/"))
-    .sort();
-  for (const file of files) importsIn(file, readFileSync(join(root, file), "utf8"), imports);
+  for (const [file, source] of sources()) importsIn(file, source, imports);
   return imports;
+}
+
+/** Modules of Pi's own package that extension code loads by path: module -> loading files. */
+export function piPaths(): Map<string, Set<string>> {
+  const paths = new Map<string, Set<string>>();
+  for (const [file, source] of sources())
+    for (const path of pathsIn(file, source))
+      paths.set(path, (paths.get(path) ?? new Set<string>()).add(file));
+  return paths;
 }
 
 /** `[local, original]` pairs of an import/export list such as `a, type b, c as d`. */
@@ -167,6 +195,21 @@ export function watchedModules(release: Release = installed): Watched[] {
       for (const user of users) entry.users.add(user);
       modules.set(key, entry);
     }
+  for (const [module, users] of piPaths()) {
+    const key = `${CODING_AGENT}/${module}`;
+    if (!existsSync(join(release.dir(CODING_AGENT), `${module}.js`)))
+      throw new Error(
+        `Pi ${release.version}: ${module}.js, which ${[...users].join(", ")} loads, is gone.`,
+      );
+    const entry = modules.get(key) ?? {
+      name: CODING_AGENT,
+      module,
+      symbols: new Map(),
+      users: new Set(),
+    };
+    for (const user of users) entry.users.add(user);
+    modules.set(key, entry);
+  }
   return [...modules.values()].sort(
     (a, b) => a.name.localeCompare(b.name) || a.module.localeCompare(b.module),
   );
@@ -269,7 +312,7 @@ function review(from: Release, to: Release): void {
       if (diff.status !== 1) throw new Error(`diff failed: ${diff.stderr || diff.error}`);
       diffs.push(diff.stdout);
     }
-    const imported = `${[...symbols.keys()].join(", ")} <- ${[...users].join(", ")}`;
+    const imported = `${[...symbols.keys()].join(", ") || "loaded by path"} <- ${[...users].join(", ")}`;
     const status = changed ? "CHANGED  " : "unchanged";
     const note = notes.length ? ` [${notes.join("; ")}]` : "";
     console.log(`${status} ${name}/${module} (${imported})${note}`);

@@ -9,6 +9,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { type Component, Container, type ScrollView, type TUI } from "@earendil-works/pi-tui";
 import { HISTORY_PAGE, type HistoryPage, type HistoryRenderState } from "../shared/history.ts";
+import { installPatch } from "../shared/patch.ts";
 import type { TranscriptView } from "../shared/transcript.ts";
 import { captureViewportAnchor } from "./anchors.ts";
 import { HistoryCursor, historyBoundary, historyGap, PAGE_SIZE, recentEntries } from "./model.ts";
@@ -422,13 +423,7 @@ interface Owner {
   size: number;
   display?(view: TranscriptView): void;
 }
-interface Patch {
-  original: RenderEntries;
-  wrapped: RenderEntries;
-  owners: Set<Owner>;
-  controllers: Map<NativeHost, { owner: Owner; controller: HistoryController }>;
-}
-const PATCH = Symbol.for("rearview.patch.v1");
+type Controllers = Map<NativeHost, { owner: Owner; controller: HistoryController }>;
 
 export function installHistoryAdapter(
   report: Owner["report"],
@@ -437,117 +432,111 @@ export function installHistoryAdapter(
 ): { synchronize(): void; reset(): void; dispose(): void } {
   if (!Number.isSafeInteger(size) || size < 1)
     throw new Error("History page size must be a positive integer.");
-  const prototype = InteractiveMode.prototype as unknown as NativeHost & { [PATCH]?: Patch };
-  let patch = prototype[PATCH];
-  if (patch && prototype.renderSessionEntries !== patch.wrapped)
-    throw new Error("Another extension replaced rearview's adapter.");
-  if (!patch) {
-    const original = prototype.renderSessionEntries;
-    if (typeof original !== "function") throw new Error("Pi's transcript renderer is unavailable.");
-    const owners = new Set<Owner>(),
-      controllers: Patch["controllers"] = new Map(),
-      disabled = new WeakSet<NativeHost>();
-    const wrapped: RenderEntries = function (entries, options) {
-      const owner = [...owners].at(-1);
-      if (!owner || disabled.has(this)) return original.call(this, entries, options);
-      let selected = entries,
-        visible = entries;
-      let current = controllers.get(this);
-      try {
-        if (!current) {
-          if (
-            !this.transcriptScrollView ||
-            !(this.chatContainer instanceof Container) ||
-            !(this.documentContainer instanceof Container) ||
-            !(this.pendingTools instanceof Map) ||
-            typeof this.ui?.requestRender !== "function" ||
-            !Number.isFinite(this.ui?.terminal?.columns) ||
-            typeof this.sessionManager?.buildContextEntries !== "function" ||
-            typeof this.sessionManager?.getEntry !== "function" ||
-            typeof this.sessionManager?.getSessionId !== "function" ||
-            typeof this.sessionManager?.getCwd !== "function" ||
-            typeof this.settingsManager?.getShowImages !== "function" ||
-            typeof this.settingsManager?.getImageWidthCells !== "function" ||
-            typeof this.getRegisteredToolDefinition !== "function" ||
-            typeof this.getUserMessageText !== "function" ||
-            typeof this.editor?.addToHistory !== "function"
-          )
-            throw new Error("Pi's transcript layout changed.");
-          current = {
-            owner,
-            controller: new HistoryController(
-              this,
-              original,
-              owner.report,
-              owner.size,
-              owner.display,
-            ),
-          };
-          controllers.set(this, current);
-        }
-        visible = current.controller.select(this.sessionManager.buildContextEntries());
-        const ids = new Set(visible.map((entry) => entry.id));
-        selected = entries.filter((entry) => ids.has(entry.id));
-        current.controller.present(visible);
-        // Keep native Up-arrow prompt history complete even when its old rows are
-        // not constructed. Paging itself never adds prompts to editor history.
-        if (options?.populateHistory)
-          for (const entry of entries) {
-            if (!ids.has(entry.id) && entry.type === "message" && entry.message.role === "user") {
-              const text = this.getUserMessageText(entry.message);
-              if (text) this.editor.addToHistory?.(text);
-            }
-          }
-      } catch (error) {
-        selected = entries;
-        visible = entries;
-        current?.controller.dispose();
-        controllers.delete(this);
-        current = undefined;
-        disabled.add(this);
-        owner.report(
-          new Error(
-            `Pi ${VERSION}: history paging disabled; using the native transcript. ${error instanceof Error ? error.message : String(error)} Run npm run verify in ~/.pi/agent/extensions.`,
-          ),
-        );
-      }
-      original.call(this, selected, options); // Native errors must still propagate.
-      try {
-        current?.controller.refresh(visible);
-      } catch (error) {
-        owner.report(error);
-      }
-    };
-    patch = { original, wrapped, owners, controllers };
-    prototype[PATCH] = patch;
-    prototype.renderSessionEntries = wrapped;
-  }
   const owner: Owner = { report, size, display };
-  patch.owners.add(owner);
+  const patch = installPatch<Owner, Controllers>({
+    key: "rearview.patch.v2",
+    name: "rearview's adapter",
+    sites: [{ target: InteractiveMode.prototype, name: "renderSessionEntries" }],
+    owner,
+    build(originals, owners) {
+      const original: RenderEntries = originals[0];
+      const controllers: Controllers = new Map();
+      const disabled = new WeakSet<NativeHost>();
+      const wrapped: RenderEntries = function (entries, options) {
+        const owner = [...owners].at(-1);
+        if (!owner || disabled.has(this)) return original.call(this, entries, options);
+        let selected = entries,
+          visible = entries;
+        let current = controllers.get(this);
+        try {
+          if (!current) {
+            if (
+              !this.transcriptScrollView ||
+              !(this.chatContainer instanceof Container) ||
+              !(this.documentContainer instanceof Container) ||
+              !(this.pendingTools instanceof Map) ||
+              typeof this.ui?.requestRender !== "function" ||
+              !Number.isFinite(this.ui?.terminal?.columns) ||
+              typeof this.sessionManager?.buildContextEntries !== "function" ||
+              typeof this.sessionManager?.getEntry !== "function" ||
+              typeof this.sessionManager?.getSessionId !== "function" ||
+              typeof this.sessionManager?.getCwd !== "function" ||
+              typeof this.settingsManager?.getShowImages !== "function" ||
+              typeof this.settingsManager?.getImageWidthCells !== "function" ||
+              typeof this.getRegisteredToolDefinition !== "function" ||
+              typeof this.getUserMessageText !== "function" ||
+              typeof this.editor?.addToHistory !== "function"
+            )
+              throw new Error("Pi's transcript layout changed.");
+            current = {
+              owner,
+              controller: new HistoryController(
+                this,
+                original,
+                owner.report,
+                owner.size,
+                owner.display,
+              ),
+            };
+            controllers.set(this, current);
+          }
+          visible = current.controller.select(this.sessionManager.buildContextEntries());
+          const ids = new Set(visible.map((entry) => entry.id));
+          selected = entries.filter((entry) => ids.has(entry.id));
+          current.controller.present(visible);
+          // Keep native Up-arrow prompt history complete even when its old rows are
+          // not constructed. Paging itself never adds prompts to editor history.
+          if (options?.populateHistory)
+            for (const entry of entries) {
+              if (!ids.has(entry.id) && entry.type === "message" && entry.message.role === "user") {
+                const text = this.getUserMessageText(entry.message);
+                if (text) this.editor.addToHistory?.(text);
+              }
+            }
+        } catch (error) {
+          selected = entries;
+          visible = entries;
+          current?.controller.dispose();
+          controllers.delete(this);
+          current = undefined;
+          disabled.add(this);
+          owner.report(
+            new Error(
+              `Pi ${VERSION}: history paging disabled; using the native transcript. ${error instanceof Error ? error.message : String(error)} Run npm run verify in ~/.pi/agent/extensions.`,
+            ),
+          );
+        }
+        original.call(this, selected, options); // Native errors must still propagate.
+        try {
+          current?.controller.refresh(visible);
+        } catch (error) {
+          owner.report(error);
+        }
+      };
+      return { methods: [wrapped], state: controllers };
+    },
+  });
+  const controllers = patch.record.state;
   let closed = false;
   const reset = () => {
-    for (const [host, value] of patch.controllers)
+    for (const [host, value] of controllers)
       if (value.owner === owner) {
         value.controller.dispose();
-        patch.controllers.delete(host);
+        controllers.delete(host);
       }
   };
   return {
     reset,
     synchronize() {
       if (closed) return;
-      for (const value of patch.controllers.values())
+      for (const value of controllers.values())
         if (value.owner === owner) value.controller.synchronize();
     },
     dispose() {
       if (closed) return;
       closed = true;
-      patch.owners.delete(owner);
       reset();
-      if (patch.owners.size === 0 && prototype.renderSessionEntries === patch.wrapped) {
-        prototype.renderSessionEntries = patch.original;
-        delete prototype[PATCH];
-      }
+      patch.release();
     },
   };
 }

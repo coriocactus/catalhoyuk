@@ -28,7 +28,7 @@ const { default: installHistory } = await load<typeof import("../index.ts")>(
   import.meta.url,
 );
 
-const PATCH = Symbol.for("rearview.patch.v1");
+const PATCH = Symbol.for("rearview.patch.v2");
 const patch = () =>
   (core.InteractiveMode.prototype as unknown as { [PATCH]?: { owners: Set<unknown> } })[PATCH];
 const renderedEntries = () =>

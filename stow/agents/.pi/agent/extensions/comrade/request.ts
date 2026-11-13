@@ -9,6 +9,7 @@ import type {
   ExtensionToolContext,
 } from "@earendil-works/pi-coding-agent";
 import type { Request } from "./run.ts";
+import { oneLine } from "./work.ts";
 
 export const THINKING = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type Thinking = (typeof THINKING)[number];
@@ -137,7 +138,7 @@ export function modelDescription(
 
 /**
  * A model as `provider/id`, with an optional `:thinking` suffix, that must be one of the
- * enabled models. Bare names are refused: `anthropic/claude-fable-5-1` alone can name
+ * enabled models. Bare names are refused: `anthropic/claude-fable-5-2` alone can name
  * Anthropic's model or OpenRouter's id of the same text.
  */
 export function resolveModel(
@@ -194,12 +195,9 @@ function resolveCwd(requested: string | undefined, cwd: string): string {
 /** The longest title a row keeps: a few words naming the job. */
 export const TITLE_MAX = 60;
 
-// biome-ignore lint/suspicious/noControlCharactersInRegex: a title is one plain line.
-const CONTROLS = /[\x00-\x1f\x7f]+/g;
-
 /** A title on one line, at most TITLE_MAX characters. */
 export function cleanTitle(title: string | undefined): string | undefined {
-  const line = title?.replace(CONTROLS, " ").replace(/\s+/g, " ").trim();
+  const line = title === undefined ? "" : oneLine(title);
   if (!line) return undefined;
   return line.length > TITLE_MAX ? `${line.slice(0, TITLE_MAX - 1)}…` : line;
 }

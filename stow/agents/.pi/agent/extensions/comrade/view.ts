@@ -15,9 +15,10 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import { paint } from "./colours.ts";
+import { paint } from "../shared/colours.ts";
+import { formatCost, formatDuration, homePath } from "../shared/format.ts";
 import type { Activity, Streamed } from "./run.ts";
-import { homePath, type Live, type Row, summary, type Work } from "./work.ts";
+import { type Live, oneLine, type Row, summary, type Work } from "./work.ts";
 
 /** How a comrade's row names it, set when it is called. */
 export interface Face {
@@ -124,10 +125,13 @@ export interface Look {
   /** The caller's directory, which a comrade run elsewhere is named from. */
   home?: string;
   /**
-   * Brings `thinking` and `blocks` up to date before each draw: Pi's thinking toggle redraws
-   * rows without rendering them afresh.
+   * Brings the look up to date before each draw: Pi draws rows again without rendering them
+   * afresh, for its thinking toggle and for every frame while a comrade works. It may change
+   * `spinner`, `durationMs`, `thinking` and `blocks`, and returns the card to draw when it has
+   * a newer one than the row was given.
    */
-  refresh?: () => void;
+  // biome-ignore lint/suspicious/noConfusingVoidType: a refresh with no newer card returns nothing.
+  refresh?: () => Card | undefined | void;
 }
 
 /** One piece of a comrade's work, as its row shows it below its prompt. */
@@ -157,8 +161,6 @@ export interface Toggles {
   earlier?: () => void;
 }
 
-// biome-ignore lint/suspicious/noControlCharactersInRegex: strip control bytes from task text.
-const CONTROLS = /[\x00-\x1f\x7f]+/g;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: keep only newlines and tabs of a task.
 const CONTROLS_BUT_LINES = /[\x00-\x08\x0b-\x1f\x7f]+/g;
 /** The bar beside each line of the task, as a quotation. */
@@ -185,29 +187,13 @@ export const cutOff = (card: Card | undefined) =>
 /** The task's first line, on one line, with the home directory as `~`. */
 export function taskLine(task: string): string {
   const first = task.split("\n").find((line) => line.trim()) ?? "";
-  return first.replace(CONTROLS, " ").replace(/\s+/g, " ").trim().replaceAll(`${homedir()}/`, "~/");
-}
-
-/** Pi's formats: `1.2s`, `2m 5s`, `1h 2m 5s`. */
-export function formatDuration(ms: number): string {
-  const seconds = ms / 1000;
-  if (seconds < 60) return `${seconds.toFixed(1)}s`;
-  const total = Math.floor(seconds);
-  const minutes = Math.floor(total / 60);
-  if (minutes < 60) return `${minutes}m ${total % 60}s`;
-  return `${Math.floor(minutes / 60)}h ${minutes % 60}m ${total % 60}s`;
+  return oneLine(first).replaceAll(`${homedir()}/`, "~/");
 }
 
 /** A running clock: Pi's formats in whole seconds, so it ticks once a second. */
 export function formatElapsed(ms: number): string {
   const seconds = Math.max(0, Math.floor(ms / 1000));
   return seconds < 60 ? `${seconds}s` : formatDuration(seconds * 1000);
-}
-
-/** Cents from one cent up, two significant digits below a cent. */
-export function formatCost(cost: number): string {
-  if (!cost) return "$0.00";
-  return `$${cost >= 0.01 ? cost.toFixed(2) : cost.toPrecision(2)}`;
 }
 
 /** Pi's footer format: `805`, `7.2k`, `41k`, `1.2M`. */
@@ -668,16 +654,26 @@ interface Zone {
  * header, the row itself where it has its own toggle (a message), or else Pi's (a tool row).
  */
 export class CardView implements Component {
-  private readonly look: Look;
-  private readonly card: Card | undefined;
-  private readonly answer: string;
-  private readonly theme: Theme;
-  private readonly pad: number;
-  private readonly toggles: Toggles;
+  private look: Look;
+  private card: Card | undefined;
+  private answer: string;
+  private theme: Theme;
+  private pad: number;
+  private toggles: Toggles;
   private targets = new Map<number, keyof Toggles>();
   private zones: Zone[] = [];
   private indent = 0;
-  private cache?: { width: number; thinking?: boolean; lines: string[] };
+  /** The lines last drawn, and everything a later frame could have changed since. */
+  private cache?: {
+    width: number;
+    thinking?: boolean;
+    spinner?: string;
+    durationMs?: number;
+    second?: number;
+    blocks?: Block[];
+    card?: Card;
+    lines: string[];
+  };
 
   constructor(
     look: Look,
@@ -695,16 +691,49 @@ export class CardView implements Component {
     this.toggles = toggles;
   }
 
-  // Mirage's rows are not invalidated with it: Pi invalidates a running row on every spinner
-  // frame, and mirage redraws its rows itself when they change, or their theme or frame does.
+  /** Draws another state of the same row, so Pi's renderers can keep one component for it. */
+  update(
+    look: Look,
+    card: Card | undefined,
+    answer: string,
+    theme: Theme,
+    pad: number,
+    toggles: Toggles = {},
+  ): this {
+    this.look = look;
+    this.card = card;
+    this.answer = answer;
+    this.theme = theme;
+    this.pad = pad;
+    this.toggles = toggles;
+    this.cache = undefined;
+    return this;
+  }
+
+  // Mirage's rows are not invalidated with it: mirage redraws its rows itself when they change,
+  // or their theme or frame does.
   invalidate(): void {
     this.cache = undefined;
   }
 
   render(width: number): string[] {
-    this.look.refresh?.();
-    if (this.cache?.width === width && this.cache.thinking === this.look.thinking)
-      return this.cache.lines;
+    const { look } = this;
+    const card = look.refresh?.() ?? this.card;
+    // A comrade at work shows clocks in whole seconds, its own and how long it has waited: they
+    // are read as it is drawn, at least once a second. At rest, its time is what it was given.
+    const second = working(look) ? Math.floor(Date.now() / 1000) : undefined;
+    const durationMs = working(look) ? undefined : look.durationMs;
+    const cache = this.cache;
+    if (
+      cache?.width === width &&
+      cache.thinking === look.thinking &&
+      cache.spinner === look.spinner &&
+      cache.durationMs === durationMs &&
+      cache.second === second &&
+      cache.blocks === look.blocks &&
+      cache.card === card
+    )
+      return cache.lines;
     // Pi's output padding, which a row drawing its own shell applies itself.
     const pad = Math.min(
       Number.isFinite(this.pad) ? this.pad : 0,
@@ -714,8 +743,19 @@ export class CardView implements Component {
     this.targets.clear();
     this.zones = [];
     this.indent = pad;
-    const lines = this.lines(room).map((line) => (line ? " ".repeat(pad) + cut(line, room) : ""));
-    this.cache = { width, thinking: this.look.thinking, lines };
+    const lines = this.lines(room, card).map((line) =>
+      line ? " ".repeat(pad) + cut(line, room) : "",
+    );
+    this.cache = {
+      width,
+      thinking: look.thinking,
+      spinner: look.spinner,
+      durationMs,
+      second,
+      blocks: look.blocks,
+      card,
+      lines,
+    };
     return lines;
   }
 
@@ -743,8 +783,8 @@ export class CardView implements Component {
     return { handled: true };
   }
 
-  private lines(width: number): string[] {
-    const { look, card, answer, theme } = this;
+  private lines(width: number, card: Card | undefined): string[] {
+    const { look, answer, theme } = this;
     // A call whose arguments still stream has nothing to open yet.
     const opens = expandable(look, card, answer) && !(look.phase === "running" && !card);
     const lines = [header(look, card, theme, width, opens)];

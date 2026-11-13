@@ -1,9 +1,10 @@
 // What a comrade did, folded from its tool events into a small record: counts per kind, and
 // the calls worth naming (failures, changed files, commands). The record its row saves stays a
 // few KB however many calls the comrade makes; what the comrade said and every call it made
-// are in its own conversation. Wording follows mirage's group summaries.
-import { homedir } from "node:os";
+// are in its own conversation. Wording follows mirage's group summaries, and counts and paths
+// are worded by the same functions (shared/format.ts).
 import { resolve } from "node:path";
+import { diffCounts, exitCode, homePath, writtenLines } from "../shared/format.ts";
 
 export type Kind = "read" | "search" | "command" | "edit" | "write" | "script" | "tool";
 export type Status = "success" | "error" | "cancelled";
@@ -72,32 +73,10 @@ export const emptyWork = (): Work => ({ tallies: [], rows: [], omitted: 0 });
 const CONTROLS = /[\x00-\x1f\x7f]+/g;
 const clip = (value: string, length: number) =>
   value.length > length ? `${value.slice(0, length - 1)}…` : value;
-const oneLine = (value: string) => value.replace(CONTROLS, " ").replace(/\s+/g, " ").trim();
+/** Text on one line: control bytes and runs of whitespace become single spaces. */
+export const oneLine = (value: string) => value.replace(CONTROLS, " ").replace(/\s+/g, " ").trim();
 const firstLine = (value: string) => oneLine(value.split("\n").find((line) => line.trim()) ?? "");
 const text = (value: unknown) => (typeof value === "string" ? value : "");
-
-export function homePath(path: string): string {
-  const home = homedir();
-  return path === home || path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
-}
-
-/** Pi's own count of a diff's changed lines, as mirage counts them. */
-export function diffCounts(value: string): { added: number; removed: number } {
-  let added = 0,
-    removed = 0;
-  for (const line of value.split("\n")) {
-    if (/^\+\s*\d+ /.test(line)) added++;
-    else if (/^-\s*\d+ /.test(line)) removed++;
-  }
-  return { added, removed };
-}
-
-/** Lines in a write's content. Pi reports no diff for writes. */
-export function writtenLines(content: string): number {
-  if (!content) return 0;
-  const lines = content.split("\n").length;
-  return content.endsWith("\n") ? lines - 1 : lines;
-}
 
 const plural = (count: number, noun: string) =>
   `${count} ${noun}${count === 1 ? "" : noun.endsWith("h") ? "es" : "s"}`;
@@ -194,10 +173,7 @@ export function callRow(
   if (status === "success" && call.kind === "edit")
     changes = diffCounts(text((details as { diff?: unknown } | undefined)?.diff));
   else if (status === "success" && call.kind === "write") changes.added = call.written;
-  const code =
-    call.kind === "command" && error
-      ? /Command exited with code (\d+)\s*$/.exec(error)?.[1]
-      : undefined;
+  const code = call.kind === "command" && error ? exitCode(error) : undefined;
   return {
     kind: call.kind,
     status: status ?? "running",

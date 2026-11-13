@@ -1,12 +1,13 @@
 // Mirage's tests share this fixture. It runs the extension on a fake Pi and calls the
 // renderers the way Pi's tool rows call them.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after } from "node:test";
 import type {
   AgentToolResult,
+  ExtensionAPI,
   ExtensionContext,
   SessionEntry,
   ToolRenderers,
@@ -25,14 +26,12 @@ export const { ToolGroups } = await load<typeof import("../model.ts")>(
   "../model.ts",
   import.meta.url,
 );
-export const { diffCounts, writtenLines } = await load<typeof import("../view.ts")>(
-  "../view.ts",
-  import.meta.url,
-);
-export const { paint, colouredDiff } = await load<typeof import("../style.ts")>(
+export const { colouredDiff } = await load<typeof import("../style.ts")>(
   "../style.ts",
   import.meta.url,
 );
+export { paint } from "../../shared/colours.ts";
+export { diffCounts, writtenLines } from "../../shared/format.ts";
 
 export type Result = AgentToolResult<unknown>;
 export type Message = Parameters<InstanceType<typeof ToolGroups>["observe"]>[0];
@@ -53,7 +52,6 @@ export const assistantStart = { role: "assistant", content: [] } as unknown as M
 export const PIXEL_PNG =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII=";
 export const root = mkdtempSync(join(tmpdir(), "pi-mirage-"));
-const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
 const sessions: FakePi[] = [];
 after(async () => {
   for (const pi of sessions) await pi.event("session_shutdown");
@@ -67,8 +65,6 @@ after(async () => {
     nativeLookup,
     "mirage never replaces Pi's tool lookup",
   );
-  if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-  else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -134,22 +130,18 @@ export interface Slot {
 }
 
 /**
- * `global` is the user's settings.json, read by mirage at session start. `busy` makes Pi
+ * `global` is Pi's settings, which mirage reads at session start. `busy` makes Pi
  * report that it is working, as it does during a turn.
  */
 export async function fixture({
   global = {},
   busy = false,
 }: {
-  global?: object;
+  global?: ReturnType<ExtensionAPI["getSettings"]>;
   busy?: boolean;
 } = {}) {
   const dir = mkdtempSync(join(root, "case-"));
-  const config = join(dir, "config");
-  mkdirSync(config);
-  writeFileSync(join(config, "settings.json"), JSON.stringify(global));
-  process.env.PI_CODING_AGENT_DIR = config;
-  const pi = fakePi(),
+  const pi = fakePi(() => global),
     slots: Slot[] = [],
     notices: Notice[] = [];
   let allExpanded = false,

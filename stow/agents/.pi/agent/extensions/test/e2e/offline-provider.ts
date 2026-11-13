@@ -47,20 +47,20 @@ export default function (pi: ExtensionAPI) {
     description: "Inspect runtime adapter ownership in the isolated test",
     handler: async (label, ctx) => {
       const host = InteractiveMode.prototype;
-      const history = Reflect.get(host, Symbol.for("rearview.patch.v1"));
+      const history = Reflect.get(host, Symbol.for("rearview.patch.v2"));
       const images = Reflect.get(
         ToolExecutionComponent.prototype,
-        Symbol.for("mirage.native-images.patch.v1"),
+        Symbol.for("mirage.native-images.patch.v2"),
       );
       const thinking = Reflect.get(
         AssistantMessageComponent.prototype,
-        Symbol.for("mirage.native-thinking.patch.v1"),
+        Symbol.for("mirage.native-thinking.patch.v2"),
       );
       const restored =
         Reflect.get(host, "renderSessionEntries") ===
         Reflect.get(host, Symbol.for("fixture.original-history"));
       ctx.ui.notify(
-        `OWNERS_${label}_H${history?.owners.size ?? 0}_I${images?.users ?? 0}_T${thinking?.owners.size ?? 0}_R${Number(restored)}`,
+        `OWNERS_${label}_H${history?.owners.size ?? 0}_I${images?.owners.size ?? 0}_T${thinking?.owners.size ?? 0}_R${Number(restored)}`,
         "info",
       );
     },

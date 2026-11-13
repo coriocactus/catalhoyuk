@@ -60,9 +60,9 @@ test("operators inside quotes, substitutions, subshells and loops do not split",
 });
 
 test("a leading cd becomes where the command ran", () => {
-  assert.deepEqual(showCommand("cd ~/dbt/cdl && just format", plain), {
+  assert.deepEqual(showCommand("cd ~/src/app && just format", plain), {
     lines: ["just format"],
-    cwd: "~/dbt/cdl",
+    cwd: "~/src/app",
     elided: false,
   });
   assert.equal(showCommand("cd '/tmp/a b'; ls", plain).cwd, "/tmp/a b");

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { importsIn, installed, piImports, reviewed, watchedModules } from "./pi-diff.ts";
+import { importsIn, installed, pathsIn, piImports, reviewed, watchedModules } from "./pi-diff.ts";
 
 test("Pi imports must be named imports from package entry points", () => {
   const imports = importsIn(
@@ -33,6 +33,16 @@ test("every Pi symbol extension code imports traces to the installed module defi
     for (const symbol of symbols.keys())
       assert.match(declarations, new RegExp(`\\b${symbol}\\b`), `${name}/${module}: ${symbol}`);
   }
+});
+
+test("a Pi module loaded by its path is watched by that path", () => {
+  assert.deepEqual(
+    pathsIn("a.ts", 'import(join(getPackageDir(), "dist/core/tools/path-utils.js"))'),
+    ["dist/core/tools/path-utils"],
+  );
+  assert.throws(() => pathsIn("a.ts", "await import(somewhere);"), /^Error: a\.ts: /);
+  const watched = watchedModules().find((entry) => entry.module === "dist/core/tools/path-utils");
+  assert(watched?.users.has("inspector/paths.ts"), "inspector's path resolvers are watched");
 });
 
 test("the Pi release the extensions were last reviewed against is recorded", () => {

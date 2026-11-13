@@ -162,25 +162,85 @@ export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 
 alias pi='PATH="$brew_prefix/opt/node/bin:$PATH" pi'
 
-# ssh port forwarding functions
+# ssh port forwarding: mirror a remote dev server's ports onto localhost.
+#   fip <host> [port ...]  start a background watcher that forwards every port that, on
+#                          <host>, one of my processes listens on (any port number), a
+#                          Docker container publishes, or is named here (always on)
+#   lip                    list what is forwarded and what each port is
+#   dip <host>             stop the watcher and drop its forwards
+# FIP_SKIP is a regex of process/container names to ignore, e.g. '^sshd$|^myapp-test-'.
 fip() {
-  (( $# < 2 )) && echo "Usage: fip <host> <port1> [port2] ..." && return 1
-  local host="$1"
-  shift
-  for port in "$@"; do
-    ssh -f -N -L "${port}:localhost:${port}" "$host" && echo "Forwarding localhost:$port -> $host:$port"
-  done
+  (( $# )) && [[ -z ${@[2,-1]:#<1-65535>} ]] || { echo "Usage: fip <host> [always-port ...]"; return 1 }
+  local host=$1; shift
+  local -a static=($@) mux
+  local state=${TMPDIR:-/tmp}/fip.$host skip=${FIP_SKIP:-'^sshd$'}
+  # Forwards are added to one shared connection: the host's own ControlPath when
+  # ~/.ssh/config sets one, otherwise a socket of our own.
+  ssh -G $host 2>/dev/null | grep -q '^controlpath /' ||
+    mux=(-o ControlMaster=auto -o ControlPath=$HOME/.ssh/cm-%C -o ControlPersist=10m)
+  # Runs on the host once a second and prints one line of port=name pairs. Docker goes
+  # first so its container name wins over the anonymous root-owned listener.
+  local remote; remote=$(cat <<'REMOTE'
+: fip-watch
+command -v ss >/dev/null || { echo "fip: no ss on remote" >&2; exit 1; }
+while :; do
+  {
+    docker ps --format '{{.Names}} {{.Ports}}' 2>/dev/null | awk '{
+      name = $1; $1 = ""; n = split($0, e, ",")
+      for (i = 1; i <= n; i++) {
+        if (e[i] !~ /->.*\/tcp/) continue
+        split(e[i], lr, "->"); h = lr[1]; sub(/.*:/, "", h); c = lr[2]; sub(/\/tcp.*/, "", c)
+        nh = split(h, hr, "-"); split(c, cr, "-"); lo = hr[1] + 0; hi = (nh > 1 ? hr[2] : hr[1]) + 0
+        for (p = lo; p <= hi; p++) print p "=" name ":" (cr[1] + p - lo)
+      } }'
+    ss -Htlnp | awk '/users:/ { n = split($4, a, ":"); split($0, q, "\""); print a[n] "=" q[2] }'
+  } | awk -F= '!seen[$1]++ { gsub(/[^A-Za-z0-9_.:=\/-]/, "_"); printf "%s ", $0 }'
+  echo; sleep 1
+done
+REMOTE
+)
+  ssh $mux -O check $host 2>/dev/null || ssh $mux -fN $host || return   # auth prompts happen here
+  pgrep -qf -- "-T $host : fip-watch" && { echo "fip: already watching $host (see: lip)"; return }
+  {
+    local p t line table last=-
+    local -A fwd want
+    {
+      ssh $mux -T $host $remote </dev/null | while read -r line; do
+        want=()
+        for p in $static; do want[$p]=static; done
+        # The host's output is untrusted: accept only unprivileged port numbers, and strip
+        # names to safe characters because lip prints them to the terminal.
+        for t in ${=line}; do
+          [[ $t == <1024-65535>=* && ! ${t#*=} =~ $skip ]] &&
+            want[${t%%=*}]=${${t#*=}//[^A-Za-z0-9_.:\/-]/_}
+        done
+        for p in ${(k)want}; do
+          (( ${+fwd[$p]} )) && continue
+          if ssh $mux -O forward -L ${p}:localhost:${p} $host 2>/dev/null; then fwd[$p]=1
+          else want[$p]+="  (NOT FORWARDED: local port in use)"; fi
+        done
+        for p in ${(k)fwd}; do
+          (( ${+want[$p]} )) && continue
+          ssh $mux -O cancel -L ${p}:localhost:${p} $host 2>/dev/null; unset "fwd[$p]"
+        done
+        table=; for p in ${(kon)want}; do table+="${(l:5:)p}  $want[$p]"$'\n'; done
+        [[ $table == $last ]] || { print -rn -- $table >| $state; last=$table }
+      done
+    } always {
+      for p in ${(k)fwd}; do ssh $mux -O cancel -L ${p}:localhost:${p} $host 2>/dev/null; done
+      rm -f $state
+    }
+  } &!
 }
 
 dip() {
-  (( $# == 0 )) && echo "Usage: dip <port1> [port2] ..." && return 1
-  for port in "$@"; do
-    pkill -f "ssh.*-L ${port}:localhost:${port}" && echo "Stopped forwarding port $port" || echo "No forwarding on port $port"
-  done
+  (( $# == 1 )) || { echo "Usage: dip <host>"; return 1 }
+  pkill -f -- "-T $1 : fip-watch" && echo "Stopped watching $1" || echo "Not watching $1"
 }
 
 lip() {
-  ps aux | grep "ssh.*-L" | grep -v grep | grep -oE '\-L [0-9]+:localhost:[0-9]+' | sed 's/-L //'
+  local f
+  for f in ${TMPDIR:-/tmp}/fip.*(N); do echo "${${f:t}#fip.}:"; cat $f; done
 }
 
 if command -v jj >/dev/null 2>&1; then source <(COMPLETE=zsh jj); fi

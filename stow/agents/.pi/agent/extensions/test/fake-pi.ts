@@ -14,6 +14,7 @@ import { core } from "./pi.ts";
 // biome-ignore lint/suspicious/noExplicitAny: schema-specific definitions are only assignable to any.
 export type Tool = ToolDefinition<any, any, any>;
 type Handler = (event: unknown, ctx: unknown) => unknown;
+type Settings = ReturnType<ExtensionAPI["getSettings"]>;
 /** The registered tool's renderers, which Pi uses when no resolver chooses any. */
 export type BaseRenderers = () => ToolRenderers | undefined;
 
@@ -32,7 +33,7 @@ export function fake<T>(value: Fake<T>): T {
 }
 
 export interface FakePi {
-  /** What extensions receive: only on/registerTool/registerToolRenderer/events are implemented. */
+  /** What extensions receive: only on, registerTool, registerToolRenderer, events and getSettings. */
   readonly api: ExtensionAPI;
   readonly tools: Map<string, Tool>;
   readonly events: EventBus;
@@ -44,7 +45,8 @@ export interface FakePi {
   emit(name: string, value?: unknown, ctx?: unknown): void;
 }
 
-export function fakePi(): FakePi {
+/** `settings`: what `pi.getSettings()` answers, read again on every call. */
+export function fakePi(settings: () => Settings = () => ({})): FakePi {
   const handlers = new Map<string, Handler[]>();
   const tools = new Map<string, Tool>();
   const resolvers: ToolRendererResolver[] = [];
@@ -67,7 +69,11 @@ export function fakePi(): FakePi {
     registerToolRenderer(resolver: ToolRendererResolver) {
       resolvers.push(resolver);
     },
-  } satisfies Pick<ExtensionAPI, "events" | "on" | "registerTool" | "registerToolRenderer">;
+    getSettings: () => structuredClone(settings()),
+  } satisfies Pick<
+    ExtensionAPI,
+    "events" | "on" | "registerTool" | "registerToolRenderer" | "getSettings"
+  >;
   const current = (name: string) => [...(handlers.get(name) ?? [])];
   return {
     api: api as unknown as ExtensionAPI,

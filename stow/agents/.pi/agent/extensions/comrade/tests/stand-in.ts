@@ -206,6 +206,8 @@ async function scenario(name: string, prompt: Prompt, history: string[]) {
       start("1", "read", { path: "/tmp/notes.md" });
       end("1", "read");
       process.stdout.write("not a record\n");
+      // A record far longer than a pipe's chunk, of a kind the reader skips, as Pi's agent_end is.
+      process.stdout.write(`{"type":"agent_end","messages":"${"x".repeat(300_000)}"}\n`);
       const answer = assistant([{ type: "text", text: JSON.stringify(echo(prompt, history)) }]);
       save({ ...answer.message, timestamp: Date.now() });
       const bytes = Buffer.from(`${JSON.stringify(answer)}\n`);
@@ -218,6 +220,18 @@ async function scenario(name: string, prompt: Prompt, history: string[]) {
     }
     case "long":
       said(Array.from({ length: 3000 }, (_, i) => `line ${i + 1}`).join("\n"));
+      return settled();
+    case "misshapen":
+      // Messages that are not what Pi's types declare: a reader that trusted them would throw
+      // on each.
+      for (const message of [
+        undefined,
+        { role: "user", content: [null] },
+        { role: "assistant", content: "not parts" },
+        { role: "toolResult", toolCallId: "1", content: [{ type: "text" }] },
+      ])
+        write({ type: "message_end", message });
+      said("Still here.");
       return settled();
     case "error":
       write(assistant([], "error", { errorMessage: "529 overloaded" }));

@@ -25,7 +25,10 @@ const {
 } = await load<typeof import("../index.ts")>("../index.ts", import.meta.url);
 const resume = await load<typeof import("../resume.ts")>("../resume.ts", import.meta.url);
 const { interruption, interruptionNote, finished } = resume;
-const { lean, steering } = await load<typeof import("../run.ts")>("../run.ts", import.meta.url);
+const { isConversationMessage, lean, steering } = await load<typeof import("../run.ts")>(
+  "../run.ts",
+  import.meta.url,
+);
 const runs = await load<typeof import("../runs.ts")>("../runs.ts", import.meta.url);
 type Details = import("../index.ts").Details;
 type Delivery = import("../index.ts").Delivery;
@@ -863,25 +866,84 @@ test("a running comrade spins with Pi's working spinner until its result arrives
       tool.renderResult?.(value, { expanded: false, isPartial }, themes.theme, context(isPartial)),
     );
 
-  assert.match(draw(running, true), /^⠋ Comrade #1 {2}Spin {2}/);
+  const row = tool.renderResult?.(
+    running,
+    { expanded: false, isPartial: true },
+    themes.theme,
+    context(true),
+  );
+  assert.match(render(row), /^⠋ Comrade #1 {2}Spin {2}/);
   await Promise.resolve(); // the call slot's one-time redraw
   const before = redraws;
+  // The row reads its frame from the clock each time Pi draws it. A frame drew it during the
+  // interval, as Pi's own working indicator makes one do, so the timer asks for none.
   t.mock.timers.tick(80);
-  assert.equal(redraws, before + 1, "the timer redraws the running row");
-  assert.match(draw(running, true), /^⠙ Comrade #1 {2}Spin {2}/, "the frame follows the clock");
-  assert(
-    (
-      tool
-        .renderResult?.(running, { expanded: false, isPartial: true }, themes.theme, context(true))
-        ?.render(120)[0] ?? ""
-    ).startsWith(themes.theme.fg("accent", "⠙")),
-    "in Pi's accent colour",
+  assert.equal(redraws, before, "frames drawn for anything else turn the spinner");
+  assert.match(render(row), /^⠙ Comrade #1 {2}Spin {2}/, "the frame follows the clock");
+  assert((row?.render(120)[0] ?? "").startsWith(themes.theme.fg("accent", "⠙")), "in Pi's accent");
+  // An interval in which no frame drew the row: the timer asks Pi to redraw it.
+  t.mock.timers.tick(160);
+  assert.equal(redraws, before + 1, "the timer asks Pi to redraw when nothing else does");
+  // Pi then calls the renderer again, which keeps the row's one component.
+  assert.equal(
+    tool.renderResult?.(running, { expanded: false, isPartial: true }, themes.theme, {
+      ...context(true),
+      lastComponent: row,
+    }),
+    row,
   );
 
   assert.match(draw(result, false), /^✓ Comrade #1 {2}Spin {2}\$0\.02 · 1\.0s ▸$/);
   const done = redraws;
   t.mock.timers.tick(800);
   assert.equal(redraws, done, "no redraws once it has finished");
+});
+
+test("a run's work is built as its messages arrive, never again from the start", async () => {
+  const { createTranscripts } = await load<typeof import("../transcripts.ts")>(
+    "../transcripts.ts",
+    import.meta.url,
+  );
+  const pi = fakePi();
+  const transcripts = createTranscripts(pi.api);
+  const said = (text: string) =>
+    ({ role: "assistant", content: [{ type: "text", text }], stopReason: "toolUse" }) as never;
+  const asks = (id: string) =>
+    ({
+      role: "assistant",
+      content: [{ type: "toolCall", id, name: "grep", arguments: { pattern: id } }],
+      stopReason: "toolUse",
+    }) as never;
+  const answers = (id: string) =>
+    ({ role: "toolResult", toolCallId: id, isError: false, content: [] }) as never;
+  const messages = [{ role: "user", content: "task" } as never, said("First."), asks("a")];
+  transcripts.track("run", messages, true);
+  const blocks = () => transcripts.blocksFor("run", () => undefined, "/tmp", themes.theme, true);
+  const first = blocks();
+  assert.deepEqual(
+    first.map((block) => block.kind),
+    ["text", "call"],
+  );
+  assert.equal(blocks(), first, "the same blocks until the run has done more");
+  const [text, call] = first;
+  assert(call.kind === "call" && call.row.status === "running");
+  // Its result, and more work: the blocks grow, and the ones drawn stay the ones they were.
+  messages.push(answers("a"), said("Second."));
+  const second = blocks();
+  assert.notEqual(second, first, "a row can tell that there is more to draw");
+  assert.equal(second[0], text);
+  assert.equal(second[1], call);
+  assert.equal(call.row.status, "success", "a call's row says how it went once its result came");
+  assert.deepEqual(
+    second.map((block) => block.kind),
+    ["text", "call", "text"],
+  );
+  // Ended, the calls left without a result were cut off: that changes them all, so it starts over.
+  messages.push(asks("b"));
+  transcripts.track("run", messages, false);
+  const ended = transcripts.blocksFor("run", () => undefined, "/tmp", themes.theme, false);
+  const cut = ended.at(-1);
+  assert(cut?.kind === "call" && cut.row.status === "cancelled");
 });
 
 test("a turn waits for its background comrades, then continues with the answer", async (t) => {
@@ -2794,12 +2856,13 @@ test("an opened row shows its own run of a conversation, not the run next to it"
   assert.equal(texts(2_700, 2_800), undefined);
 });
 
-test("without mirage, a comrade's thinking follows Ctrl+T, which Pi saves in its settings", async (t) => {
-  const { tool, call, cwd } = fixture(t, "work");
+test("without mirage, a comrade's thinking follows Ctrl+T, which changes Pi's setting", async (t) => {
+  const { tool, call, settings } = fixture(t, "work");
   const result = await call({ task: "Check the notes" });
   const row = opened(tool, result, "Check the notes");
   assert(render(row).includes("The notes come first."));
-  writeFileSync(join(cwd, ".agent", "settings.json"), JSON.stringify({ hideThinkingBlock: true }));
+  settings.hideThinkingBlock = true;
+  // One reading of the setting stands for a quarter of a second.
   await new Promise((wake) => setTimeout(wake, 300));
   assert(!render(row).includes("The notes come first."));
 });
@@ -2916,6 +2979,88 @@ test("a run keeps its comrade's messages lean: no images, and long results cut",
   ) as { content: { type: string; text: string }[] };
   assert.equal(result.content.length, 1);
   assert.equal(result.content[0].text, `${"a".repeat(31_999)}\n…`);
+});
+
+test("a comrade's message is read only when it is in the shape its row draws", () => {
+  const text = { type: "text", text: "Look" };
+  const call = { type: "toolCall", id: "c", name: "read", arguments: { path: "a.ts" } };
+  for (const message of [
+    { role: "user", content: "Look" },
+    { role: "user", content: [text, { type: "image", data: "x", mimeType: "image/png" }] },
+    { role: "assistant", content: [{ type: "thinking", thinking: "Hm." }, text, call] },
+    { role: "assistant", content: [] },
+    { role: "toolResult", toolCallId: "c", content: [text] },
+  ])
+    assert(isConversationMessage(message), JSON.stringify(message));
+  for (const message of [
+    null,
+    "a message",
+    { role: "assistant" },
+    { role: "assistant", content: "Look" },
+    { role: "user", content: [null] },
+    { role: "user", content: ["Look"] },
+    { role: "assistant", content: [{ type: "text" }] },
+    { role: "assistant", content: [{ type: "thinking", thinking: 1 }] },
+    { role: "assistant", content: [{ type: "toolCall", name: "read" }] },
+    { role: "toolResult", toolCallId: "c", content: [{ type: "text", text: 1 }] },
+    { role: "toolResult", toolCallId: "c", content: [{ type: "image", data: "x" }] },
+    { role: "toolResult", content: [text] },
+    // Pi's other messages are not a comrade's conversation.
+    { role: "custom", content: [text] },
+  ])
+    assert(!isConversationMessage(message), JSON.stringify(message));
+  // A part of a type Pi does not declare is kept whole: nothing reads it.
+  const novel = { role: "toolResult", toolCallId: "c", content: [{ type: "novel", size: 1 }] };
+  assert(isConversationMessage(novel));
+  assert.deepEqual(lean(novel), novel);
+});
+
+test("messages out of shape from a comrade's Pi are passed over, and its run goes on", async (t) => {
+  const { call } = fixture(t, "misshapen");
+  const result = await call({ task: "Carry on" });
+  assert.equal(result.isError, undefined);
+  assert.equal(answer(result), "Still here.");
+  // Only the reply in shape is a turn.
+  assert.equal(details(result).turns, 1);
+});
+
+test("a row whose saved record is not a run's shows its result's text, not a run", (t) => {
+  const { tool } = fixture(t, "echo");
+  const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } };
+  const whole = { model: "a/b", thinking: "high", tools: ["read"], turns: 1, calls: 0, usage };
+  const row = (details: object) =>
+    render(
+      tool.renderResult?.(
+        fake<Result>({ content: [{ type: "text", text: "What it said." }], details }),
+        { expanded: false, isPartial: false },
+        themes.theme,
+        fake<RenderContext>({
+          args: { title: "Check the notes", task: "Check the notes" },
+          state: {},
+          toolCallId: "call",
+          isPartial: false,
+          expanded: false,
+          isError: false,
+          outputPad: 0,
+          invalidate() {},
+        }),
+      ),
+    );
+  assert.equal(row(whole), "✓ Comrade  Check the notes  $0.01 ▸");
+  // Each of these lacks a part that a row reads without asking whether it is there.
+  for (const details of [
+    { usage },
+    { ...whole, tools: undefined },
+    { ...whole, tools: [1] },
+    { ...whole, turns: "1" },
+    { ...whole, usage: { ...usage, cost: {} } },
+    { ...whole, usage: null },
+  ])
+    assert.equal(
+      row(details),
+      "✗ Comrade  Check the notes  failed ▸\n  What it said.",
+      JSON.stringify(details),
+    );
 });
 
 test("without mirage, rows ask for it once, not on every draw", async (t) => {

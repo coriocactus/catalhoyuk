@@ -5,6 +5,7 @@
 // its answer until the caller's session holds it. Pi holds a message that arrives during a turn
 // in memory until the turn ends, so an answer Pi exits with first is delivered from here.
 import { readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import type { Progress, Request } from "./run.ts";
 
 export interface RunRecord<D = unknown> {
   /** The run: its start row's tool call id, or a resumed run's own. */
@@ -29,6 +30,44 @@ export interface RunRecord<D = unknown> {
   /** Once done, a background run's answer for the caller's session. */
   answer?: { delivery: D; body: string };
 }
+
+/** Saves a run's record; one that cannot be saved costs only its recovery, never the run. */
+export function quietly(save: () => void): void {
+  try {
+    save();
+  } catch {
+    // The run goes on without it.
+  }
+}
+
+/** A run's record as it starts, run by this Pi. */
+export const launched = (request: Request, run: string, background: boolean, started: number) => ({
+  run,
+  background,
+  owner: process.pid,
+  started,
+  phase: "starting" as const,
+  task: request.task,
+  files: request.files,
+  ...(request.output ? { output: request.output } : {}),
+  ...(request.timeoutMs !== undefined ? { timeoutMs: request.timeoutMs } : {}),
+});
+
+/** Saves what a run's progress shows of it: its comrade's Pi, and its prompt reaching it. */
+export const follow = (session: string, run: string) => {
+  let child: number | undefined;
+  let asked = false;
+  return (progress: Progress) => {
+    if (progress.pid !== undefined && progress.pid !== child) {
+      child = progress.pid;
+      quietly(() => updateRun(session, run, { child }));
+    }
+    if (progress.asked && !asked) {
+      asked = true;
+      quietly(() => updateRun(session, run, { phase: "asked" }));
+    }
+  };
+};
 
 /** `comrade-3.jsonl` keeps its runs in `comrade-3.runs.json`. */
 export const runsFile = (session: string) => `${session.replace(/\.jsonl$/, "")}.runs.json`;

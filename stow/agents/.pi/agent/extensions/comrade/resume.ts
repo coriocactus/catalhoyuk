@@ -4,12 +4,16 @@
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Usage } from "@earendil-works/pi-ai";
-import { formatDuration } from "./view.ts";
+import { formatDuration } from "../shared/format.ts";
+import { addUsage, emptyUsage, isConversationMessage } from "./run.ts";
 import { Ledger } from "./work.ts";
 
 /** How long ago a cut-off run must have stopped before the note warns that files may have changed. */
 const STALE_MS = 10 * 60_000;
-/** How much of a conversation's end is read: enough for its last run's messages. */
+/**
+ * How much of a conversation's end is read: enough for its last run's messages. Every read here
+ * is synchronous, one of them as a row is first drawn open, so this bounds how long Pi waits.
+ */
 const TAIL_BYTES = 4 * 1024 * 1024;
 /** How much of a long conversation's start is read for its header, which names its directory. */
 const HEAD_BYTES = 64 * 1024;
@@ -52,7 +56,7 @@ interface Entry {
  * The file's text, or when long, its first line (the session header) and its end, from the
  * first whole line within the tail.
  */
-function text(file: string, whole = false): { text: string; saved: number } | undefined {
+function text(file: string): { text: string; saved: number } | undefined {
   let fd: number | undefined;
   try {
     const { size, mtimeMs } = statSync(file);
@@ -62,7 +66,7 @@ function text(file: string, whole = false): { text: string; saved: number } | un
       const count = readSync(fd as number, buffer, 0, length, position);
       return buffer.subarray(0, count).toString("utf8");
     };
-    if (whole || size <= TAIL_BYTES) return { text: chunk(size, 0), saved: mtimeMs };
+    if (size <= TAIL_BYTES) return { text: chunk(size, 0), saved: mtimeMs };
     const head = chunk(HEAD_BYTES, 0);
     const tail = chunk(TAIL_BYTES, size - TAIL_BYTES);
     return {
@@ -77,11 +81,8 @@ function text(file: string, whole = false): { text: string; saved: number } | un
 }
 
 /** The conversation's messages on its current branch, and the directory it ran in. */
-function read(
-  file: string,
-  whole = false,
-): { messages: Message[]; cwd?: string; saved: number } | undefined {
-  const content = text(file, whole);
+function read(file: string): { messages: Message[]; cwd?: string; saved: number } | undefined {
+  const content = text(file);
   if (!content) return undefined;
   const entries: Entry[] = [];
   for (const line of content.text.split("\n")) {
@@ -119,8 +120,10 @@ function read(
   };
 }
 
+const isBlock = (part: unknown): part is Block => typeof part === "object" && part !== null;
+/** The parts of a message's content that are objects, whatever else a damaged file holds. */
 const blocks = (message: Message): Block[] =>
-  Array.isArray(message.content) ? (message.content as Block[]) : [];
+  Array.isArray(message.content) ? message.content.filter(isBlock) : [];
 const replies = (messages: Message[], before = messages.length) =>
   messages.slice(0, before).findLastIndex((message) => message.role === "assistant");
 
@@ -162,7 +165,7 @@ export function interruption(file: string): Interruption | undefined {
   );
   const ledger = new Ledger(conversation.cwd ?? process.cwd());
   for (const block of blocks(reply)) {
-    if (block?.type !== "toolCall" || typeof block.id !== "string") continue;
+    if (block.type !== "toolCall" || typeof block.id !== "string") continue;
     const result = results.get(block.id);
     if (result && result.isError !== true) continue;
     ledger.start(block.id, typeof block.name === "string" ? block.name : "tool", block.arguments);
@@ -201,28 +204,18 @@ export function finished(file: string, since: number): Finished | undefined {
   const last = run.at(-1);
   if (last?.role !== "assistant" || (last.stopReason !== "stop" && last.stopReason !== "length"))
     return undefined;
-  const usage: Usage = {
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheWrite: 0,
-    totalTokens: 0,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-  };
+  const usage = emptyUsage();
   let turns = 0;
   let calls = 0;
   let answer = "";
   for (const message of run) {
     if (message.role !== "assistant") continue;
     turns++;
-    calls += blocks(message).filter((block) => block?.type === "toolCall").length;
-    for (const key of ["input", "output", "cacheRead", "cacheWrite", "totalTokens"] as const)
-      usage[key] += message.usage?.[key] ?? 0;
-    for (const key of ["input", "output", "cacheRead", "cacheWrite", "total"] as const)
-      usage.cost[key] += message.usage?.cost?.[key] ?? 0;
+    calls += blocks(message).filter((block) => block.type === "toolCall").length;
+    addUsage(usage, message.usage);
     const said = blocks(message)
       .flatMap((block) =>
-        block?.type === "text" && typeof block.text === "string" ? [block.text] : [],
+        block.type === "text" && typeof block.text === "string" ? [block.text] : [],
       )
       .join("\n")
       .trim();
@@ -266,14 +259,16 @@ export function interruptionNote(
 
 /**
  * The messages of the run that started at `since` and ended at `until`, from its first prompt on,
- * as its conversation saved them: for its row to show what it did, read whole when it is opened.
+ * as its conversation saved them: for its row to show what it did, read when it is first opened.
+ * Read from the conversation's last 4 MB, as every read here is: a run that ended before them is
+ * not found, and its row shows the summary it saved instead.
  */
 export function runMessages(
   file: string,
   since: number,
   until = Number.POSITIVE_INFINITY,
 ): AgentMessage[] | undefined {
-  const messages = read(file, true)?.messages;
+  const messages = read(file)?.messages;
   if (!messages) return undefined;
   // Its comrade's Pi runs on this machine's clock, and saves the prompt after the run started,
   // and its last message before the run ended: no slack, which would reach into a neighbour.
@@ -283,11 +278,12 @@ export function runMessages(
       typeof message.timestamp === "number" &&
       message.timestamp >= since,
   );
-  if (first < 0) return undefined;
+  // None, or only a later run's: this run lies before what was read.
+  if (first < 0 || (messages[first].timestamp as number) > until) return undefined;
   // Up to its end: a later run of the same comrade follows in the same file.
   const after = messages.findIndex(
     (message, index) =>
       index > first && typeof message.timestamp === "number" && message.timestamp > until,
   );
-  return messages.slice(first, after < 0 ? undefined : after) as unknown as AgentMessage[];
+  return messages.slice(first, after < 0 ? undefined : after).filter(isConversationMessage);
 }

@@ -1,7 +1,7 @@
 // Comrade's tests share this fixture: comrade on a fake Pi, its comrades run by the stand-in.
 // Cross-extension tests in test/ install other extensions beside it, such as mirage.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
@@ -71,8 +71,8 @@ export function fixture(
     available = models,
     /** Installs other extensions on the same Pi first, as cross-extension tests do with mirage. */
     beside = undefined as ((api: ExtensionAPI) => void) | undefined,
-    /** Pi's settings, such as `hideThinkingBlock`. */
-    settings = {} as Record<string, unknown>,
+    /** Pi's settings, such as `hideThinkingBlock`. A test may change them as it goes. */
+    settings = {} as ReturnType<ExtensionAPI["getSettings"]>,
   } = {},
 ) {
   const pi = fakePi();
@@ -97,6 +97,7 @@ export function fixture(
     // Active in the caller: everything but what `inactive` names.
     getActiveTools: () =>
       [...toolNames, ...pi.tools.keys()].filter((name) => !inactive.includes(name)),
+    getSettings: () => structuredClone(settings),
   };
   beside?.(api);
   register(
@@ -110,16 +111,6 @@ export function fixture(
   assert(tool && list, "comrade and comrades registered");
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "comrade-test-")));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
-  // Pi's settings for this test alone, never the user's.
-  const agentDir = join(cwd, ".agent");
-  mkdirSync(agentDir);
-  writeFileSync(join(agentDir, "settings.json"), JSON.stringify(settings));
-  const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
-  process.env.PI_CODING_AGENT_DIR = agentDir;
-  t.after(() => {
-    if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-    else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
-  });
   const working: (string | undefined)[] = [];
   const keys = new Set<(data: string) => unknown>();
   let pending = false;
@@ -235,6 +226,7 @@ export function fixture(
     working,
     keys,
     widgets,
+    settings,
   };
 }
 

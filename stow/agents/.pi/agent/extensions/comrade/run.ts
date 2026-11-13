@@ -33,6 +33,8 @@ const DRAIN_MS = 1000;
 const STREAM_MS = 250;
 /** Characters per token, to estimate streamed tokens before the provider counts them. */
 const CHARS_PER_TOKEN = 4;
+/** How the records start that the reader has no use for. */
+const SKIPPED = ['{"type":"agent_end"', '{"type":"turn_end"'];
 
 /** The command that starts Pi, before Pi's own arguments. */
 export interface Invocation {
@@ -194,6 +196,53 @@ export class Channel {
   }
 }
 
+/**
+ * Whether a part of a message's content is one a row can read: it names its type, and has the
+ * text, the thinking, the call or the image that type promises. A part of a type Pi does not
+ * declare passes, since nothing reads it.
+ */
+function isPart(part: unknown): boolean {
+  if (typeof part !== "object" || part === null || !("type" in part)) return false;
+  switch (part.type) {
+    case "text":
+      return "text" in part && typeof part.text === "string";
+    case "thinking":
+      return "thinking" in part && typeof part.thinking === "string";
+    case "toolCall":
+      return (
+        "id" in part &&
+        typeof part.id === "string" &&
+        "name" in part &&
+        typeof part.name === "string"
+      );
+    case "image":
+      return (
+        "data" in part &&
+        typeof part.data === "string" &&
+        "mimeType" in part &&
+        typeof part.mimeType === "string"
+      );
+    default:
+      return typeof part.type === "string";
+  }
+}
+
+/**
+ * Whether a message is one of a comrade's conversation that its row can draw: a prompt, a
+ * reply or a result. A comrade's messages come from another process as it runs, and later from
+ * its conversation file, so neither is taken on trust. What is checked is what is read: the
+ * role, a result's call, and every part of the content.
+ */
+export function isConversationMessage(message: unknown): message is AgentMessage {
+  if (typeof message !== "object" || message === null) return false;
+  if (!("role" in message) || !("content" in message)) return false;
+  const { role, content } = message;
+  if (role === "user" && typeof content === "string") return true;
+  if (!Array.isArray(content) || !content.every(isPart)) return false;
+  if (role === "user" || role === "assistant") return true;
+  return role === "toolResult" && "toolCallId" in message && typeof message.toolCallId === "string";
+}
+
 /** How much of a call's result a row keeps: mirage shows at most this much of it opened. */
 const RESULT_MAX = 32_000;
 
@@ -204,7 +253,8 @@ export function lean(message: AgentMessage): AgentMessage {
   if (message.role !== "toolResult") return message;
   const content = message.content.flatMap((part) => {
     if (part.type === "image") return [];
-    if (part.text.length <= RESULT_MAX) return [part];
+    // A part of a type Pi does not declare has no text to cut.
+    if (part.type !== "text" || part.text.length <= RESULT_MAX) return [part];
     // Not between the halves of a surrogate pair.
     const end = /[\uD800-\uDBFF]/.test(part.text[RESULT_MAX - 1] ?? "")
       ? RESULT_MAX - 1
@@ -339,7 +389,8 @@ export function emptyUsage(): Usage {
   };
 }
 
-function addUsage(total: Usage, usage: Usage | undefined): void {
+/** Adds one message's usage to a total. A saved message may lack parts of it. */
+export function addUsage(total: Usage, usage: Partial<Usage> | undefined): void {
   if (!usage) return;
   for (const key of ["input", "output", "cacheRead", "cacheWrite", "totalTokens"] as const)
     total[key] += usage[key] ?? 0;
@@ -475,6 +526,10 @@ export async function run(
   // comrade, not anything Pi reports before it.
   let going = false;
   const handle = (line: string) => {
+    // These repeat messages already read, one of them every message of the run: about a third
+    // of what Pi writes. Told apart by how Pi starts each record, so none is parsed. A record
+    // that starts otherwise is parsed, and ignored below.
+    if (SKIPPED.some((start) => line.startsWith(start))) return;
     let event: JsonAgentSessionEvent | RpcResponse | RpcExtensionUIRequest;
     try {
       event = JSON.parse(line);
@@ -497,14 +552,11 @@ export async function run(
         count(event.message.usage);
         return;
       case "message_end": {
-        const message = event.message;
+        // The comrade's Pi is another process, so its message is checked, not taken as the
+        // type its record declares. One of another kind, or not in shape, is passed over.
+        const message = isConversationMessage(event.message) ? event.message : undefined;
         // Its conversation in this run, for its row to show as mirage shows Pi's own.
-        if (
-          message?.role === "user" ||
-          message?.role === "assistant" ||
-          message?.role === "toolResult"
-        )
-          state.messages.push(lean(message as AgentMessage));
+        if (message) state.messages.push(lean(message));
         // Pi saves each message as it ends: the comrade has its prompt.
         if (message?.role === "user" && !state.asked) {
           state.asked = true;
@@ -600,7 +652,15 @@ export async function run(
   };
 
   return new Promise((resolve) => {
-    let buffer = "";
+    // The chunks of a record still arriving. Joined once, when its line ends: a long record
+    // arrives in many chunks, and searching all of it again for each would cost its square.
+    let partial: string[] = [];
+    /** Reads what is left when the output ends without a final line break. */
+    const flush = () => {
+      const rest = partial.join("");
+      partial = [];
+      if (rest) handle(rest);
+    };
     let killer: ReturnType<typeof setTimeout> | undefined;
     let deadline: ReturnType<typeof setTimeout> | undefined;
     let drain: ReturnType<typeof setTimeout> | undefined;
@@ -753,11 +813,15 @@ export async function run(
     // Records are split on LF only; the decoder keeps multibyte characters whole across chunks.
     stdout.setEncoding("utf8");
     stdout.on("data", (chunk: string) => {
-      buffer += chunk;
-      for (let end = buffer.indexOf("\n"); end >= 0; end = buffer.indexOf("\n")) {
-        handle(buffer.slice(0, end));
-        buffer = buffer.slice(end + 1);
+      let from = 0;
+      for (let end = chunk.indexOf("\n"); end >= 0; end = chunk.indexOf("\n", from)) {
+        partial.push(chunk.slice(from, end));
+        const line = partial.length === 1 ? partial[0] : partial.join("");
+        partial = [];
+        from = end + 1;
+        handle(line);
       }
+      if (from < chunk.length) partial.push(chunk.slice(from));
     });
     stderr.setEncoding("utf8");
     stderr.on("data", (chunk: string) => {
@@ -791,13 +855,13 @@ export async function run(
     child.on("exit", (code) => {
       state.exitCode = code;
       drain = setTimeout(() => {
-        if (buffer) handle(buffer);
+        flush();
         finish();
       }, DRAIN_MS);
       drain.unref();
     });
     child.on("close", (code) => {
-      if (buffer) handle(buffer);
+      flush();
       state.exitCode = code;
       finish();
     });

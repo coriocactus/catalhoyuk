@@ -3,11 +3,11 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { Theme, ToolInfo, ToolRenderers } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
+import { colours } from "../../shared/colours.ts";
 import { OPEN_FILE_EVENT, type OpenFileRequest } from "../../shared/protocol.ts";
 import { fake, fakePi } from "../../test/fake-pi.ts";
 import { core, loadFuture, themes, tui } from "../../test/pi.ts";
 import { assistant as assistantMessage } from "../../test/transcript.ts";
-import { colours } from "../colours.ts";
 import {
   assistantStart,
   colouredDiff,
@@ -57,7 +57,10 @@ test("compatibility checks capabilities, not a version allowlist, and warns befo
   const imageRender = prototype.render;
   prototype.render = undefined;
   try {
-    assert.throws(() => images.installNativeImageSlot(), /renderer is unavailable/);
+    assert.throws(
+      () => images.installNativeImageSlot(),
+      /Pi's render is unavailable to mirage's image adapter/,
+    );
   } finally {
     prototype.render = imageRender;
   }
@@ -1210,18 +1213,22 @@ test("calls in progress show Pi's working spinner while Pi works, and stop spinn
   const f = await fixture({ busy: true });
   const read = f.call("read", "spin-read", { path: "a.txt" });
   assert.equal(plain(read.view), "⠋ Reading a.txt ▸");
-  // The frame follows the clock, in Pi's accent colour, and a timer redraws the row.
+  // The frame follows the clock, in Pi's accent colour. A frame drew the row during the
+  // interval, as Pi's own working indicator makes one do, so the timer asks for none.
   t.mock.timers.tick(80);
   assert.equal(plain(read.view), "⠙ Reading a.txt ▸");
-  assert(f.invalidations > 0, "the timer asks Pi to redraw");
+  assert.equal(f.invalidations, 0, "frames drawn for anything else turn the spinner");
   assert(
     read.view.render(160).map(unmark)[0].startsWith(themes.theme.fg("accent", "⠙")),
     "the spinner uses Pi's accent colour",
   );
+  // An interval in which no frame drew the row: the timer asks Pi to redraw it.
+  t.mock.timers.tick(160);
+  assert.equal(f.invalidations, 1, "the timer asks Pi to redraw when nothing else does");
 
   // A running command spins instead of its muted $, then shows the green $ when done.
   const command = f.call("bash", "spin-bash", { command: "npm test" });
-  assert.match(plain(read.view), /^⠙ Reading 1 file, running 1 command ▸$/);
+  assert.match(plain(read.view), /^⠸ Reading 1 file, running 1 command ▸$/);
   read.result(result("done"));
   command.result(result("ok"));
   assert.equal(plain(read.view), "✓ Read 1 file, ran 1 command ▸");
@@ -1240,10 +1247,95 @@ test("calls in progress show Pi's working spinner while Pi works, and stop spinn
   assert.equal(f.invalidations, idle, "the timer stopped when Pi went idle");
 });
 
+test("a spinner frame redraws a live group without building its output again", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "Date"] });
+  const f = await fixture({ busy: true });
+  const read = component("read", "kept-read", { path: "a.ts" }, f.tool("read"), f.dir);
+  read.updateResult({ ...result("const kept = 1;"), isError: false });
+  const running = component("bash", "kept-bash", { command: "sleep 9" }, f.tool("bash"), f.dir);
+  running.markExecutionStarted();
+  f.expand(true);
+  for (const item of [read, running]) item.setExpanded(true);
+  assert.match(
+    plain(read),
+    /^\n⠋ Read 1 file, running 1 command ▾\n {2}✓ Read a\.ts ▾\n {4}const kept = 1;/,
+  );
+  const view = internals(read).rendererState.view as unknown as {
+    bodies: Map<string, { component: object }>;
+  };
+  const body = view.bodies.get("kept-read")?.component;
+  assert(body, "the read's output is built");
+  // The spinner's own request reaches the row as any redraw does: Pi invalidates it, then
+  // calls its renderers.
+  const invalidated = t.mock.method(read, "invalidate");
+  t.mock.timers.tick(160);
+  assert.equal(invalidated.mock.callCount(), 1);
+  assert.match(plain(read), /^\n⠹ Read 1 file, running 1 command ▾/, "the frame moved on");
+  assert.equal(view.bodies.get("kept-read")?.component, body, "its output was not built again");
+  // Anything else that invalidates the row, such as a theme change, builds it afresh.
+  read.invalidate();
+  plain(read);
+  assert.notEqual(view.bodies.get("kept-read")?.component, body);
+});
+
+test("a result Pi reports again keeps the output built for it", async () => {
+  const f = await fixture();
+  const read = component("read", "again-read", { path: "a.ts" }, f.tool("read"), f.dir);
+  read.updateResult({ ...result("const kept = 1;"), isError: false });
+  f.expand(true);
+  read.setExpanded(true);
+  assert.match(plain(read), /^\n✓ Read a\.ts ▾\n {2}const kept = 1;/);
+  const view = internals(read).rendererState.view as unknown as {
+    bodies: Map<string, { component: object }>;
+    made: Map<string, object>;
+  };
+  const body = view.bodies.get("again-read")?.component;
+  const highlighted = view.made.get("again-read");
+  assert(body && highlighted, "the read's output is built and highlighted");
+  // Pi reports a result once more when it records it: the same text, in a new object.
+  read.updateResult({ ...result("const kept = 1;"), isError: false });
+  plain(read);
+  assert.equal(view.made.get("again-read"), highlighted, "it was not highlighted again");
+  assert.equal(view.bodies.get("again-read")?.component, body, "nor laid out again");
+  // A result that differs is built.
+  read.updateResult({ ...result("const kept = 2;"), isError: false });
+  assert.match(plain(read), /const kept = 2;/);
+  assert.notEqual(view.bodies.get("again-read")?.component, body);
+});
+
+test("a write's content is highlighted line by line while it streams, then whole", async () => {
+  const f = await fixture();
+  const path = join(f.dir, "streamed.ts");
+  const lines = ["/* a comment", "that spans lines */", "const one = 1;", "const two = 2;"];
+  const write = f.call("write", "streamed", { path, content: lines.slice(0, 1).join("\n") }, false);
+  f.expand(true);
+  const drawn = () => write.view.render(160).map(unmark);
+  const streaming = (write.view as unknown as { streaming: Map<string, { lines: string[] }> })
+    .streaming;
+  drawn();
+  const first = streaming.get("streamed")?.lines;
+  assert.equal(first?.length, 1);
+  for (let count = 2; count <= lines.length; count++) {
+    write.context.args = { path, content: lines.slice(0, count).join("\n") };
+    write.redraw();
+    drawn();
+    assert.equal(streaming.get("streamed")?.lines, first, "the same lines grow, none is redone");
+    assert.equal(first?.length, count);
+  }
+  // Its first lines are highlighted together, so the comment is one colour across both.
+  const whole = core.highlightCode(lines.join("\n"), "typescript");
+  assert.deepEqual(first, whole);
+  const streamed = drawn();
+  // Finished, it is highlighted whole, once, and nothing is kept for streaming.
+  write.result(result("Successfully wrote"));
+  assert.deepEqual(drawn().slice(1), streamed.slice(1), "the same lines once it has finished");
+  assert.equal(streaming.size, 0);
+});
+
 test("multi-step commands are drawn as Amp draws them", async () => {
   const f = await fixture();
   const row = f.call("bash", "steps", {
-    command: "cd ~/dbt/cdl && jj status && printf 'conflicts:\\n' && jj resolve --list",
+    command: "cd ~/src/app && jj status && printf 'conflicts:\\n' && jj resolve --list",
   });
   row.result(result("Working copy clean\n\nCommand exited with code 2"), true);
   assert.equal(
@@ -1251,7 +1343,7 @@ test("multi-step commands are drawn as Amp draws them", async () => {
     [
       "$ jj status && \\",
       "    printf 'conflicts:\\n' && \\",
-      "    jj resolve --list (in ~/dbt/cdl) (exit code: 2) ▸",
+      "    jj resolve --list (in ~/src/app) (exit code: 2) ▸",
     ].join("\n"),
   );
   const [first] = row.view.render(160).map(unmark);

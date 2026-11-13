@@ -3,9 +3,10 @@ import { type TestContext, test } from "node:test";
 import type { CustomEditor, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import { type Fake, fake, fakePi } from "../../test/fake-pi.ts";
-import { load, piModule, themes, tui } from "../../test/pi.ts";
+import { core, load, piModule, themes, tui } from "../../test/pi.ts";
 
 type Keybindings = typeof import("@earendil-works/pi-coding-agent/dist/core/keybindings.js");
+type EditorFactory = NonNullable<ReturnType<ExtensionContext["ui"]["getEditorComponent"]>>;
 type Indicators =
   typeof import("@earendil-works/pi-coding-agent/dist/modes/interactive/components/status-indicator.js");
 
@@ -24,14 +25,18 @@ function fixture(
   {
     mode = "tui",
     bindings = {},
+    previous = undefined,
   }: {
     mode?: ExtensionContext["mode"];
     bindings?: ConstructorParameters<Keybindings["KeybindingsManager"]>[0];
+    /** The editor another extension set before this one. */
+    previous?: EditorFactory;
   } = {},
 ) {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const pi = fakePi();
   let editor: CustomEditor | undefined,
+    current = previous,
     renders = 0,
     idle = false,
     escapes = 0;
@@ -57,7 +62,9 @@ function fixture(
       setWorkingMessage(message) {
         indicator.setMessage(message ?? "Working");
       },
+      getEditorComponent: () => current,
       setEditorComponent(factory) {
+        current = factory;
         const created = factory?.(
           host,
           themes.getEditorTheme(),
@@ -210,6 +217,24 @@ for (const event of ["agent_start", "agent_end", "session_shutdown", "session_st
     }
   });
 }
+
+test("an editor another extension set is kept, and guarded in its place", (t) => {
+  class Other extends core.CustomEditor {}
+  const f = fixture(t, {
+    previous: (host, theme, keybindings) => new Other(host, theme, keybindings),
+  });
+  assert(f.editor instanceof Other, "the other extension's editor stays the editor");
+  f.editor.handleInput("\x1b");
+  assert.equal(f.escapes, 0, "its first Escape only arms");
+  f.editor.handleInput("\x1b");
+  assert.equal(f.escapes, 1, "its second reaches the editor");
+  // A second session start guards the same editor again, not its own guard.
+  f.emit("session_start");
+  assert(f.editor instanceof Other);
+  f.editor.handleInput("\x1b");
+  f.editor.handleInput("\x1b");
+  assert.equal(f.escapes, 2);
+});
 
 test("remapped interrupts are untouched; plain Escape does not arm", (t) => {
   const f = fixture(t, { bindings: { "app.interrupt": "ctrl+x" } });

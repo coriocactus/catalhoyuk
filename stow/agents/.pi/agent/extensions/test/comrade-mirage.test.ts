@@ -1,6 +1,5 @@
-// Comrade summarises its comrades' calls in mirage's words and counts, with its own copies
-// so the extensions stay independent. These must not drift apart. Where mirage is loaded,
-// it draws a comrade's calls itself, through shared/nested.ts.
+// Where mirage is loaded, it draws a comrade's calls itself, through shared/nested.ts, so they
+// read as Pi's own calls do. Either extension still works without the other.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fixture, render } from "../comrade/tests/fixture.ts";
@@ -14,58 +13,6 @@ const { default: installMirage } = await load<typeof import("../mirage/index.ts"
   "../mirage/index.ts",
   import.meta.url,
 );
-
-const comrade = await load<typeof import("../comrade/work.ts")>(
-  "../comrade/work.ts",
-  import.meta.url,
-);
-const comradeView = await load<typeof import("../comrade/view.ts")>(
-  "../comrade/view.ts",
-  import.meta.url,
-);
-const mirage = await load<typeof import("../mirage/view.ts")>("../mirage/view.ts", import.meta.url);
-const comradeColours = await load<typeof import("../comrade/colours.ts")>(
-  "../comrade/colours.ts",
-  import.meta.url,
-);
-const mirageColours = await load<typeof import("../mirage/colours.ts")>(
-  "../mirage/colours.ts",
-  import.meta.url,
-);
-const mirageStyle = await load<typeof import("../mirage/style.ts")>(
-  "../mirage/style.ts",
-  import.meta.url,
-);
-
-test("comrade counts diffs and written lines as mirage does", () => {
-  for (const diff of ["", "+ 1 a\n- 2 b\n  3 c\n+12 d", "-  9 x\n+ 10 y\n+ 11 z", "+x\n-y"])
-    assert.deepEqual(comrade.diffCounts(diff), mirage.diffCounts(diff), JSON.stringify(diff));
-  for (const content of ["", "one", "one\n", "one\ntwo", "one\ntwo\n\n"])
-    assert.equal(
-      comrade.writtenLines(content),
-      mirage.writtenLines(content),
-      JSON.stringify(content),
-    );
-});
-
-test("comrade formats durations as mirage and Pi do", () => {
-  for (const ms of [0, 1234, 59_949, 60_000, 754_000, 3_600_000, 3_725_000])
-    assert.equal(comradeView.formatDuration(ms), mirage.formatDuration(ms), String(ms));
-});
-
-test("comrade paints its green and red as mirage does", () => {
-  assert.equal(comradeColours.colours.green, mirageColours.colours.green);
-  assert.equal(comradeColours.colours.red, mirageColours.colours.red);
-  for (const mode of ["truecolor", "256color"] as const) {
-    const theme = { getColorMode: () => mode } as Parameters<typeof mirageStyle.paint>[0];
-    for (const tone of ["green", "red"] as const)
-      assert.equal(
-        comradeColours.paint(theme, tone, "✓"),
-        mirageStyle.paint(theme, tone, "✓"),
-        `${tone} in ${mode}`,
-      );
-  }
-});
 
 /** A finished comrade's row, opened, as Pi draws it. */
 const opened = (tool: Tool, result: Result, task: string) =>

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { colours } from "../../mirage/colours.ts";
+import { colours } from "../../shared/colours.ts";
 import { HeadlessTerminal } from "../headless-terminal.ts";
 import { cli, version } from "../pi-package.ts";
 
@@ -223,7 +223,10 @@ const args = [
   // Pi's own codemode tool, which --no-extensions also disables.
   "-e",
   "builtin:codemode",
-  // Match the directories' discovery order: echo, inspector, interupt, mirage, prose, rearview.
+  // Match the directories' discovery order: comrade, echo, inspector, interupt, mirage, prose,
+  // rearview.
+  "-e",
+  join(extensions, "comrade/index.ts"),
   "-e",
   join(extensions, "echo/index.ts"),
   "-e",
@@ -269,6 +272,10 @@ const shown = (raw: string) => IMAGE_SHOWN.test(raw);
 // Fullscreen transcript top/bottom (Pi 1.0.3+); plain Home/End move the editor cursor.
 const TOP = "\x1b[1;5H"; // Ctrl+Home
 const BOTTOM = "\x1b[1;5F"; // Ctrl+End
+
+/** How long Pi is watched idle, and the CPU time it may use meanwhile. */
+const IDLE_SECONDS = 10;
+const IDLE_CPU_SECONDS = 0.05;
 
 function cpuSeconds(pid: number): number {
   return execFileSync("ps", ["-o", "time=", "-p", String(pid)], { encoding: "utf8" })
@@ -680,10 +687,15 @@ try {
   terminal.send(":q\r");
   await terminal.waitFor((s) => s.includes("BACKGROUND_FINISHED"), "return after reload");
   await delay(500);
+  // Idle, Pi and the extensions run nothing: no timer, no redraw. `ps` counts CPU time in
+  // hundredths of a second, so the budget is five of them in ten seconds: half a percent.
   const before = cpuSeconds(terminal.pid);
-  await delay(2000);
+  await delay(IDLE_SECONDS * 1000);
   const cpu = cpuSeconds(terminal.pid) - before;
-  assert(cpu < 0.6, `Excess Pi idle CPU: ${cpu}s/2s`);
+  assert(
+    cpu < IDLE_CPU_SECONDS + 0.005,
+    `Excess Pi idle CPU: ${cpu.toFixed(2)}s in ${IDLE_SECONDS}s, over ${IDLE_CPU_SECONDS}s`,
+  );
   terminal.save();
   await terminal.close();
   running = undefined;
@@ -878,7 +890,7 @@ try {
   await owners("DISABLED", 0);
   terminal.save();
   console.log(
-    `PASS: xterm.js VT + real Pi/Vim; inline snippet composition without submission, groups, codemode scripts live/reloaded/resumed, output padding, Unicode clicks, colours/underlines, interrupt hint without layout shifts, gated background work, newer/replacement drafts, saves, images, errors, Ctrl+O, resize, new/resume/fork/reload ownership and disable cleanup, bounded top paging/anchors, archived Vim/images, unchanged context. Pi idle CPU ${cpu.toFixed(2)}s/2s. Artifacts: ${root}`,
+    `PASS: xterm.js VT + real Pi/Vim; inline snippet composition without submission, groups, codemode scripts live/reloaded/resumed, output padding, Unicode clicks, colours/underlines, interrupt hint without layout shifts, gated background work, newer/replacement drafts, saves, images, errors, Ctrl+O, resize, new/resume/fork/reload ownership and disable cleanup, bounded top paging/anchors, archived Vim/images, unchanged context. Pi idle CPU ${cpu.toFixed(2)}s/${IDLE_SECONDS}s. Artifacts: ${root}`,
   );
 } catch (error) {
   running?.save();

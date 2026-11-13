@@ -27,13 +27,12 @@ core.initTheme("dark");
 
 const { createJiti } = piRequire("jiti") as typeof import("jiti");
 const tuiEntry = piRequire.resolve("@earendil-works/pi-tui");
-const jiti = createJiti(import.meta.url, {
-  alias: {
-    "@earendil-works/pi-coding-agent": join(pkg, "dist/index.js"),
-    "@earendil-works/pi-tui": tuiEntry,
-    typebox: piRequire.resolve("typebox"),
-  },
-});
+const alias = {
+  "@earendil-works/pi-coding-agent": join(pkg, "dist/index.js"),
+  "@earendil-works/pi-tui": tuiEntry,
+  typebox: piRequire.resolve("typebox"),
+};
+const jiti = createJiti(import.meta.url, { alias });
 
 /**
  * Load extension source the way Pi does (jiti), bound to the installed Pi.
@@ -41,6 +40,16 @@ const jiti = createJiti(import.meta.url, {
  */
 export function load<T>(specifier: string, from: string): Promise<T> {
   return jiti.import<T>(fileURLToPath(new URL(specifier, from)));
+}
+
+/**
+ * Load one extension's source with a loader of its own, as Pi does for every extension
+ * (`moduleCache: false`): what it imports, `shared/` included, is a separate copy from every
+ * other load's. `load` above shares one copy of each module between all it loads.
+ */
+export function loadAlone<T>(specifier: string, from: string): Promise<T> {
+  const own = createJiti(import.meta.url, { moduleCache: false, alias });
+  return own.import<T>(fileURLToPath(new URL(specifier, from)));
 }
 
 let futureShim: string | undefined;

@@ -32,12 +32,14 @@
   "packages": [
     "npm:pi-web-access",
     "npm:@gotgenes/pi-anthropic-auth",
-    "npm:@narumitw/pi-btw"
+    "npm:@narumitw/pi-btw",
+    "npm:pi-better"
   ],
   "deviceId": "a5f18aeb-ec49-4c13-8bbb-1e9112604e5d",
   "extensionChangelogVersions": {
     "{\"source\":\"npm:pi-web-access\",\"scope\":\"user\"}": "0.47.0",
     "{\"source\":\"npm:@gotgenes/pi-anthropic-auth\",\"scope\":\"user\"}": "3.5.0",
-    "{\"source\":\"npm:@narumitw/pi-btw\",\"scope\":\"user\"}": "0.63.8"
+    "{\"source\":\"npm:@narumitw/pi-btw\",\"scope\":\"user\"}": "0.63.8",
+    "{\"source\":\"npm:pi-better\",\"scope\":\"user\"}": "0.2.0"
   }
 }

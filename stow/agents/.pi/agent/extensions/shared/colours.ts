@@ -1,17 +1,18 @@
-// Mirage's green and red, so comrade's rows match the tool rows around them. Comrade keeps its
-// own copy, as it does of mirage's counts and wording, so the extensions stay independent; a
-// test keeps the two equal, so change mirage/colours.ts and this together.
+// Edit these six-digit RGB values, then /reload. Mirage's and comrade's rows use them; Pi's own
+// colours and the theme's syntax colours do not change.
 import type { Theme } from "@earendil-works/pi-coding-agent";
 
 export const colours = {
-  red: "#dd331d", // Removed counts, failed status, and errors.
-  green: "#65bd55", // Added counts and successful status.
+  red: "#dd331d", // Removed lines and counts, failed status, and error output.
+  green: "#65bd55", // Added lines and counts, and successful status.
+  blue: "#265b81", // Clickable filenames.
 } as const;
 
-type Tone = keyof typeof colours;
+export type Tone = keyof typeof colours;
 
 /** The truecolour sequence, and the nearest fixed xterm colour for terminals without it. */
 function foreground(hex: string): { rgb: string; indexed: string } {
+  if (!/^#[\da-f]{6}$/i.test(hex)) throw new Error(`Invalid row colour: ${hex}. Use #RRGGBB.`);
   const value = Number.parseInt(hex.slice(1), 16);
   const r = value >> 16;
   const g = (value >> 8) & 255;
@@ -35,9 +36,14 @@ function foreground(hex: string): { rgb: string; indexed: string } {
   return { rgb: `\x1b[38;2;${r};${g};${b}m`, indexed: `\x1b[38;5;${index}m` };
 }
 
-const tones = { red: foreground(colours.red), green: foreground(colours.green) };
+// Validated once when the module loads, not midway through a terminal render.
+const tones = {
+  red: foreground(colours.red),
+  green: foreground(colours.green),
+  blue: foreground(colours.blue),
+};
 
-/** Text in mirage's green or red, ending with a foreground reset that keeps other styles. */
+/** Text in one of the row colours, ending with a foreground reset that keeps other styles. */
 export function paint(theme: Theme, tone: Tone, text: string): string {
   const colour = tones[tone];
   return `${theme.getColorMode() === "truecolor" ? colour.rgb : colour.indexed}${text}\x1b[39m`;

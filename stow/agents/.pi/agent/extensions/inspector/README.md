@@ -1,17 +1,25 @@
 # Inspector
 
-Inspector is a Pi extension that opens tool filenames in Vim inside the same terminal when you plain-click them, including while Pi continues working in the background.
+Inspector opens the filename of a tool row in your editor, in the same terminal, when you click it. Pi keeps working while the editor is open.
 
 ## Usage
 
-Plain-click an underlined filename in a tool row to open it in Vim in the same terminal. Exit with `:q`, or save and exit with `:wq`, to return to Pi with the **latest** editor draft preserved, including background draft updates and cases where the editor fails.
+Click an underlined filename in a tool row. The editor opens that file in the same terminal. Leave the editor (in Vim, `:q`, or `:wq` to save) to return to Pi with the **latest** draft of your prompt, including changes made to it while the editor was open, and also when the editor fails.
 
-Pi keeps working in the background while the editor owns the terminal, so avoid saving a file that Pi is also modifying.
+Pi keeps working while the editor owns the terminal, so avoid saving a file that Pi is also modifying.
 
-Inspector resolves the editor executable from `$VISUAL`, then `$EDITOR`, and falls back to `vim`. The setting must be an executable path rather than a shell command. It checks target paths asynchronously and opens only existing regular files. Apply changes to the extension with `/reload`. No Ghostty, macOS, or editor configuration is modified.
+The editor is `$VISUAL`, then `$EDITOR`, then `vim`. It must name an executable, not a shell command. Inspector checks the path without blocking Pi and opens only existing regular files. An editor that exits with an error is reported by its name. No terminal, macOS, or editor configuration is modified.
 
-## Architecture and limitations
+Apply changes with `/reload`.
 
-Fullscreen filename clicks are supplied by [`mirage`](../mirage/README.md) through the `shared` protocol. Inspector owns only file resolution, the child editor process, and terminal handoff, while `paths.ts` isolates the dependency on Pi's installed path resolver (including Unicode normalization and macOS filename rules). When a session is replaced or shut down, Inspector waits for both the editor process to exit and the dialog to clean up. If the editor is still running on shutdown and ignores `SIGTERM`, it is killed with `SIGKILL` after one second.
+## Architecture and limits
 
-Vim's TypeScript syntax highlighting has reproduced high CPU usage independently of Pi, and Vim's `redrawtime` option is only a highlighting time budget rather than a fix or a reliable stall prevention. The Node terminal test runs clean Vim with syntax **on** to test terminal handoff in isolation from personal Vim plugins. It does not establish that the separate highlighting stall is fixed.
+[`mirage`](../mirage/README.md) draws the filenames and reports a click through `shared/protocol.ts`. Inspector owns only resolving the file, the editor process, and handing the terminal over and back.
+
+`paths.ts` resolves a filename as Pi's own tools do, including their Unicode and macOS filename rules. Pi does not export those resolvers, so `paths.ts` loads `dist/core/tools/path-utils.js` from Pi's package directory by its path. `npm run pi-diff` watches that file for changes as it watches every Pi module the extensions import.
+
+When a session is replaced or shut down, Inspector waits for the editor to exit and for its dialog to close. An editor still running at shutdown gets `SIGTERM`, and `SIGKILL` one second later.
+
+Vim's TypeScript syntax highlighting has shown high CPU use by itself, apart from Pi. Vim's `redrawtime` option only limits the time spent highlighting; it does not prevent a stall. The terminal suite runs a clean Vim with syntax **on**, to test the handover apart from personal Vim plugins. It does not show that the highlighting stall is fixed.
+
+See [development and tests](../README.md) for test instructions.

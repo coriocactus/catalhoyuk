@@ -14,6 +14,7 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
+import { installPatch, isPatched, type Method } from "../shared/patch.ts";
 import {
   CONTENT_START,
   CONTINUES_JOINED,
@@ -21,7 +22,6 @@ import {
   findMarker,
 } from "../shared/selection.ts";
 
-const PATCH = Symbol.for("prose.markdown.patch.v1");
 /** Rows a copy is reading, in order, while Pi's getActiveSelectionText runs. */
 const READING = Symbol("prose.reading");
 const DEPTH = Symbol("prose.depth");
@@ -63,13 +63,6 @@ interface ScreenInternals {
   [READING]?: Continuation[];
   getSelectionSourceLine(point: Point): string;
 }
-// biome-ignore lint/suspicious/noExplicitAny: patched methods have different signatures.
-type Method = (this: any, ...args: any[]) => any;
-interface Patch {
-  owners: Set<object>;
-  originals: Map<string, Method>;
-  installed: Map<string, Method>;
-}
 
 const continuation = (line: string): Continuation => {
   const marker = findMarker(line)?.marker;
@@ -88,16 +81,17 @@ const isImageLine = (line: string) => line.includes("\x1b_G") || line.includes("
  */
 export function wrapLine(line: string, width: number, prefix = "", mark = true): string[] {
   // A line break inside a line, such as Markdown's soft and hard breaks or CRLF output, starts
-  // a new line, never a continuation.
-  const parts = line.split(/\r\n|\r|\n/);
-  if (parts.length > 1) return parts.flatMap((part) => wrapLine(part, width, prefix, mark));
+  // a new line, never a continuation. Most lines have none, and most fit: neither is split.
+  if (line.includes("\n") || line.includes("\r"))
+    return line.split(/\r\n|\r|\n/).flatMap((part) => wrapLine(part, width, prefix, mark));
   const start = mark ? CONTENT_START : "";
-  const prefixWidth = visibleWidth(prefix);
+  const prefixWidth = prefix ? visibleWidth(prefix) : 0;
   if (!line || isImageLine(line) || prefixWidth + visibleWidth(line) <= width)
     return [`${prefix}${start}${line}`];
   const plain = stripTerminalSequences(line);
+  const indent = plain.slice(0, plain.length - plain.trimStart().length);
   // The line's own indent, in columns, so wide spaces measure right.
-  let own = visibleWidth(plain.slice(0, plain.length - plain.trimStart().length));
+  let own = visibleWidth(indent);
   let room = width - prefixWidth - own;
   if (room < MIN_ROOM) {
     // Too little room to hang under the indent: wrap the whole line, indent included.
@@ -105,8 +99,16 @@ export function wrapLine(line: string, width: number, prefix = "", mark = true):
     room = Math.max(1, width - prefixWidth);
   }
   const hang = own;
-  const head = own ? sliceByColumn(line, 0, own, true) : "";
-  const body = own ? sliceByColumn(line, own, visibleWidth(line) - own, true) : line;
+  let head = "";
+  let body = line;
+  if (own && line.startsWith(indent)) {
+    // No styling inside the indent, as in most output: cut by characters, not by columns.
+    head = indent;
+    body = line.slice(indent.length);
+  } else if (own) {
+    head = sliceByColumn(line, 0, own, true);
+    body = sliceByColumn(line, own, visibleWidth(line) - own, true);
+  }
   const source = stripTerminalSequences(body);
   let at = 0;
   return wrapTextWithAnsi(body, room).map((piece, index) => {
@@ -147,6 +149,8 @@ function knownMarkdown(render: Method): boolean {
 
 /** Pi's Text still wraps at spaces and caches its lines by text and width. */
 function knownText(render: Method): boolean {
+  // Pi declares Text's cache private, so its type shares no fields with this view of it. The
+  // comparisons below are the check that the fields are still there.
   const probe = new Text("ab cd", 0, 0) as unknown as TextInternals;
   const lines = render.call(probe, 3);
   return (
@@ -182,10 +186,6 @@ function knownSelection(columns: Method, copy: Method, lineSelection: Method): b
   );
 }
 
-const markdown = Markdown.prototype as unknown as Record<string, Method> & { [PATCH]?: Patch };
-const text = Text.prototype as unknown as Record<string, Method>;
-const screen = TuiAltScreen.prototype as unknown as Record<string, Method>;
-
 /** Through the patched methods: fences gone, code and wraps marked, backgrounds still full. */
 function checkMarkdown(): boolean {
   const code = new Markdown("```js\nx\n```", 0, 0, plainTheme).render(20);
@@ -214,42 +214,62 @@ function checkText(): boolean {
 
 /** Through the patched selection: a copy reads row by row, so it can join wrapped rows. */
 function checkSelection(): boolean {
-  const probe = Object.assign(Object.create(TuiAltScreen.prototype), {
-    selectionAnchor: { row: 0, col: 0 },
-    selectionFocus: { row: 1, col: 9 },
-    previousScreen: [`${CONTENT_START}aa   `, `  ${CONTINUES_SPACED}bb`],
-  }) as unknown as Record<string, Method>;
+  // A bare screen with only what a copy reads: the method is looked up as Pi's own code would.
+  const probe: { getActiveSelectionText?(): unknown } = Object.assign(
+    Object.create(TuiAltScreen.prototype),
+    {
+      selectionAnchor: { row: 0, col: 0 },
+      selectionFocus: { row: 1, col: 9 },
+      previousScreen: [`${CONTENT_START}aa   `, `  ${CONTINUES_SPACED}bb`],
+    },
+  );
   return probe.getActiveSelectionText?.() === "aa bb";
 }
 
-/** What prose replaces, in groups that are probed, installed, and then checked together. */
+/**
+ * What prose replaces: three patches, each probed, installed, and then checked on its own, so a
+ * part of Pi that changed costs only the patch that depends on it.
+ */
 const GROUPS: {
+  /** Names the group's patch. */
+  key: string;
   label: string;
-  methods: { key: string; prototype: Record<string, Method>; name: string }[];
+  methods: { key: string; target: object; name: string }[];
   known: (originals: Method[]) => boolean;
   check: () => boolean;
 }[] = [
   {
+    key: "markdown",
     label: "Markdown code blocks changed. prose left Pi's own Markdown",
     methods: [
-      { key: "markdown.renderToken", prototype: markdown, name: "renderToken" },
-      { key: "markdown.render", prototype: markdown, name: "render" },
+      { key: "markdown.renderToken", target: Markdown.prototype, name: "renderToken" },
+      { key: "markdown.render", target: Markdown.prototype, name: "render" },
     ],
     known: ([, render]) => knownMarkdown(render),
     check: checkMarkdown,
   },
   {
+    key: "text",
     label: "text wrapping changed. prose left Pi's own plain text",
-    methods: [{ key: "text.render", prototype: text, name: "render" }],
+    methods: [{ key: "text.render", target: Text.prototype, name: "render" }],
     known: ([render]) => knownText(render),
     check: checkText,
   },
   {
+    key: "selection",
     label: "text selection changed. prose left Pi's own selection",
     methods: [
-      { key: "screen.getSelectionColumns", prototype: screen, name: "getSelectionColumns" },
-      { key: "screen.getActiveSelectionText", prototype: screen, name: "getActiveSelectionText" },
-      { key: "screen.getLineSelection", prototype: screen, name: "getLineSelection" },
+      {
+        key: "screen.getSelectionColumns",
+        target: TuiAltScreen.prototype,
+        name: "getSelectionColumns",
+      },
+      {
+        key: "screen.getActiveSelectionText",
+        target: TuiAltScreen.prototype,
+        name: "getActiveSelectionText",
+      },
+      { key: "screen.getLineSelection", target: TuiAltScreen.prototype, name: "getLineSelection" },
     ],
     known: ([columns, copy, line]) => knownSelection(columns, copy, line),
     check: checkSelection,
@@ -408,85 +428,69 @@ function replacement(key: string, original: Method): Method {
   }
 }
 
+/** A probe's verdict. One that throws has its answer: Pi is not as expected. */
+function holds(probe: () => boolean): boolean {
+  try {
+    return probe();
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Installs the adapter, or joins it if another session of this extension already did. Groups
- * whose Pi code no longer looks as expected are left alone, with one warning each.
+ * Installs the adapter, or joins it if another session of this extension already did. A group
+ * whose Pi code no longer looks as expected is left alone, with one warning. Throws when another
+ * extension replaced one of prose's methods.
  */
 export function installProse(report: (message: string) => void): () => void {
-  const methods = GROUPS.flatMap((group) => group.methods);
-  let patch = markdown[PATCH];
-  if (patch) {
-    const current = patch;
-    const replaced = methods.some(
-      ({ key, prototype, name }) =>
-        current.installed.has(key) && prototype[name] !== current.installed.get(key),
-    );
-    if (replaced) {
-      report("Another extension replaced prose's adapter. Pi's own rendering is in use.");
-      return () => {};
-    }
-  } else {
-    const originals = new Map<string, Method>();
-    const installed = new Map<string, Method>();
+  const releases: (() => void)[] = [];
+  const release = () => {
+    for (const undo of releases.splice(0).reverse()) undo();
+  };
+  try {
     for (const group of GROUPS) {
-      const found = group.methods.map(({ prototype, name }) => prototype[name]);
-      let known = false;
-      try {
-        known = found.every((method) => typeof method === "function") && group.known(found);
-      } catch {
-        known = false;
-      }
-      if (!known) {
+      const key = `prose.${group.key}.patch.v2`;
+      const changed = () =>
         report(`Pi ${VERSION}: ${group.label}. Run npm run verify in ~/.pi/agent/extensions.`);
+      // Pi's own methods are probed before the first owner replaces them. A later owner finds
+      // prose's replacements there, which the first one checked.
+      if (!isPatched(key, group.methods[0].target)) {
+        // Read by name, as the patch will: prose's types declare each of these methods.
+        const found = group.methods.map(
+          ({ target, name }) => (target as Record<string, Method | undefined>)[name],
+        );
+        const known =
+          found.every((method) => typeof method === "function") &&
+          holds(() => group.known(found as Method[]));
+        if (!known) {
+          changed();
+          continue;
+        }
+      }
+      const patch = installPatch<object, undefined>({
+        key,
+        name: "prose's adapter",
+        sites: group.methods,
+        owner: {},
+        build: (originals) => ({
+          methods: originals.map((original, index) =>
+            replacement(group.methods[index].key, original),
+          ),
+          state: undefined,
+        }),
+      });
+      // Pi code can pass the probes yet stop calling what prose patched. Check through the
+      // patch, and put back Pi's own methods for a group that no longer works.
+      if (patch.first && !holds(group.check)) {
+        patch.release();
+        changed();
         continue;
       }
-      group.methods.forEach(({ key }, index) => {
-        const original = found[index] as Method;
-        originals.set(key, original);
-        installed.set(key, replacement(key, original));
-      });
+      releases.push(patch.release);
     }
-    for (const { key, prototype, name } of methods) {
-      const method = installed.get(key);
-      if (method) prototype[name] = method;
-    }
-    // Pi code can pass the probes yet stop calling what prose patched. Check through the
-    // patches, and put back Pi's own methods for a group that no longer works.
-    for (const group of GROUPS) {
-      if (!group.methods.every(({ key }) => installed.has(key))) continue;
-      let works = false;
-      try {
-        works = group.check();
-      } catch {
-        works = false;
-      }
-      if (works) continue;
-      for (const { key, prototype, name } of group.methods) {
-        const original = originals.get(key);
-        if (original) prototype[name] = original;
-        originals.delete(key);
-        installed.delete(key);
-      }
-      report(`Pi ${VERSION}: ${group.label}. Run npm run verify in ~/.pi/agent/extensions.`);
-    }
-    patch = { owners: new Set(), originals, installed };
-    markdown[PATCH] = patch;
+  } catch (error) {
+    release();
+    throw error;
   }
-  const token = {};
-  const current = patch;
-  current.owners.add(token);
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    current.owners.delete(token);
-    if (current.owners.size) return;
-    // Restore only what is still ours, so a later patch by someone else survives.
-    for (const { key, prototype, name } of methods) {
-      const installed = current.installed.get(key);
-      const original = current.originals.get(key);
-      if (installed && original && prototype[name] === installed) prototype[name] = original;
-    }
-    delete markdown[PATCH];
-  };
+  return release;
 }

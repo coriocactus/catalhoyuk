@@ -8,8 +8,9 @@
     "typecheck": "node test/typecheck.ts",
     "test": "node --test --test-timeout=60000 \"*/tests/*.test.ts\" \"test/*.test.ts\"",
     "test:terminal": "node test/e2e/terminal.ts",
+    "test:perf": "node test/e2e/perf.ts",
     "pi-diff": "node test/pi-diff.ts",
-    "verify": "npm run check && npm run typecheck && npm test && npm run test:terminal && node test/pi-diff.ts --status"
+    "verify": "npm run check && npm run typecheck && npm test && npm run test:terminal && npm run test:perf && node test/pi-diff.ts --status"
   },
   "piReviewed": "1.5.2",
   "devEngines": {

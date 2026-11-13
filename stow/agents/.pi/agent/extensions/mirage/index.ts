@@ -1,9 +1,7 @@
 import {
   type ExtensionAPI,
   type ExtensionContext,
-  getAgentDir,
   type SessionEntry,
-  SettingsManager,
   sessionEntryToContextMessages,
   type ToolRenderers,
   VERSION,
@@ -13,6 +11,7 @@ import { type AnchorState, ROW_ANCHOR } from "../shared/anchors.ts";
 import { HISTORY_PAGE, type HistoryPage, type HistoryRenderState } from "../shared/history.ts";
 import { isNestedRowsRequest, NESTED_ROWS_EVENT, type NestedRows } from "../shared/nested.ts";
 import { type FileReference, OPEN_FILE_EVENT, type OpenFileRequest } from "../shared/protocol.ts";
+import { Spinner, spinnerFrame } from "../shared/spinner.ts";
 import { isTranscriptView, TRANSCRIPT_VIEW, type TranscriptView } from "../shared/transcript.ts";
 import { isComplete, TOOL_NAMES, ToolGroups, type ToolName, type ToolRow } from "./model.ts";
 import { installNativeImageSlot, ownImageRendering, renderNativeImages } from "./native-images.ts";
@@ -20,9 +19,6 @@ import { installNativeThinking } from "./native-thinking.ts";
 import { ToolGroupView } from "./view.ts";
 
 const EMPTY: Component = { render: () => [], invalidate() {} };
-/** Pi's working spinner: the frames and interval of pi-tui's Loader, which draws it. */
-const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const SPINNER_MS = 80;
 type DisplayState = { view?: ToolGroupView; outputPad?: number };
 type RenderCall = NonNullable<ToolRenderers["renderCall"]>;
 type RenderResult = NonNullable<ToolRenderers["renderResult"]>;
@@ -68,30 +64,17 @@ export default function (pi: ExtensionAPI) {
   // Pi redraws a script's calls only when it redraws the script's row, so keep each script
   // row's redraw callback.
   const redraws = new WeakMap<ToolRow, () => void>();
-  // Live rows whose group still has calls in progress, with their redraw callbacks. While Pi
-  // works, a timer redraws them for each spinner frame. It stops once none remain or Pi is idle,
-  // so nothing runs between turns.
-  const spinning = new Map<ToolRow, () => void>();
-  let ticker: ReturnType<typeof setInterval> | undefined;
+  // Live rows whose group still has calls in progress spin while Pi works: see shared/spinner.ts.
+  // Its timer stops once none remain or Pi is idle, when a row left in progress is redrawn once
+  // to show its resting glyph, so nothing runs between turns.
   const working = () => sessionContext?.isIdle?.() === false;
-  const spinner = () =>
-    working() ? SPINNER[Math.floor(Date.now() / SPINNER_MS) % SPINNER.length] : undefined;
-  const stopSpinning = () => {
-    clearInterval(ticker);
-    ticker = undefined;
-    // Repaint once, so a row left in progress shows its resting glyph.
-    for (const redraw of spinning.values()) redraw();
-    spinning.clear();
-  };
-  const tick = () => {
-    if (!working()) return stopSpinning();
-    for (const [row, redraw] of spinning) {
-      const live = groups.rows.get(row.id) === row && row.group.rows[0] === row;
-      if (live && !row.group.rows.every(isComplete)) redraw();
-      else spinning.delete(row);
-    }
-    if (!spinning.size) stopSpinning();
-  };
+  const spinning = new Spinner<ToolRow>(working);
+  const spinner = () => (working() ? spinnerFrame() : undefined);
+  /** Whether a row still leads a group of the live model with calls in progress. */
+  const spins = (row: ToolRow) =>
+    groups.rows.get(row.id) === row &&
+    row.group.rows[0] === row &&
+    !row.group.rows.every(isComplete);
   const models = new Set([new WeakRef(groups)]);
   let thinkingHidden = false;
   const visibility = (hidden: boolean) => {
@@ -213,10 +196,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", (_event, ctx) => {
     releaseRendering ??= installNativeRendering(report, visibility);
-    const settings = SettingsManager.create(ctx.cwd, getAgentDir(), {
-      projectTrusted: ctx.isProjectTrusted(),
-    });
-    visibility(settings.getHideThinkingBlock());
+    visibility(pi.getSettings().hideThinkingBlock === true);
     sessionContext = ctx.mode === "tui" ? ctx : undefined;
     flushWarnings();
     if (sessionContext) rebuild(ctx);
@@ -228,9 +208,7 @@ export default function (pi: ExtensionAPI) {
     if (sessionContext) rebuild(ctx);
   });
   pi.on("session_shutdown", () => {
-    clearInterval(ticker);
-    ticker = undefined;
-    spinning.clear();
+    spinning.stop(true);
     unsubscribeTranscript();
     unsubscribeNested();
     transcript = undefined;
@@ -337,6 +315,9 @@ export default function (pi: ExtensionAPI) {
   function renderers(name: ToolName): ToolRenderers {
     const renderCall: RenderCall = (args, theme, context) => {
       const state = context.state as DisplayState & AnchorState;
+      // The spinner asked Pi to draw the row again: nothing but its frame has changed, and the
+      // view reads that from the clock when Pi draws it.
+      if (spinning.animating && state.view) return state.view;
       state.outputPad = outputPad(context.outputPad);
       const groups = groupsFor(state);
       // Observe global expansion during Pi's update callback, never during render().
@@ -346,14 +327,9 @@ export default function (pi: ExtensionAPI) {
       if (context.executionStarted) groups.markStarted(row);
       images.set(row, (width) => renderNativeImages(state, width));
       if (row.kind === "codemode") redraws.set(row, context.invalidate);
-      // Only live calls are ever in progress. The timer skips rows outside the live model.
-      if (!row.group.rows.every(isComplete)) {
-        spinning.set(row, context.invalidate);
-        if (!ticker && working()) {
-          ticker = setInterval(tick, SPINNER_MS);
-          ticker.unref();
-        }
-      }
+      // Only live calls are ever in progress, and only a group's leader draws it.
+      if (!row.group.rows.every(isComplete))
+        spinning.add(row, { redraw: context.invalidate, spinning: () => spins(row) });
       const view =
         state.view?.row === row
           ? state.view
@@ -366,6 +342,8 @@ export default function (pi: ExtensionAPI) {
               outputPad: () => state.outputPad ?? 0,
               renderImages: (target, width) => images.get(target)?.(width) ?? [],
               spinner,
+              spun: () => spinning.drew(row),
+              animating: () => spinning.animating,
             });
       state.view = view;
       state[ROW_ANCHOR] = view;
@@ -373,6 +351,7 @@ export default function (pi: ExtensionAPI) {
       return view;
     };
     const renderResult: RenderResult = (result, options, _theme, context) => {
+      if (spinning.animating) return EMPTY;
       const groups = groupsFor(context.state);
       const row = groups.rows.get(context.toolCallId);
       if (row)
