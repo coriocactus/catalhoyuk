@@ -247,6 +247,17 @@ function! s:GoyoStatusColor() abort
   endif
 endfunction
 
+" A bare :center centres in 'textwidth' columns, or 80 when it is 0, as in
+" pencil's soft mode. Give a bare :ce, with or without a range, the page's text
+" width instead. An explicit width is left alone.
+function! s:GoyoCenterCR() abort
+  if getcmdtype() ==# ':' && getcmdline() =~# '^[[:space:][:digit:].,;$%+''<>-]*ce\%[nter]\s*$'
+    let l:info = getwininfo(win_getid())[0]
+    return "\<End> " . (l:info.width - l:info.textoff) . "\<CR>"
+  endif
+  return "\<CR>"
+endfunction
+
 " [first, last] lines of the pipe table under the cursor, or [] if none.
 function! s:TableRange() abort
   let l:first = line('.')
@@ -327,6 +338,7 @@ function! s:GoyoEnter() abort
   call s:GoyoStatus()
   call s:GoyoStatusColor()
   nnoremap <leader>0 <cmd>Limelight!!<CR>
+  cnoremap <expr> <CR> <SID>GoyoCenterCR()
   let s:goyo_quit = ''
   augroup goyo_session
     autocmd!
@@ -342,6 +354,7 @@ endfunction
 function! s:GoyoLeave() abort
   Limelight!
   silent! nunmap <leader>0
+  silent! cunmap <CR>
   if get(b:, 'pencil_wrap_mode', 0)
     call pencil#init({'wrap': 'off'})
     let &l:filetype = &l:filetype
