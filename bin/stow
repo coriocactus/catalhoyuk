@@ -4,8 +4,8 @@ set -eu
 
 usage() {
     printf '%s\n' \
-        'Usage: ./bin/stow [--repo4] [--dry-run] [--delete]' \
-        '       ./bin/stow [--dry-run] track|untrack PATH...'
+        'Usage: bin/stow [--repo4] [--dry-run] [--delete]' \
+        '       bin/stow [--dry-run] track|untrack PATH...'
 }
 warn() { printf 'error: %s\n' "$*" >&2; }
 error() { warn "$@"; exit 1; }

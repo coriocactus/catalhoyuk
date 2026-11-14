@@ -161,9 +161,12 @@ vim_bootstrap() {
             'call assert_equal([], glob($HOME . "/.vim/autoload/plug.vim*", 0, 1))'
     else
         printf '%s\n' '#!/bin/sh' 'printf "download\n" >> "$CALLS"' 'cp "$PLUG_FIXTURE" "$6"' > "$case_dir/bin/curl"
+        # Every Plug line in the vimrc must be declared, however many there are.
+        local plugins
+        plugins=$(grep -c '^[[:space:]]*Plug ' "$HOME/.vimrc")
         vim_driver \
             'BootstrapPlugins' \
-            'call assert_equal(9, g:declared_plugins)' \
+            "call assert_equal($plugins, g:declared_plugins)" \
             'call assert_equal(readfile($PLUG_FIXTURE), readfile($HOME . "/.vim/autoload/plug.vim"))' \
             'BootstrapPlugins' \
             'call assert_equal(["download"], readfile($CALLS))' \

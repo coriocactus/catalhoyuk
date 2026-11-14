@@ -6,10 +6,10 @@ Personal dotfiles and [Pi agent extensions](stow/agents/.pi/agent/extensions/REA
 
 ```sh
 brew install stow
-./bin/stow             # home + XDG configs
-./bin/stow --repo4     # also repo4 identity profiles
-./bin/stow --dry-run   # report only
-./bin/stow --delete    # remove all links
+bin/stow             # home + XDG configs
+bin/stow --repo4     # also repo4 identity profiles
+bin/stow --dry-run   # report only
+bin/stow --delete    # remove all links
 ```
 
 After running the installer, start a new shell to load the Zsh configuration. To install Vim plugins, open Vim, run `:BootstrapPlugins`, and restart Vim.
@@ -35,7 +35,7 @@ Each directory under `stow/` is a Stow package:
 
 Stow never replaces existing regular files or foreign symlinks. If a target path is already occupied, it stops and reports a conflict.
 
-Rerunning `./bin/stow` also prunes dangling symlinks that Stow owns, except inside directories that a package no longer contains or for symlinks created by an older layout of this repository. To list every dangling symlink pointing into the checkout (drop `-print`, add `-delete` to remove them, and then rerun `./bin/stow`):
+Rerunning `bin/stow` also prunes dangling symlinks that Stow owns, except inside directories that a package no longer contains or for symlinks created by an older layout of this repository. To list every dangling symlink pointing into the checkout (drop `-print`, add `-delete` to remove them, and then rerun `bin/stow`):
 
 ```sh
 find ~ -maxdepth 3 -type l -lname '*/catalhoyuk/*' ! -exec test -e {} \; -print 2>/dev/null
@@ -43,20 +43,20 @@ find ~ -maxdepth 3 -type l -lname '*/catalhoyuk/*' ! -exec test -e {} \; -print 
 
 ## Tracking files
 
-Use `./bin/stow track` to move an existing file or directory into the checkout and replace it with a symlink, or `./bin/stow untrack` to move a tracked item back to its target location:
+Use `bin/stow track` to move an existing file or directory into the checkout and replace it with a symlink, or `bin/stow untrack` to move a tracked item back to its target location:
 
 ```sh
-./bin/stow track ~/.some-file        # move into the checkout, link back
-./bin/stow track ~/.config/app       # a directory moves as one unit
-./bin/stow untrack ~/.some-file      # replace the link with the file again
-./bin/stow --dry-run track ~/.x      # report only
+bin/stow track ~/.some-file        # move into the checkout, link back
+bin/stow track ~/.config/app       # a directory moves as one unit
+bin/stow untrack ~/.some-file      # replace the link with the file again
+bin/stow --dry-run track ~/.x      # report only
 ```
 
 When tracking a path, `bin/stow` selects the destination package automatically: paths under `$XDG_CONFIG_HOME` go to `xdg`, paths elsewhere under `$HOME` go to whichever package already holds the deepest matching parent directory (such as `agents` for `~/.pi/agent/…`), and everything else goes to `home`. A tracked directory then takes the linking shape of its package: `agents` links the directory itself so any files written there later live directly in the checkout, whereas `home` and `xdg` recreate the directory in the target and link each file individually.
 
 `track` refuses symlinks, git-ignored destinations, filenames on Stow's ignore list, and directories that are already partly in the checkout. If Stow fails while linking, `bin/stow` moves every item back to its original path. Once a file is tracked, commit it as usual.
 
-You can also add a file manually by placing it in a package at its target-relative path and rerunning `./bin/stow`.
+You can also add a file manually by placing it in a package at its target-relative path and rerunning `bin/stow`.
 
 ## Node, Bun, Yarn
 
@@ -79,7 +79,7 @@ Pi needs Node.js 22.19 or newer, so Zsh aliases `pi` to run with Homebrew's Node
 `repo4` is a repository identity switcher for Git and Jujutsu (JJ). It requires Zsh and Git, plus JJ when run in a JJ repository.
 
 ```sh
-./bin/stow --repo4   # links helper, creates profiles if absent
+bin/stow --repo4   # links helper, creates profiles if absent
 exec zsh
 repo4 self           # or: repo4 work
 ```
@@ -91,8 +91,8 @@ Running `repo4 self` or `repo4 work` configures `user.name` and `user.email` loc
 ## Development
 
 ```sh
-./bin/check          # all suites
-./bin/check --shell  # skip Pi extension verification
+bin/check          # all suites
+bin/check --shell  # skip Pi extension verification
 ```
 
 See [docs/development.md](docs/development.md) for test prerequisites, installer internals, and configuration notes.

@@ -4,11 +4,11 @@ This document covers how to run the repository's test suites, how the `bin/stow`
 
 ## Tests
 
-Run `./bin/check` to execute the full test suite, or pass `--shell` to skip the Pi extension verification:
+Run `bin/check` to execute the full test suite, or pass `--shell` to skip the Pi extension verification:
 
 ```sh
-./bin/check          # stow, repo4, config, Pi extension
-./bin/check --shell  # stow, repo4, config
+bin/check          # stow, repo4, config, Pi extension
+bin/check --shell  # stow, repo4, config
 ```
 
 You can also run each suite individually:
@@ -20,7 +20,7 @@ bash tests/config.sh
 npm --prefix stow/agents/.pi/agent/extensions run verify
 ```
 
-The shell suites require Bash 3.2+, GNU Stow, Zsh, Git, JJ, `prek`, Vim, and `tmux` (`brew install stow zsh git jj prek vim tmux`). For the Pi extension suite's prerequisites and setup, see the [extension README](../stow/agents/.pi/agent/extensions/README.md#development). Note that `./bin/check` does not install npm dependencies.
+The shell suites require Bash 3.2+, GNU Stow, Zsh, Git, JJ, `prek`, Vim, and `tmux` (`brew install stow zsh git jj prek vim tmux`). For the Pi extension suite's prerequisites and setup, see the [extension README](../stow/agents/.pi/agent/extensions/README.md#development). Note that `bin/check` does not install npm dependencies.
 
 All tests run in isolated environments with their own temporary `HOME`, configuration directories, repositories, and `tmux` sockets, so they never install plugins or touch live user profiles:
 
@@ -40,7 +40,7 @@ Packages are linked according to their role:
 
 ### track and untrack
 
-`./bin/stow track` and `./bin/stow untrack` validate all supplied paths as a batch before moving anything. If any path in the batch is invalid, the entire command aborts without making changes. Paths in a single batch may not repeat or nest inside one another.
+`bin/stow track` and `bin/stow untrack` validate all supplied paths as a batch before moving anything. If any path in the batch is invalid, the entire command aborts without making changes. Paths in a single batch may not repeat or nest inside one another.
 
 `track` moves each file or directory to `stow/PACKAGE/RELATIVE-PATH` and then runs `stow -S` for the affected packages. If Stow fails, every item in the batch is moved back to its original path. If Stow silently skips an item because its filename matches Stow's default ignore list (for example, a root `README.*`), `bin/stow` moves that item back and prints a warning. When tracking a directory, `bin/stow` treats it as a single unit without inspecting its contents: symlinks inside the directory move as-is (so relative symlinks pointing outside the directory will break), and git-ignored files inside it move along and remain uncommitted. If the destination directory already exists in the package, `track` refuses the path rather than merging directories.
 
@@ -48,9 +48,9 @@ Packages are linked according to their role:
 
 ### Renaming and removing files
 
-After renaming or deleting a file in a package, rerun `./bin/stow`. Stow automatically removes dangling symlinks that it owns inside directories the package still contains.
+After renaming or deleting a file in a package, rerun `bin/stow`. Stow automatically removes dangling symlinks that it owns inside directories the package still contains.
 
-Stow does not visit directories that have been completely removed from a package, and if you move the repository checkout to a new path, Stow refuses existing symlinks into the old path as "not owned by stow". Before restructuring a package or moving the checkout, run `./bin/stow --delete` (which removes the symlinks and leaves empty directories behind), or clean up the dangling symlinks afterwards with the `find` command in the [README](../README.md#layout).
+Stow does not visit directories that have been completely removed from a package, and if you move the repository checkout to a new path, Stow refuses existing symlinks into the old path as "not owned by stow". Before restructuring a package or moving the checkout, run `bin/stow --delete` (which removes the symlinks and leaves empty directories behind), or clean up the dangling symlinks afterwards with the `find` command in the [README](../README.md#layout).
 
 ## Configuration notes
 
