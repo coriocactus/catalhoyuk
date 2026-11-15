@@ -35,7 +35,7 @@ While Pi works, a row or group with calls in progress shows Pi's working spinner
 
 A row reads its spinner frame from the clock each time Pi draws it. Pi's own working indicator makes Pi draw a frame every 80 ms, so the rows turn with it and Mirage asks for no frame of its own. Its timer asks Pi for a frame only when 80 ms passed in which no frame drew a spinning row, and then nothing but the frame is drawn again: output already built is kept. The timer stops once nothing is in progress or Pi is idle.
 
-While a write's content streams in, only its new lines are highlighted for each frame, and its first 50 lines together. The finished write is highlighted whole.
+While a write's content streams in, only its new lines are highlighted for each frame, and its first 50 lines together. It is laid out in chunks of 16 lines, and only the chunk that grew is wrapped again. A command's output while it runs is laid out the same way. The finished write keeps the lines it streamed, as Pi's own row does, so finishing costs no new highlighting or layout; a write loaded from history is highlighted whole, once. In an expanded group, a finished call is not drawn again when another call in the group changes, such as a command printing beside finished reads.
 
 Pi reports a result again when it records it, and each event builds the row again. Output whose text comes out the same keeps its highlighting and its wrapped lines, so only what changed costs anything.
 
@@ -76,7 +76,7 @@ A command's own lines, under its row or its group once expanded, are drawn as Am
 
 ## Groups, thinking, and scripts
 
-Consecutive calls group across assistant turns as long as nothing visible separates them, and a new call joins the group while its arguments still stream. A boundary ends a group: assistant text, a visible thinking block, a user message, a call to a tool that draws itself, and a failed, aborted, or truncated assistant turn. If text streams in after a call, that call leaves the group at once. Expanding and collapsing done by hand is forgotten on `/reload` and `/resume`.
+Consecutive calls group across assistant turns as long as nothing visible separates them, and a new call joins the group while its arguments still stream. A boundary ends a group: assistant text, a visible thinking block, a user message, a call to a tool that draws itself, and a failed, aborted, or truncated assistant turn. What Pi does not draw separates nothing, also when the transcript is rebuilt from the session: a label, a model change, or cache warming, unless Pi shows it (`showCacheMissNotices`). If text streams in after a call, that call leaves the group at once. Expanding and collapsing done by hand is forgotten on `/reload` and `/resume`.
 
 When thinking is hidden, a thinking block takes **no lines**: no `Thinking...` placeholder and no blank gap. **Ctrl+T** shows thinking again and splits groups at each block, and hiding it again joins them back.
 

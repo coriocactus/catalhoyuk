@@ -180,14 +180,20 @@ export default function (pi: ExtensionAPI) {
   }
 
   function replay(target: ToolGroups, entries: readonly SessionEntry[], cwd: string): void {
+    // Pi shows cache warming between calls only with this setting, as a line of its own.
+    const notices = pi.getSettings().showCacheMissNotices === true;
     for (const entry of entries) {
       // Custom entries store extension data, such as codemode's store() writes between a
       // script's call and its result. Live events never include custom entries, so they are
       // never boundaries.
       if (entry.type === "custom") continue;
-      const messages = sessionEntryToContextMessages(entry);
-      if (!messages.length) target.boundary();
-      for (const message of messages) {
+      if (entry.type === "usage") {
+        if (entry.kind === "cache_warm" && notices) target.boundary();
+        continue;
+      }
+      // An entry that is no message, such as a label or a model change, Pi does not draw: it
+      // separates nothing.
+      for (const message of sessionEntryToContextMessages(entry)) {
         target.startMessage(message, cwd);
         target.finishMessage(message, cwd);
       }

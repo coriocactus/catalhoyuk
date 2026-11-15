@@ -463,7 +463,7 @@ test("a background comrade returns at once, then its answer arrives and wakes th
   const result = await call(args);
   assert.equal(
     text(result),
-    "Comrade #1 started in the background. Keep working. Its answer will arrive as a [comrade #1 …] message, and if you finish first, your turn waits for it, so there is no need to check on it. Stop it with the comrades tool if you no longer need it.",
+    "Comrade #1 started in the background. Keep working. Its answer will arrive as a [comrade #1 …] message, which starts a new turn if you have finished, so there is no need to check on it. Stop it with the comrades tool if you no longer need it.",
   );
   assert.equal(details(result).id, 1);
   const startRow = () =>
@@ -1139,72 +1139,16 @@ test("a run's work is built as its messages arrive, never again from the start",
   assert(cut?.kind === "call" && cut.row.status === "cancelled");
 });
 
-test("a turn waits for its background comrades, then continues with the answer", async (t) => {
-  const { call, settle, sent, working, keys } = fixture(t, "echo");
-  await call({ task: "✓ survey", background: true });
-  await settle();
-  // The answer is queued as a follow-up, which is what makes Pi continue the turn.
-  assert.equal(sent.length, 1);
-  assert.deepEqual(sent[0][1], { deliverAs: "followUp", triggerTurn: true });
-  assert.equal(working[0], "Waiting for comrade #1");
-  assert.equal(working.at(-1), undefined, "the working message is restored");
-  assert.equal(keys.size, 0, "the Esc listener is removed");
-});
-
-test("Esc or a typed message ends the wait at once, and the comrades keep running", async (t) => {
-  const esc = fixture(t, "hang");
-  await esc.call({ task: "first", background: true });
-  const waiting = esc.settle();
-  await new Promise((wake) => setTimeout(wake, 50));
-  esc.press("\x1b");
-  const started = Date.now();
-  await waiting;
-  assert(Date.now() - started < 1000);
-  assert.match(text(await esc.comrades({})), /^#1 · first · /, "still running");
-
-  const typed = fixture(t, "hang");
-  await typed.call({ task: "second", background: true });
-  const waitingToo = typed.settle();
-  typed.typed();
-  await waitingToo;
-  assert.equal(typed.sent.length, 0);
-});
-
-test("no wait without background comrades, or where Esc could not end it", async (t) => {
-  const idle = fixture(t, "echo");
-  await idle.settle();
-  assert.deepEqual(idle.working, []);
-
-  const rpc = fixture(t, "hang", { mode: "rpc" });
-  await rpc.call({ task: "x", background: true });
-  const started = Date.now();
-  await rpc.settle();
-  assert(Date.now() - started < 100, "RPC turns end as before");
-});
-
-test("a waiting turn continues with the first answer while other comrades still run", async (t) => {
-  const { call, settle, sent, comrades } = fixture(t, "echo");
-  await call({ task: "#scenario hang\nslow", background: true });
-  await call({ task: "#scenario echo\n✓ quick", background: true });
-  await settle();
-  assert.equal(sent.length, 1, "the quick answer ended the wait");
-  assert.match(text(await comrades({})), /^#1 /, "the slow one still runs");
-});
-
-test("an Esc key release does not end the wait, an Esc press does", async (t) => {
-  const { call, settle, press, comrades } = fixture(t, "hang");
+test("a turn ends while background comrades run, and an answer after it starts a new one", async (t) => {
+  const { call, pi, ctx, sent, working, comrades } = fixture(t, "hang");
   await call({ task: "slow", background: true });
-  let ended = false;
-  const waiting = settle().then(() => {
-    ended = true;
-  });
-  await new Promise((wake) => setTimeout(wake, 30));
-  press("\x1b[27;1:3u"); // kitty: Esc released
-  await new Promise((wake) => setTimeout(wake, 300));
-  assert.equal(ended, false);
-  press("\x1b");
-  await waiting;
-  assert.match(text(await comrades({})), /^#1 /);
+  // Nothing holds the turn open: Pi settles it as it would without comrades, so /reload works.
+  const started = Date.now();
+  await pi.event("agent_before_settle", {}, ctx);
+  assert(Date.now() - started < 100);
+  assert.deepEqual(working, [], "no working message: there is no wait to show");
+  assert.equal(sent.length, 0);
+  assert.match(text(await comrades({})), /^#1 · slow · /, "it runs on");
 });
 
 test("jobs parked for a reload that nothing adopts are stopped", async (t) => {
@@ -2512,10 +2456,7 @@ const { cleanTitle } = await load<typeof import("../request.ts")>("../request.ts
 
 test("a background comrade has a line in the widget above the editor until its answer is in", async (t) => {
   t.mock.timers.enable({ apis: ["setInterval", "Date"] });
-  const { call, widgets, delivered, entries, pi, ctx, settle, working, comrades } = fixture(
-    t,
-    "echo",
-  );
+  const { call, widgets, delivered, entries, pi, ctx, comrades } = fixture(t, "echo");
   const result = await call({
     task: "#scenario hang\nSurvey",
     title: "Survey the parser",
@@ -2541,10 +2482,6 @@ test("a background comrade has a line in the widget above the editor until its a
   assert.match(render(widget, 12), /^ • #1 {2,}1s$/);
   for (const width of [80, 50, 30, 20, 12])
     assert(tui.visibleWidth(render(widget, width)) < width, `fits ${width} columns`);
-  // A turn waiting for it says which, the widget listing them all.
-  void settle();
-  await new Promise((wake) => setImmediate(wake));
-  assert.equal(working.find(Boolean), "Waiting for comrade #1");
   t.mock.timers.reset();
   await comrades({ stop: [1] });
   assert.equal(widgets.at(-1), undefined, "gone once none runs");

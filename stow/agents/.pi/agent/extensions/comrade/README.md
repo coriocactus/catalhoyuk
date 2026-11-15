@@ -108,7 +108,7 @@ Background is for a caller with other work to do before it needs the answer. A c
 
 With `background: true` the call returns at once with the comrade's number, and the caller works on. When the run ends, its answer arrives as a `[comrade #N finished]` (or `failed`) delivery. It is delivered after the caller's current work, or at once if the caller is idle, when it starts a turn to handle the answer.
 
-A caller does not end its turn while its background runs go on. If it finishes its other work first, its turn waits, using no tokens. The editor then shows `Waiting for comrade #N` in place of `Working`, or `Waiting for comrades` with several, which the widget above the editor names. The first answer to arrive continues the turn, and the caller waits again if more runs go on. A message you type, or `Esc`, ends the wait at once: the comrades keep running, and their answers arrive as before. The wait happens only in the terminal UI, where `Esc` can end it.
+A caller's turn ends as usual while its background runs go on, so `/reload` and anything else that waits for the turn is never held up. An answer that arrives once the turn has ended starts a new turn to handle it.
 
 - **Listing and stopping.** `comrades` tells the caller the runs in progress by number and title, with what each is doing and its cost so far, and a total when there are several, since background costs are not in the session's totals. `comrades` with `stop: [N]` stops runs the caller no longer needs: the call waits for them to exit, and no delivery arrives for them. `/comrades` puts the runs in progress at the end of the thread for you (see [Listings](#listings)), and `/comrades stop <n|all>` stops them. When you stop a comrade, the caller is told without a turn starting.
 - **Limits.** At most four background runs go on at once. A background run's `timeout` still applies, and one that runs out is delivered as `failed`.
@@ -274,7 +274,7 @@ Once the runs have ended, the newest listing says how:
 - **Expanding.** A click expands or collapses one row, which then shows the task and, while the run goes on, the work so far. `Ctrl+O` expands or collapses every row and forgets the clicks. A blank line separates an expanded row from the rows beside it.
 - **`/comrades`.** It adds a session entry that Pi draws and saves but never sends to the model, so it costs no tokens and the caller never sees it. It is drawn again after `/reload` and `/resume`. While the caller is writing a reply, Pi puts the entry just above that reply. When the last thing in the thread is already a listing, it adds nothing: that listing follows the runs. With nothing running, `/comrades` says so and adds nothing. Outside the terminal, it lists the runs as text.
 - **A `comrades` call.** The caller reads the same text as before. The row is drawn from the call's details, which the model never reads. A call with `stop` shows `Stopping comrade #N` while it waits, then each run it stopped and how it ended, and under them any number that no comrade had. A stop is not a listing: it never makes an older listing stop following its runs.
-- **Checking less.** The `comrades` tool tells the caller there is no need to check: each answer arrives by itself, and its turn waits for its comrades before it ends. A background start tells it the same.
+- **Checking less.** The `comrades` tool tells the caller there is no need to check: each answer arrives by itself, and starts a new turn if the caller has finished. A background start tells it the same.
 
 ## Architecture
 

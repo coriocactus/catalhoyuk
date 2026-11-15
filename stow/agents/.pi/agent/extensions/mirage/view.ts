@@ -255,6 +255,10 @@ function failureCode(row: ToolCallState): string | undefined {
 
 /** Lines at the top of a streaming write that are highlighted together, as Pi's own row does. */
 const STREAM_BLOCK_LINES = 50;
+/** Header lines a view remembers fitted to their width before it starts over: see `fit`. */
+const FITTED_MAX = 512;
+/** Lines of a streaming write laid out together: only the chunk that grows is wrapped again. */
+const STREAM_CHUNK_LINES = 16;
 
 /** What a group's summary counts: a script's tool calls, or the script when it made none. */
 function leaves(rows: readonly ToolCallState[]): ToolCallState[] {
@@ -270,7 +274,23 @@ export class ToolGroupView implements Component {
   private theme!: Theme;
   private showImages = true;
   private rawLines: string[] = [];
-  private targets = new Map<number, ToggleTarget>();
+  /** Each drawn line's toggle, by line. */
+  private targets: ToggleTarget[] = [];
+  /**
+   * The lines each call of the group drew last, with their toggles and links, and what they were
+   * drawn from: a call that has not changed is not drawn again when another call in its group
+   * does, such as a command printing beside finished reads.
+   */
+  private drawnCalls = new WeakMap<
+    ToolCallState,
+    {
+      key: string;
+      lines: string[];
+      targets: ToggleTarget[];
+      files: [string, FileReference][];
+      linked: number[];
+    }
+  >();
   private files = new Map<string, FileReference>();
   private cache?: {
     group: ToolGroup;
@@ -289,8 +309,19 @@ export class ToolGroupView implements Component {
     string,
     { source: string; language: string; head: string; lines: string[] }
   >();
+  /**
+   * Header lines fitted to a width, by width and label. A call in progress has a new label each
+   * spinner frame, but the frames repeat, and fitting a line to a width measures every character.
+   */
+  private fitted = new Map<string, string>();
+  /** How many chunks each output drawn in chunks has: see chunked(). */
+  private chunks = new Map<string, number>();
   /** The spinner frame this render paints, the same one its cache key records. */
   private frame = "";
+  /** The padding every line starts with, as Pi's own rows have it. */
+  private pad = "";
+  /** The drawn lines with a filename link, which the lines Pi gets have without. */
+  private linked: number[] = [];
   readonly row: ToolCallState;
   private readonly model: GroupState;
   private readonly actions: ViewActions;
@@ -316,6 +347,9 @@ export class ToolGroupView implements Component {
     this.bodies.clear();
     this.made.clear();
     this.streaming.clear();
+    this.chunks.clear();
+    this.fitted.clear();
+    this.drawnCalls = new WeakMap();
   }
 
   render(width: number): string[] {
@@ -338,8 +372,10 @@ export class ToolGroupView implements Component {
       return this.cache.lines;
 
     this.rawLines = [];
-    this.targets.clear();
+    this.targets = [];
+    this.linked = [];
     this.files.clear();
+    this.pad = " ".repeat(padding);
     if (group.rows.length === 1 && this.row.kind === "bash") {
       // A command on its own is counted as a group of one is: `Ran 1 command`.
       // Expanded, the command, then its output.
@@ -363,14 +399,12 @@ export class ToolGroupView implements Component {
       else if (group.rows.every(isFailed)) state = "error";
       const status = this.status(state);
       this.header(`${status} ${this.summary(leaves(group.rows))}`, group, contentWidth);
-      if (expanded) for (const row of group.rows) this.entry(row, 2, contentWidth);
+      if (expanded) for (const row of group.rows) this.drawnEntry(row, 2, contentWidth);
     }
-    // Hit testing uses these padded lines, including after invalidation until
-    // the next render. Reserve the same inset on the right as Pi.
-    this.rawLines = this.rawLines.map((line) => " ".repeat(padding) + line);
-    const lines = this.rawLines.map((line) =>
-      line.includes(FILE_LINK) ? line.replace(FILE_LINK_OPEN, "") : line,
-    );
+    // Hit testing uses these padded lines, links included, until the next render. Pi gets them
+    // without the links, which only hit testing reads.
+    const lines = this.rawLines.slice();
+    for (const line of this.linked) lines[line] = lines[line].replace(FILE_LINK_OPEN, "");
     this.cache = {
       group,
       width,
@@ -387,12 +421,12 @@ export class ToolGroupView implements Component {
     if (!this.render(width).length) return undefined;
     // The summary line stays put when a merge or expansion changes the group.
     if (line <= 0) return { key: this.row, offset: line, top: true };
-    const target = this.targets.get(line);
+    const target = this.targets[line];
     if (!target) return undefined;
     let key: object = target;
     if ("rows" in target) key = this.row;
     else if ("script" in target) key = target.script;
-    const start = [...this.targets].find(([, value]) => value === target)?.[0] ?? 0;
+    const start = Math.max(0, this.targets.indexOf(target));
     return { key, offset: line - start };
   }
 
@@ -405,9 +439,7 @@ export class ToolGroupView implements Component {
     )
       return undefined;
     if (anchor.top) return anchor.offset;
-    const lines = [...this.targets]
-      .filter(([, target]) => target === anchor.key)
-      .map(([line]) => line);
+    const lines = this.targets.flatMap((target, line) => (target === anchor.key ? [line] : []));
     // A collapsed group represents every member on its summary line.
     if (!lines.length) return 0;
     return lines[0] + Math.min(anchor.offset, lines.length - 1);
@@ -415,7 +447,7 @@ export class ToolGroupView implements Component {
 
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
     if (event.type !== "click" || event.button !== "left") return undefined;
-    const target = this.targets.get(event.y);
+    const target = this.targets[event.y];
     if (!target) return undefined;
     const url = getOsc8LinkAtColumn(this.rawLines[event.y] ?? "", event.x);
     if (url) {
@@ -425,6 +457,45 @@ export class ToolGroupView implements Component {
       this.actions.toggle(target);
     }
     return { handled: true };
+  }
+
+  /**
+   * One call of an expanded group, drawn again only when something it shows has changed: the
+   * call (its revision counts its own and its script's changes, and its toggles), Ctrl+O, or the
+   * width. A call in progress, and one with images, which bind and expand on their own, are
+   * always drawn afresh.
+   */
+  private drawnEntry(row: ToolCallState, indent: number, width: number): void {
+    // A call in progress changes with nearly every frame: it is only ever drawn afresh.
+    const busy = !isComplete(row) || (row.calls?.some((call) => !isComplete(call)) ?? false);
+    const images = row.hasImages || (row.calls?.some((call) => call.hasImages) ?? false);
+    const key =
+      busy || images
+        ? undefined
+        : `${row.revision}\0${indent}\0${width}\0${this.pad.length}\0${this.model.epoch}`;
+    const kept = key === undefined ? undefined : this.drawnCalls.get(row);
+    if (kept && kept.key === key) {
+      const start = this.rawLines.length;
+      for (const line of kept.linked) this.linked.push(start + line);
+      for (let i = 0; i < kept.lines.length; i++) {
+        this.targets.push(kept.targets[i]);
+        this.rawLines.push(kept.lines[i]);
+      }
+      for (const [url, file] of kept.files) this.files.set(url, file);
+      return;
+    }
+    const start = this.rawLines.length;
+    const files = this.files.size;
+    const links = this.linked.length;
+    this.entry(row, indent, width);
+    if (key === undefined) return;
+    this.drawnCalls.set(row, {
+      key,
+      lines: this.rawLines.slice(start),
+      targets: this.targets.slice(start, this.rawLines.length),
+      files: [...this.files].slice(files),
+      linked: this.linked.slice(links).map((line) => line - start),
+    });
   }
 
   /** One call: its header, then its output or, for a script, its calls and output. */
@@ -619,8 +690,8 @@ export class ToolGroupView implements Component {
     if (trailer.length) lines[lines.length - 1] += ` ${trailer.join(" ")}`;
     // Every line toggles the row. The caret ends the last one, unless a header above has it.
     for (const line of caret ? lines.slice(0, -1) : lines) {
-      this.targets.set(this.rawLines.length, row);
-      this.rawLines.push(markStart(truncateToWidth(line, Math.max(0, width))));
+      this.targets[this.rawLines.length] = row;
+      this.rawLines.push(this.pad + markStart(this.fit(line, Math.max(0, width))));
     }
     if (caret) this.header(lines[lines.length - 1], row, width);
   }
@@ -640,14 +711,26 @@ export class ToolGroupView implements Component {
   }
 
   private header(label: string, target: ToggleTarget, width: number): void {
-    this.targets.set(this.rawLines.length, target);
+    this.targets[this.rawLines.length] = target;
+    if (label.includes(FILE_LINK)) this.linked.push(this.rawLines.length);
     const arrow = this.arrow(this.model.expanded(target));
     // Keep the caret visible even when the filename or command is truncated.
     this.rawLines.push(
-      markStart(
-        width > 2 ? `${truncateToWidth(label, width - 2)} ${arrow}` : truncateToWidth(arrow, width),
-      ),
+      this.pad +
+        markStart(width > 2 ? `${this.fit(label, width - 2)} ${arrow}` : this.fit(arrow, width)),
     );
+  }
+
+  /** A line cut to a width, remembered: see `fitted`. */
+  private fit(line: string, width: number): string {
+    const key = `${width}\0${line}`;
+    let fitted = this.fitted.get(key);
+    if (fitted === undefined) {
+      if (this.fitted.size >= FITTED_MAX) this.fitted.clear();
+      fitted = truncateToWidth(line, width);
+      this.fitted.set(key, fitted);
+    }
+    return fitted;
   }
 
   /** A script: its source behind its own toggle, the calls it made, then its output. */
@@ -681,6 +764,17 @@ export class ToolGroupView implements Component {
     if (width <= 0) return;
     const indent = Math.min(padding, Math.max(0, width - 1));
     const bodyWidth = Math.max(1, width - indent);
+    // A write that went through, or is still streaming in, is drawn from its chunks: the finished
+    // write keeps the lines it streamed, so finishing costs no new layout.
+    if (row.kind === "write" && row.status !== "error" && row.status !== "cancelled") {
+      this.addLines(this.chunked(row.id, this.writeLines(row), bodyWidth), row, indent);
+      return;
+    }
+    // A command's output while it runs grows at its end, as a streaming write does.
+    if (row.kind === "bash" && !isComplete(row) && !row.saved) {
+      this.addLines(this.chunked(row.id, this.commandLines(row), bodyWidth), row, indent);
+      return;
+    }
     const imageLines =
       row.hasImages && getCapabilities().images && this.showImages
         ? this.actions.renderImages(row, bodyWidth)
@@ -708,13 +802,9 @@ export class ToolGroupView implements Component {
         output = this.once(row.id, "diff", changes, () => colouredDiff(this.theme, changes));
         if (details(row)?.rebuilt)
           output += `\n${this.theme.fg("dim", "Rebuilt from saved arguments, with line numbers relative to the replaced text.")}`;
-      } else if (row.kind === "write") {
-        const content = clean(text(row.args.content));
-        if (isComplete(row)) this.streaming.delete(row.id);
-        output = isComplete(row)
-          ? this.code(row.id, content, row.file?.path)
-          : this.streamedCode(row.id, content, row.file?.path);
       } else if (row.kind === "bash") {
+        // Finished: drawn whole, once, rather than in the chunks it grew in.
+        this.forgetChunks(row.id);
         // The header shows the command, unless it had to leave part of it out.
         const command = clean(text(row.args.command));
         const elided = !command.trim() || showCommand(command, PLAIN).elided;
@@ -803,10 +893,12 @@ export class ToolGroupView implements Component {
 
   private addLines(lines: readonly string[], target: ToggleTarget, indent: number): void {
     for (const line of lines) {
-      this.targets.set(this.rawLines.length, target);
+      this.targets[this.rawLines.length] = target;
       // The indent is mirage's layout. The line's own leading space is content, such as code's.
       // Text that prose wrapped already marks its lines, continuation lines included.
-      this.rawLines.push(`${" ".repeat(indent)}${findMarker(line) ? "" : CONTENT_START}${line}`);
+      this.rawLines.push(
+        `${this.pad}${" ".repeat(indent)}${findMarker(line) ? "" : CONTENT_START}${line}`,
+      );
     }
   }
 
@@ -814,29 +906,108 @@ export class ToolGroupView implements Component {
    * Code that grows by appending, as a write's content does while it streams. Each frame
    * highlights only its new lines, so a long write costs each line once, not once per frame.
    * Its first lines are also highlighted together, so a comment or string that spans lines is
-   * coloured whole; they stop changing once the content is longer. The finished write is
-   * highlighted whole.
+   * coloured whole; they stop changing once the content is longer. The finished write keeps
+   * these lines, as Pi's own row does.
    */
-  private streamedCode(key: string, source: string, path?: string): string {
-    const language = path ? getLanguageFromPath(path) : undefined;
-    if (!language) return this.theme.fg("toolOutput", source);
+  private streamedCode(key: string, source: string, path?: string): string[] {
+    const language = (path ? getLanguageFromPath(path) : undefined) ?? "";
     let known = this.streaming.get(key);
     if (!known || known.language !== language || !source.startsWith(known.source)) {
+      this.forgetStream(key);
       known = { source: "", language, head: "", lines: [] };
       this.streaming.set(key, known);
     }
     const lines = source.split("\n");
+    const paint = (line: string) =>
+      language ? (highlightCode(line, language)[0] ?? "") : this.theme.fg("toolOutput", line);
     // The last line known may still have been growing: redo it and every line after it.
     for (let i = Math.max(0, known.lines.length - 1); i < lines.length; i++)
-      known.lines[i] = highlightCode(lines[i], language)[0] ?? "";
+      known.lines[i] = paint(lines[i]);
+    known.lines.length = lines.length;
     const head = lines.slice(0, STREAM_BLOCK_LINES).join("\n");
-    if (head !== known.head) {
+    if (language && head !== known.head) {
       const block = highlightCode(head, language);
       for (let i = 0; i < block.length; i++) known.lines[i] = block[i];
       known.head = head;
     }
     known.source = source;
-    return known.lines.join("\n");
+    return known.lines;
+  }
+
+  /**
+   * A write's content while it streams, laid out in chunks of lines, each its own text. Only the
+   * chunk that grew is wrapped again: the content grows at its end, so a long write costs each
+   * line's wrapping about once, not once per frame.
+   */
+  private chunked(key: string, lines: readonly string[], width: number): string[] {
+    const drawn: string[] = [];
+    for (let start = 0, chunk = 0; start < lines.length; start += STREAM_CHUNK_LINES, chunk++) {
+      const part = lines.slice(start, start + STREAM_CHUNK_LINES);
+      const content = part.join("\n");
+      // A text of blank lines draws none: blank lines of code are still lines.
+      if (!content.trim()) {
+        for (const _ of part) drawn.push("");
+        continue;
+      }
+      const name = `${key}\0chunk\0${chunk}`;
+      let cached = this.bodies.get(name);
+      if (cached?.text !== content) {
+        cached = { revision: 0, text: content, component: new Text(content, 0, 0) };
+        this.bodies.set(name, cached);
+      }
+      for (const line of cached.component.render(width)) drawn.push(line);
+      this.chunks.set(key, Math.max(this.chunks.get(key) ?? 0, chunk + 1));
+    }
+    return drawn;
+  }
+
+  /** An output no longer drawn in chunks: its chunks' texts. */
+  private forgetChunks(key: string): void {
+    const count = this.chunks.get(key) ?? 0;
+    for (let chunk = 0; chunk < count; chunk++) this.bodies.delete(`${key}\0chunk\0${chunk}`);
+    this.chunks.delete(key);
+  }
+
+  /**
+   * A write's lines, highlighted: as they streamed in, or once highlighted whole for a write this
+   * view did not see stream, such as one loaded from history.
+   */
+  private writeLines(row: ToolCallState): string[] {
+    const content = clean(text(row.args.content));
+    const known = this.streaming.get(row.id);
+    if (!isComplete(row) || (known?.source === content && known.language))
+      return this.streamedCode(row.id, content, row.file?.path);
+    const language = (row.file?.path ? getLanguageFromPath(row.file.path) : undefined) ?? "";
+    if (known?.source !== content || known.language !== language) {
+      this.forgetStream(row.id);
+      const lines = language
+        ? highlightCode(content, language)
+        : content.split("\n").map((line) => this.theme.fg("toolOutput", line));
+      this.streaming.set(row.id, { source: content, language, head: "", lines });
+    }
+    return this.streaming.get(row.id)?.lines ?? [];
+  }
+
+  /** A running command's lines: its command if its header left part of it out, then its output. */
+  private commandLines(row: ToolCallState): string[] {
+    const command = clean(text(row.args.command));
+    const elided = !command.trim() || showCommand(command, PLAIN).elided;
+    const output = clean(
+      row.result?.content
+        .filter((part) => part.type === "text")
+        .map((part) => text(part.text))
+        .join("\n") ?? "",
+    );
+    return [
+      ...(elided && command ? [this.theme.fg("dim", `$ ${command}`)] : []),
+      ...(output ? output.split("\n").map((line) => this.theme.fg("toolOutput", line)) : []),
+    ];
+  }
+
+  /** A write that is no longer streaming: what was kept to draw it as it grew. */
+  private forgetStream(key: string): void {
+    this.forgetChunks(key);
+    this.streaming.delete(key);
   }
 
   /**

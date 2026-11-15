@@ -89,7 +89,7 @@ Raw terminal output, cell snapshots, screens, and session files stay in the temp
 | Phase | Budget (`BUDGET` in `perf.ts`) | What breaks it |
 |---|---|---|
 | Idle, before the reply and after it, a comrade's runs included | 15 ms of CPU and 1 frame in 3 s | A timer left running. |
-| A write's 400 lines streaming in, below 1,200 expanded lines of its group | 1.5 times Pi's CPU | Highlighting the whole write for each frame. |
-| Calls in progress in a group of 1,600 expanded lines, one a command printing for 3 s | 3.5 times Pi's CPU | A spinner frame that builds the group's output again. |
+| A write's 400 lines streaming in, below 1,200 expanded lines of its group | 0.7 times Pi's CPU | Laying out or highlighting the whole write for each frame. |
+| Calls in progress in a group of 1,600 expanded lines, one a command printing for 3 s | 2 times Pi's CPU | Drawing the whole group again for each line printed, or for each spinner frame. |
 
 The suite prints each phase's CPU time, frames, and frame times (p50 and p99) for both runs.

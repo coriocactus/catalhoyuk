@@ -34,9 +34,6 @@ export interface OutboxHooks {
 export type Outbox = ReturnType<typeof createOutbox>;
 
 export function createOutbox(pi: ExtensionAPI, session: Session, hooks: OutboxHooks) {
-  // Answers delivered to wake the agent, so a waiting turn knows one has arrived. Pi counts only
-  // typed messages as pending, not the deliveries an extension queues.
-  let woken = 0;
   // Background answers saved and sent whose message the session may not hold yet:
   // run -> the comrade's conversation.
   const unconfirmed = new Map<string, string>();
@@ -46,7 +43,6 @@ export function createOutbox(pi: ExtensionAPI, session: Session, hooks: OutboxHo
   const answered = new Map<string, Running>();
 
   const deliver = (delivery: Delivery, body: string, wake: boolean) => {
-    if (wake) woken++;
     pi.sendMessage(
       {
         customType: MESSAGE,
@@ -162,7 +158,5 @@ export function createOutbox(pi: ExtensionAPI, session: Session, hooks: OutboxHo
     settled,
     close,
     answered,
-    /** How many answers have been delivered to wake the agent. */
-    woken: () => woken,
   };
 }

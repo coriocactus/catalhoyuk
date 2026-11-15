@@ -217,7 +217,7 @@ export function registerComrade(deps: ToolDeps): void {
     promptGuidelines: [
       "A comrade sees none of this conversation: put every path, constraint, and the expected answer format in its task.",
       "To follow up with a comrade (a correction, a question, the next step), call comrade with to: N and only your new message. While it runs, the message reaches it before its next model request, so a running comrade can be redirected rather than waited for. Start a new comrade for unrelated work, or once the conversation has grown long: each follow-up resends all of it.",
-      "Leave background off unless you have other work to do before you need the answer; foreground calls in one message already run in parallel. A background answer arrives later as a [comrade #N …] message: never guess it. When your other work is done, end your reply, and your turn waits for it.",
+      "Leave background off unless you have other work to do before you need the answer; foreground calls in one message already run in parallel. A background answer arrives later as a [comrade #N …] message: never guess it. When your other work is done, end your reply: the answer starts a new turn when it arrives.",
       'comrade is read-only by default. Add "edit" and "write" when it must change files, or "bash" to run commands.',
       "When a comrade needs more than a few files, pass them in files with tools: []. When its answer feeds a file or a build, set output and ask for the exact text, with no fences or commentary.",
       "A result whose first line starts [Comrade's answer is partial, [Comrade's answer is cut off or [Comrade timed out is not a finished answer.",
@@ -271,7 +271,7 @@ export function registerComrade(deps: ToolDeps): void {
           content: [
             {
               type: "text",
-              text: `Comrade #${job.id} started in the background. Keep working. Its answer will arrive as a [comrade #${job.id} …] message${ctx.mode === "tui" ? ", and if you finish first, your turn waits for it" : ""}, so there is no need to check on it. Stop it with the comrades tool if you no longer need it.`,
+              text: `Comrade #${job.id} started in the background. Keep working. Its answer will arrive as a [comrade #${job.id} …] message, which starts a new turn if you have finished, so there is no need to check on it. Stop it with the comrades tool if you no longer need it.`,
             },
           ],
           details: {

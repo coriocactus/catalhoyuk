@@ -126,8 +126,6 @@ export function fixture(
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "comrade-test-")));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
   const working: (string | undefined)[] = [];
-  const keys = new Set<(data: string) => unknown>();
-  let pending = false;
   const widgets: (WidgetFactory | undefined)[] = [];
   const ui = {
     setStatus: () => assert.fail("comrade must not add a footer status"),
@@ -137,10 +135,6 @@ export function fixture(
       assert.equal(key, "comrade");
       if (content !== undefined) assert.equal(options?.placement, "aboveEditor");
       widgets.push(content as WidgetFactory | undefined);
-    },
-    onTerminalInput: (handler: (data: string) => unknown) => {
-      keys.add(handler);
-      return () => keys.delete(handler);
     },
     getToolsExpanded: () => false,
   };
@@ -164,7 +158,6 @@ export function fixture(
       getAvailable: () => available,
     },
     isProjectTrusted: () => trusted,
-    hasPendingMessages: () => pending,
   });
   const updates: Result[] = [];
   // A new comrade is titled with its task's first line unless a test says otherwise; an empty
@@ -202,14 +195,6 @@ export function fixture(
     return comrades.handler(args, fake<ExtensionCommandContext>({ ui }));
   };
   const shutdown = (why = "quit") => pi.emit("session_shutdown", { reason: why }, ctx);
-  /** The agent tries to end its turn. Resolves when Pi may let it. */
-  const settle = () => pi.event("agent_before_settle", {}, ctx);
-  const press = (data: string) => {
-    for (const handler of keys) handler(data);
-  };
-  const typed = () => {
-    pending = true;
-  };
   /** Records a comrade's row in the session, as Pi does once the call returns. */
   const remember = (result: Result) =>
     entries.push(
@@ -235,11 +220,7 @@ export function fixture(
     entryRenderers,
     shutdown,
     comrades,
-    settle,
-    press,
-    typed,
     working,
-    keys,
     widgets,
     settings,
   };

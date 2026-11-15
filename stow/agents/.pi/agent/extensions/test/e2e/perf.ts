@@ -35,16 +35,18 @@ const BUDGET = {
   idleCpuMs: IDLE_MS * 0.005,
   idleFrames: 1,
   /**
-   * A write's 400 lines streaming in, below 1,200 expanded lines of the same group. Measured
-   * 1.1 to 1.3. Highlighting the whole write for every frame, not only its new lines, measured
-   * 1.8 to 2.1.
+   * A write's 400 lines streaming in, below 1,200 expanded lines of the same group. Measured 0.43
+   * to 0.48: Pi's own row lays out the whole write for every frame, mirage only the chunk that
+   * grew. Laying out the whole write measured 1.0 to 1.6; highlighting it whole too, 1.85 to 2.1.
    */
-  writeCpu: 1.5,
+  writeCpu: 0.7,
   /**
-   * Calls in progress in that group, one of them a command printing for 3 s. Measured 1.8 to
-   * 2.2. A spinner frame that built the group's output again measured 5.2 to 7.6.
+   * Calls in progress in that group, one of them a command printing for 3 s, and their results
+   * arriving. Measured 0.8 to 1.6 once finished calls stopped being drawn again for each line
+   * printed. Drawing the whole group again for each line measured 1.5 to 2.2; a spinner frame
+   * that built the group's output again, 5.2 to 7.6.
    */
-  toolsCpu: 3.5,
+  toolsCpu: 2,
 };
 
 interface Phase {
@@ -54,12 +56,21 @@ interface Phase {
   /** Frame durations in milliseconds. */
   p50: number;
   p99: number;
+  max: number;
 }
 
 const root = mkdtempSync(join(tmpdir(), "pi-perf-"));
+/**
+ * A frame this slow is not Pi drawing: it is Pi blocked writing to this suite's terminal, whose
+ * parser fell behind, as it can when the machine is busy. Pi uses no CPU while blocked, so its
+ * CPU time in that phase reads low. A run with such a frame in a budgeted phase is measured again.
+ */
+const STALL_MS = 500;
+/** How many times a pair of runs is measured before a stall counts against the budget. */
+const ATTEMPTS = 3;
 
-async function measure(name: "alone" | "extended"): Promise<Map<string, Phase>> {
-  const directory = join(root, name);
+async function measure(name: "alone" | "extended", attempt: number): Promise<Map<string, Phase>> {
+  const directory = join(root, `${name}-${attempt}`);
   const agent = join(directory, "config");
   mkdirSync(join(agent, "extensions"), { recursive: true });
   mkdirSync(join(directory, "src"));
@@ -189,14 +200,27 @@ async function measure(name: "alone" | "extended"): Promise<Map<string, Phase>> 
       frames: frames.length,
       p50: at(0.5),
       p99: at(0.99),
+      max: frames.at(-1) ?? 0,
     });
   }
   return phases;
 }
 
 try {
-  const alone = await measure("alone");
-  const extended = await measure("extended");
+  let alone = new Map<string, Phase>();
+  let extended = new Map<string, Phase>();
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+    alone = await measure("alone", attempt);
+    extended = await measure("extended", attempt);
+    const stalled = [alone, extended].some((phases) =>
+      ["write", "tools"].some((name) => (phases.get(name)?.max ?? 0) > STALL_MS),
+    );
+    if (!stalled) break;
+    if (attempt < ATTEMPTS)
+      console.log(
+        `A frame took over ${STALL_MS} ms, Pi blocked on this suite's terminal: measuring again.`,
+      );
+  }
   const phase = (phases: Map<string, Phase>, name: string) => {
     const found = phases.get(name);
     assert(found, `phase ${name} was measured`);

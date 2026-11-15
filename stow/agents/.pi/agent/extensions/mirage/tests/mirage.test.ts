@@ -469,6 +469,63 @@ test("malformed JSON arguments say so instead of looking pending, also after a r
     assert.equal(plain(f.call(name, `malformed-${name}`, {}).view), header);
 });
 
+test("an entry Pi does not draw between calls separates nothing when the transcript is rebuilt", async () => {
+  const usage = {
+    type: "usage",
+    kind: "cache_warm",
+    usage: { input: 2, output: 1, cacheRead: 9000, cacheWrite: 0, cost: { total: 0.001 } },
+  };
+  const calls = (dir: string) =>
+    ["a", "b"].flatMap((id) => [
+      {
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: `saved-${id}`,
+              name: "read",
+              arguments: { path: join(dir, `${id}.txt`) },
+            },
+          ],
+          stopReason: "toolUse",
+        },
+      },
+      {
+        type: "message",
+        message: {
+          role: "toolResult",
+          toolCallId: `saved-${id}`,
+          toolName: "read",
+          ...result(id),
+          isError: false,
+        },
+      },
+      // Cache warming, a label and a model change: Pi draws none of them without the setting.
+      ...(id === "a"
+        ? [
+            usage,
+            { type: "label", targetId: "x", label: "here" },
+            { type: "model_change", provider: "p", modelId: "m" },
+          ]
+        : []),
+    ]);
+  const quiet = await fixture();
+  await quiet.rebuild("session_compact", calls(quiet.dir));
+  assert.equal(
+    plain(quiet.call("read", "saved-a", { path: join(quiet.dir, "a.txt") }).view),
+    "✓ Explored 2 files ▸",
+  );
+  // Pi shows cache warming as a line of its own with showCacheMissNotices: then it separates.
+  const shown = await fixture({ global: { showCacheMissNotices: true } });
+  await shown.rebuild("session_compact", calls(shown.dir));
+  assert.match(
+    plain(shown.call("read", "saved-a", { path: join(shown.dir, "a.txt") }).view),
+    /^✓ Read \S*a\.txt ▸$/,
+  );
+});
+
 test("read rows show Pi's line range, including numeric strings, and omit malformed ranges", async () => {
   const f = await fixture();
   const cases = [
@@ -1409,7 +1466,7 @@ test("a result Pi reports again keeps the output built for it", async () => {
   assert.notEqual(view.bodies.get("again-read")?.component, body);
 });
 
-test("a write's content is highlighted line by line while it streams, then whole", async () => {
+test("a write's content is highlighted line by line while it streams, and kept once it finishes", async () => {
   const f = await fixture();
   const path = join(f.dir, "streamed.ts");
   const lines = ["/* a comment", "that spans lines */", "const one = 1;", "const two = 2;"];
@@ -1432,10 +1489,32 @@ test("a write's content is highlighted line by line while it streams, then whole
   const whole = core.highlightCode(lines.join("\n"), "typescript");
   assert.deepEqual(first, whole);
   const streamed = drawn();
-  // Finished, it is highlighted whole, once, and nothing is kept for streaming.
+  // Finished, it keeps the lines it streamed, as Pi's own row does: no new highlighting, and no
+  // new layout either.
   write.result(result("Successfully wrote"));
   assert.deepEqual(drawn().slice(1), streamed.slice(1), "the same lines once it has finished");
-  assert.equal(streaming.size, 0);
+  assert.equal(streaming.get("streamed")?.lines, first);
+});
+
+test("a streaming write is drawn in chunks that wrap exactly as the finished write does", async () => {
+  const f = await fixture();
+  const lines = [
+    ...Array.from({ length: 60 }, (_, i) => `export const value${i} = "${"x".repeat(i * 3)}";`),
+    // A whole chunk of blank lines still draws its lines.
+    ...Array.from({ length: 55 }, () => ""),
+    "  indented after blanks",
+    "",
+  ];
+  const write = f.call("write", "chunked", {
+    path: join(f.dir, "a.ts"),
+    content: lines.join("\n"),
+  });
+  f.expand(true);
+  const streaming = plain(write.view, 90).split("\n");
+  write.result(result("Successfully wrote"));
+  const finished = plain(write.view, 90).split("\n");
+  assert(streaming.length > lines.length, "long lines wrapped");
+  assert.deepEqual(streaming.slice(1), finished.slice(1));
 });
 
 test("multi-step commands are drawn one step per line, with where they ran and how they failed", async () => {

@@ -10,7 +10,7 @@
   "steeringMode": "all",
   "followUpMode": "one-at-a-time",
   "treeFilterMode": "default",
-  "quietStartup": "header",
+  "quietStartup": true,
   "enableSkillCommands": false,
   "hideThinkingBlock": true,
   "defaultProvider": "anthropic",

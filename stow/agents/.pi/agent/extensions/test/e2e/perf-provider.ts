@@ -47,6 +47,9 @@ const said = (message: Context["messages"][number]) =>
     ? message.content
     : message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
 
+/** Replies streamed so far, which make each call's id unique. */
+let replies = 0;
+
 export default function (pi: ExtensionAPI) {
   const directory = process.env.PERF_DIR;
   if (!directory) throw new Error("PERF_DIR must point to the perf suite's directory.");
@@ -66,6 +69,7 @@ export default function (pi: ExtensionAPI) {
       },
     ],
     streamSimple(model, context) {
+      const replyNumber = ++replies;
       const stream = createAssistantMessageEventStream();
       const output: AssistantMessage = {
         role: "assistant",
@@ -105,8 +109,12 @@ export default function (pi: ExtensionAPI) {
         }
         stream.push({ type: "text_end", contentIndex, content: block.text, partial: output });
       };
-      /** A call whose arguments arrive in steps, as a provider's partial JSON does. */
-      const call = async (id: string, name: string, steps: Record<string, unknown>[]) => {
+      /**
+       * A call whose arguments arrive in steps, as a provider's partial JSON does. Its id is unique
+       * to this reply, as a provider's is: a reply sent again must not name the calls before.
+       */
+      const call = async (label: string, name: string, steps: Record<string, unknown>[]) => {
+        const id = `${label}-${replyNumber}`;
         const block = { type: "toolCall" as const, id, name, arguments: {} };
         const contentIndex = output.content.push(block) - 1;
         stream.push({ type: "toolcall_start", contentIndex, partial: output });

@@ -10,7 +10,6 @@
 //   widget.ts       the lines above the editor
 //   run.ts          one run of a comrade's Pi; runs.ts and resume.ts are what is saved of it
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { Spinner } from "../shared/spinner.ts";
 import { type Background, createBackground } from "./background.ts";
@@ -29,9 +28,6 @@ import { createWidget } from "./widget.ts";
 
 export type { Delivery, Details } from "./details.ts";
 export { currentPi, watchHost } from "./pi.ts";
-
-/** How often a turn waiting for its comrades checks for typed messages. */
-const WAIT_POLL_MS = 200;
 
 /** `invocation` may be a function, to resolve it again for each run. */
 export function register(pi: ExtensionAPI, invocation: Invocation | (() => Invocation)): void {
@@ -131,36 +127,6 @@ export function register(pi: ExtensionAPI, invocation: Invocation | (() => Invoc
 
   pi.on("agent_settled", (_event, ctx) => outbox.settled(ctx));
 
-  // An agent does not end its turn while its background comrades run: it waits, without using
-  // tokens, and Pi continues the turn with the first answer that arrives. A message typed
-  // meanwhile, or Esc, ends the wait at once. Only in the terminal, where Esc can be seen:
-  // Pi's own abort waits for this handler, so a wait nothing could end would hang it.
-  pi.on("agent_before_settle", async (_event, ctx) => {
-    if (!jobs.size || ctx.mode !== "tui") return;
-    let interrupted = false;
-    const unsubscribe = ctx.ui.onTerminalInput((data) => {
-      // Kitty's protocol also reports releases, such as the end of an Esc pressed before the wait.
-      if (matchesKey(data, "escape") && !isKeyRelease(data)) interrupted = true;
-      return undefined;
-    });
-    const before = outbox.woken();
-    try {
-      while (jobs.size && !interrupted && !ctx.hasPendingMessages() && outbox.woken() === before) {
-        // The widget above the editor says which.
-        ctx.ui.setWorkingMessage(
-          jobs.size === 1 ? `Waiting for comrade #${[...jobs.keys()][0]}` : "Waiting for comrades",
-        );
-        await Promise.race([
-          new Promise((wake) => setTimeout(wake, WAIT_POLL_MS)),
-          ...[...jobs.values()].map((job) => job.done),
-        ]);
-      }
-    } finally {
-      unsubscribe();
-      ctx.ui.setWorkingMessage();
-    }
-  });
-
   pi.on("session_shutdown", async (event) => {
     outbox.close();
     widget.close();
@@ -237,8 +203,8 @@ function registerList(pi: ExtensionAPI, background: Background, rows: Rows) {
       "List your running background comrades, or stop some of them. Without stop, it lists each " +
       "comrade's number, progress, cost so far, and task. With stop, it stops those comrades and " +
       "waits for them to exit. No message arrives for a comrade you stopped. There is no need to " +
-      "check on comrades: each answer arrives by itself, and your turn waits for them before it " +
-      "ends. List them only to decide something now.",
+      "check on comrades: each answer arrives by itself, and starts a new turn if you have " +
+      "finished. List them only to decide something now.",
     promptSnippet: "List or stop your background comrades",
     parameters: Type.Object({
       stop: Type.Optional(
