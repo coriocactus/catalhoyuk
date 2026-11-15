@@ -1,4 +1,4 @@
-// Markdown as Amp draws it, and selection bounded to text. Code blocks lose their fence lines and
+// Markdown drawn for reading, and selection bounded to text. Code blocks lose their fence lines and
 // are indented. Wrapped lines, in Markdown and in plain text, keep their indent, and lines end where
 // their text ends. In fullscreen, Pi's own selection then stops at each line's text and starts at its
 // content, skipping margins and indents, a copy joins continuation lines back into the lines they came

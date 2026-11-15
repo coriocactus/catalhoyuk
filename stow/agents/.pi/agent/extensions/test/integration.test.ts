@@ -282,7 +282,8 @@ test("archived mixed groups follow thinking visibility without moving commentary
     assert.match(text(page), /Read 1 file, wrote 1 file/);
     assert(!text(page).includes("ARCHIVED_REASONING") && !text(page).includes("Thinking"));
     assert(text(page).indexOf("COMMENTARY_BOUNDARY") > text(page).indexOf("wrote 1 file"));
-    assert(text(page).indexOf("echo c") > text(page).indexOf("COMMENTARY_BOUNDARY"));
+    // The command after the commentary, on its own: counted, as a group of one.
+    assert(text(page).indexOf("Ran 1 command") > text(page).indexOf("COMMENTARY_BOUNDARY"));
     for (const hidden of [false, true, false, true]) {
       for (const child of page.children) {
         if (child instanceof core.AssistantMessageComponent) child.setHideThinkingBlock(hidden);

@@ -66,6 +66,19 @@ const VERBS = {
   edit: { running: "Editing", success: "Edited", failed: "Edit" },
   write: { running: "Writing", success: "Wrote", failed: "Write" },
 };
+/** Pi's searching tools, as mirage words a call on its own. */
+const SEARCH_VERBS: Record<string, { running: string; success: string; failed: string }> = {
+  grep: { running: "Searching", success: "Searched", failed: "Search" },
+  find: { running: "Finding", success: "Found", failed: "Find" },
+  ls: { running: "Listing", success: "Listed", failed: "List" },
+};
+/** A tool as mirage names it: an MCP tool by its server and name, `docs · search`. */
+const toolTitle = (name: string) => {
+  const parts = name.split("__");
+  return parts[0] === "mcp" && parts.length >= 3
+    ? `${parts[1]} · ${parts.slice(2).join("__")}`
+    : name;
+};
 
 export const emptyWork = (): Work => ({ tallies: [], rows: [], omitted: 0 });
 
@@ -317,8 +330,8 @@ export class Ledger {
   }
 
   /**
-   * Mirage's single-row forms: `Read ~/p`, `Editing ~/p`, `$ cmd`, `grep pattern ~/dir`. Edits
-   * and writes end with their line counts unless `counts` is false.
+   * Mirage's single-row forms: `Read ~/p`, `Editing ~/p`, `$ cmd`, `Searched "pattern" in ~/dir`,
+   * `docs · search query`. Edits and writes end with their line counts unless `counts` is false.
    */
   private label(call: Call, counts = true): string {
     const path = call.path ? homePath(call.path) : "";
@@ -337,7 +350,18 @@ export class Ledger {
       return [verb, path, changes].filter(Boolean).join(" ");
     }
     if (call.kind === "command") return `$ ${call.detail}`;
-    if (call.kind === "search") return [call.tool, call.detail, path].filter(Boolean).join(" ");
-    return [call.tool, call.detail].filter(Boolean).join(" ");
+    const search = SEARCH_VERBS[call.tool];
+    if (call.kind === "search" && search) {
+      const verb = !call.status
+        ? search.running
+        : call.status === "success"
+          ? search.success
+          : search.failed;
+      if (call.tool === "ls") return `${verb} ${path || "."}`;
+      return [verb, call.detail ? `"${call.detail}"` : "", path ? `in ${path}` : ""]
+        .filter(Boolean)
+        .join(" ");
+    }
+    return [toolTitle(call.tool), call.detail].filter(Boolean).join(" ");
   }
 }

@@ -13,7 +13,15 @@ import { isNestedRowsRequest, NESTED_ROWS_EVENT, type NestedRows } from "../shar
 import { type FileReference, OPEN_FILE_EVENT, type OpenFileRequest } from "../shared/protocol.ts";
 import { Spinner, spinnerFrame } from "../shared/spinner.ts";
 import { isTranscriptView, TRANSCRIPT_VIEW, type TranscriptView } from "../shared/transcript.ts";
-import { isComplete, TOOL_NAMES, type ToolCallState, ToolGroups, type ToolName } from "./model.ts";
+import {
+  everyKind,
+  isComplete,
+  TOOL_NAMES,
+  type ToolCallState,
+  ToolGroups,
+  type ToolKinds,
+  type ToolName,
+} from "./model.ts";
 import { installNativeImageSlot, ownImageRendering, renderNativeImages } from "./native-images.ts";
 import { installNativeThinking } from "./native-thinking.ts";
 import { ToolGroupView } from "./view.ts";
@@ -58,7 +66,13 @@ export default function (pi: ExtensionAPI) {
       return true;
     }
   };
-  const groups = new ToolGroups(claims);
+  // Any other tool is drawn as a plain call when Pi would otherwise draw it in its default box:
+  // when neither the tool nor another extension draws it. Pi says so as it resolves the tool's
+  // renderers (see the resolver below), the first time it draws one of its calls.
+  const plain = new Map<string, boolean>();
+  const kinds: ToolKinds = (name) =>
+    claims(name) ? (name as ToolName) : plain.get(name) ? "tool" : undefined;
+  const groups = new ToolGroups(kinds);
   let historyGroups = new WeakMap<HistoryPage, ToolGroups>();
   const images = new WeakMap<ToolCallState, (width: number) => string[]>();
   // Pi redraws a script's calls only when it redraws the script's row, so keep each script
@@ -159,7 +173,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   function snapshot(entries: readonly SessionEntry[], cwd: string): ToolGroups {
-    const model = new ToolGroups(claims);
+    const model = new ToolGroups(kinds);
     model.setThinkingHidden(thinkingHidden);
     replay(model, entries, cwd);
     return model;
@@ -185,7 +199,7 @@ export default function (pi: ExtensionAPI) {
     if (!page || (page.scope && page.scope === transcript?.scope)) return groups;
     let pageGroups = historyGroups.get(page);
     if (!pageGroups) {
-      pageGroups = new ToolGroups(claims);
+      pageGroups = new ToolGroups(kinds);
       pageGroups.setThinkingHidden(thinkingHidden);
       models.add(new WeakRef(pageGroups));
       replay(pageGroups, page.entries, page.cwd);
@@ -261,7 +275,8 @@ export default function (pi: ExtensionAPI) {
   // collapsed whatever Ctrl+O says, and following Ctrl+T as this transcript's rows do.
   const nested: NestedRows = {
     transcript(cwd, frame) {
-      const model = new ToolGroups();
+      // Another agent's calls have no renderer of their own here: mirage draws every one.
+      const model = new ToolGroups(everyKind);
       model.setThinkingHidden(thinkingHidden);
       models.add(new WeakRef(model));
       const views = new Map<string, ToolGroupView>();
@@ -276,7 +291,7 @@ export default function (pi: ExtensionAPI) {
             if (row) model.markStarted(row);
           }
         },
-        draws: (name) => TOOL_NAMES.has(name),
+        draws: () => true,
         row(id, theme) {
           const row = model.rows.get(id);
           if (!row || row.group.rows[0] !== row) return undefined;
@@ -312,7 +327,7 @@ export default function (pi: ExtensionAPI) {
       );
   }
 
-  function renderers(name: ToolName): ToolRenderers {
+  function renderers(name: string): ToolRenderers {
     const renderCall: RenderCall = (args, theme, context) => {
       const state = context.state as DisplayState & AnchorState;
       // The spinner asked Pi to draw the row again: nothing but its frame has changed, and the
@@ -365,6 +380,33 @@ export default function (pi: ExtensionAPI) {
     return ownImageRendering({ renderShell: "self", renderCall, renderResult });
   }
 
-  const drawn = new Map([...TOOL_NAMES].map((name) => [name, renderers(name as ToolName)]));
-  pi.registerToolRenderer((name, next) => (claims(name) ? drawn.get(name) : undefined) ?? next());
+  const built = new Map<string, ToolRenderers>();
+  const drawn = (name: string): ToolRenderers => {
+    let found = built.get(name);
+    if (!found) {
+      found = renderers(name);
+      built.set(name, found);
+    }
+    return found;
+  };
+  /** Whether mirage draws a tool that is not Pi's own changed: every model groups again. */
+  const decide = (name: string, mine: boolean) => {
+    const before = plain.get(name) ?? false;
+    plain.set(name, mine);
+    if (before === mine) return;
+    for (const reference of models) {
+      const model = reference.deref();
+      if (model) model.reconsider();
+      else models.delete(reference);
+    }
+  };
+  pi.registerToolRenderer((name, next) => {
+    if (claims(name)) return drawn(name);
+    // Any other tool keeps the renderer it has, its own or another extension's. One with none
+    // would get Pi's default box: mirage draws it instead.
+    const own = next();
+    const mine = !own?.renderCall && !own?.renderResult;
+    decide(name, mine);
+    return mine ? drawn(name) : own;
+  });
 }

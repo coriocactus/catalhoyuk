@@ -129,7 +129,7 @@ test("group boundaries, streaming snapshots, and expansion survive growth and me
   assert(!model.expanded(b));
   assert.equal(model.addCall("a", "read", { path: "updated" }, root), a);
   assert.equal(a.file?.path, "updated", "streamed arguments update the snapshot");
-  model.addCall("foreign", "grep", {}, root);
+  model.addCall("foreign", "web_search", {}, root);
   assert.notEqual(add("c", "read", {}).group, a.group);
   assert.equal(add("edit1", "edit", {}).group, add("edit2", "edit", {}).group);
   assert.equal(add("write1", "write", {}).group, add("write2", "write", {}).group);
@@ -229,11 +229,12 @@ test("mixed groups merge across tool-only turns without crossing messages or for
     model.finishMessage(next as unknown as Message, root);
     assert.notEqual(row(block.type).group, previous.group);
   }
-  for (const name of ["read", "bash", "write", "grep"]) {
+  for (const name of ["read", "bash", "write", "grep", "find", "ls", "web_search"]) {
     const before = add(`before-${name}`, "edit");
     model.addCall(`boundary-${name}`, name, {}, root);
     const after = add(`after-${name}`, "edit");
-    if (name === "grep") assert.notEqual(before.group, after.group, name);
+    // A tool the model does not draw is a boundary: here, any that is not Pi's own.
+    if (name === "web_search") assert.notEqual(before.group, after.group, name);
     else assert.equal(before.group, after.group, name);
   }
   for (const role of ["user", "custom", "bashExecution"]) {
@@ -281,7 +282,7 @@ test("hidden thinking joins mixed turns, while visibility toggles restore ordere
   const assistant = new core.AssistantMessageComponent();
   assistant.updateContent(assistantMessage("", [thinking]));
   assert.match(plain(a.view), /^✓ Read mixed-read.txt/);
-  assert.match(plain(b.view), /^\$ echo ok/);
+  assert.equal(plain(b.view), "✗ Ran 1 command ▸");
   assert.match(plain(c.view), /^✓ Wrote 1 file \(\+1\), edited 1 file/);
   assistant.setHideThinkingBlock(true);
   assert.match(plain(a.view), /Read 1 file, ran 1 command, wrote 1 file \(\+1\), edited 1 file/);
@@ -403,7 +404,7 @@ test("normalized renderer inputs tolerate invalid arguments without bypassing va
       });
       row.updateResult({ ...result("VALIDATION_ERROR"), isError: true });
       assert.doesNotThrow(() => row.render(100));
-      assert.match(plain(row), name === "bash" ? /\$ … ▸/ : /✗/);
+      assert.match(plain(row), name === "bash" ? /✗ Ran 1 command ▸/ : /✗/);
       assert(!plain(row).includes("VALIDATION_ERROR"));
     }
   }
@@ -428,7 +429,8 @@ test("malformed JSON arguments say so instead of looking pending, also after a r
   const assistant = (block: object) =>
     ({ role: "assistant", content: [block], stopReason: "toolUse" }) as unknown as Message;
   const cases = [
-    ["bash", { command: "npm te" }, "$ invalid arguments \u25b8"],
+    // A command on its own is counted; expanded, it says its arguments were invalid.
+    ["bash", { command: "npm te" }, "\u2717 Ran 1 command \u25b8"],
     ["read", { path: "a.t" }, "\u2717 Read invalid arguments \u25b8"],
   ] as const;
   const entries: object[] = [];
@@ -445,9 +447,14 @@ test("malformed JSON arguments say so instead of looking pending, also after a r
     const output = result(`Invalid arguments for tool "${name}": ${error}`);
     slot.result(output, true);
     assert.equal(plain(slot.view), header);
+    if (name === "bash") slot.view.handleMouse(mouse(0));
     assert(
-      slot.view.render(160).map(unmark)[0].includes(themes.theme.fg("dim", "invalid arguments")),
+      slot.view
+        .render(160)
+        .map(unmark)
+        .some((line) => line.includes(themes.theme.fg("dim", "invalid arguments"))),
     );
+    if (name === "bash") slot.view.handleMouse(mouse(0));
     entries.push(
       { type: "message", message: { role: "user", content: "boundary" } },
       { type: "message", message: finished },
@@ -475,7 +482,7 @@ test("read rows show Pi's line range, including numeric strings, and omit malfor
   for (const [i, [args, range]] of cases.entries()) {
     await f.pi.event("user_bash");
     const { view } = f.call("read", `range-${i}`, { path: "a.txt", ...args }, false);
-    assert.equal(plain(view), `\u2026 Read a.txt${range} \u25b8`, JSON.stringify(args));
+    assert.equal(plain(view), `\u2026 Reading a.txt${range} \u25b8`, JSON.stringify(args));
     if (range) assert(view.render(160).map(unmark)[0].includes(themes.theme.fg("dim", range)));
   }
 });
@@ -575,52 +582,47 @@ test("trailing carets survive truncation and toggle independently of filename li
   assert.equal(plain(write.view), "✓ Wrote new.ts +1 ▸");
 });
 
-test("command headers use a status-coloured dollar without ticks or crosses", async () => {
+test("a command's own line has a status-coloured dollar; its summary a tick or a cross", async () => {
   const f = await fixture();
   const a = f.call("bash", "dollar-a", { command: "npm test" }, false);
-  const neutral = themes.theme.fg("muted", "$");
-  assert.equal(plain(a.view), "$ npm test ▸");
-  assert(a.view.render(160).map(unmark)[0].startsWith(`${neutral} npm test `));
+  const waiting = themes.theme.fg("muted", "…");
+  // A command on its own is counted, as a group is: in progress before it has even started.
+  assert.equal(plain(a.view), "… Running 1 command ▸");
+  assert(a.view.render(160).map(unmark)[0].startsWith(`${waiting} Running 1 command `));
   a.result(result("streaming"), false, true);
-  assert(a.view.render(160).map(unmark)[0].startsWith(`${neutral} npm test `));
+  assert(a.view.render(160).map(unmark)[0].startsWith(`${waiting} Running 1 command `));
   a.result(result("passed"));
+  assert.equal(plain(a.view), "✓ Ran 1 command ▸");
   assert(
     a.view
       .render(160)
       .map(unmark)[0]
-      .startsWith(`${paint(themes.theme, "green", "$")} npm test `),
+      .startsWith(`${paint(themes.theme, "green", "✓")} Ran 1 command `),
   );
   a.result(result("failed"), true);
-  assert.equal(plain(a.view), "$ npm test ▸");
-  assert(
-    a.view
-      .render(160)
-      .map(unmark)[0]
-      .startsWith(`${paint(themes.theme, "red", "$")} npm test `),
-  );
+  assert.equal(plain(a.view), "✗ Ran 1 command ▸");
+  // Expanded, the command with its dollar, red as it failed, then its output.
+  a.view.handleMouse(mouse(0));
+  assert.equal(plain(a.view), "✗ Ran 1 command ▾\n  $ npm test\n  failed");
+  const [, line] = a.view.render(160).map(unmark);
+  assert(line.trimStart().startsWith(`${paint(themes.theme, "red", "$")} npm test`));
+  a.view.handleMouse(mouse(0));
   a.result(result("passed"));
   const b = f.call("bash", "dollar-b", { command: "npm run lint" }, false);
-  assert.equal(plain(a.view), "$ Run 2 commands ▸");
-  assert(a.view.render(160).map(unmark)[0].startsWith(`${neutral} Run `));
+  // The ones in progress, and how many have finished.
+  assert.equal(plain(a.view), "… Running 1 command (1 finished) ▸");
   b.result(result("streaming"), false, true);
-  assert.equal(plain(a.view), "$ Running 2 commands ▸");
-  assert(a.view.render(160).map(unmark)[0].startsWith(`${neutral} Running `));
+  assert.equal(plain(a.view), "… Running 1 command (1 finished) ▸");
   b.result(result("passed"));
-  assert.equal(plain(a.view), "$ Ran 2 commands ▸");
-  assert(
-    a.view
-      .render(160)
-      .map(unmark)[0]
-      .startsWith(`${paint(themes.theme, "green", "$")} Ran `),
-  );
+  assert.equal(plain(a.view), "✓ Ran 2 commands ▸");
   b.result(result("failed"), true);
-  assert.equal(plain(a.view), "$ Ran 2 commands ▸", "no failure count; closed groups are one line");
+  assert.equal(plain(a.view), "✓ Ran 2 commands ▸", "no failure count; closed groups are one line");
   assert(
     a.view
       .render(160)
       .map(unmark)[0]
-      .startsWith(`${paint(themes.theme, "green", "$")} Ran `),
-    "one failure does not turn the group red",
+      .startsWith(`${paint(themes.theme, "green", "✓")} Ran `),
+    "one failure does not turn the group green tick red",
   );
   f.expand(true);
   const headers = () =>
@@ -629,14 +631,14 @@ test("command headers use a status-coloured dollar without ticks or crosses", as
       .map(unmark)
       .filter((line) => tui.stripTerminalSequences(line).endsWith("▾"));
   assert.equal(headers().length, 3);
-  for (const [i, tone] of (["green", "green", "red"] as const).entries()) {
-    const prefix = `${i ? "  " : ""}${paint(themes.theme, tone, "$")} `;
-    assert(headers()[i].startsWith(prefix), "the failed call is red on its own row");
-    assert(!/[✓✗]/.test(tui.stripTerminalSequences(headers()[i])));
+  for (const [i, tone] of (["green", "red"] as const).entries()) {
+    const prefix = `  ${paint(themes.theme, tone, "$")} `;
+    assert(headers()[i + 1].startsWith(prefix), "each command's own line has its dollar");
+    assert(!/[✓✗]/.test(tui.stripTerminalSequences(headers()[i + 1])));
   }
   a.result(result("failed"), true);
   assert(
-    headers()[0].startsWith(`${paint(themes.theme, "red", "$")} Ran 2 commands `),
+    headers()[0].startsWith(`${paint(themes.theme, "red", "✗")} Ran 2 commands `),
     "a group is red only when every call failed",
   );
 });
@@ -645,12 +647,12 @@ test("closed groups hide failed calls; open groups show them with their error bo
   const f = await fixture();
   const a = f.call("bash", "a", { command: "printf hello" }, false);
   const b = f.call("bash", "b", { command: "exit 1" }, false);
-  assert.match(plain(a.view), /Run 2 commands/);
+  assert.match(plain(a.view), /Running 2 commands ▸/);
   a.result(result("streaming"), false, true);
-  assert.match(plain(a.view), /Running 2 commands/);
+  assert.match(plain(a.view), /Running 2 commands ▸/);
   a.result(result("success"));
   b.result(result("ERROR_BODY\nSTACK_TRACE"), true);
-  assert.equal(plain(a.view), "$ Ran 2 commands ▸");
+  assert.equal(plain(a.view), "✓ Ran 2 commands ▸");
   a.view.handleMouse(mouse(0));
   assert.match(plain(a.view), /^ {2}\$ exit 1 ▸$/m);
   assert(!plain(a.view).includes("ERROR_BODY"), "error output stays closed with its row");
@@ -659,11 +661,11 @@ test("closed groups hide failed calls; open groups show them with their error bo
   a.view.handleMouse(mouse(0, 2));
   assert(!plain(a.view).includes("STACK_TRACE"));
   a.view.handleMouse(mouse(0));
-  assert.equal(plain(a.view), "$ Ran 2 commands ▸");
+  assert.equal(plain(a.view), "✓ Ran 2 commands ▸");
   f.expand(true);
   assert.match(plain(a.view), /STACK_TRACE/);
   f.expand(false);
-  assert.equal(plain(a.view), "$ Ran 2 commands ▸");
+  assert.equal(plain(a.view), "✓ Ran 2 commands ▸");
   await f.pi.event("user_bash");
   const edit = f.call("edit", "e", { path: "edit.ts" });
   edit.result(result("success", { diff: "-1 before\n+1 after" }));
@@ -705,7 +707,7 @@ test("writes count the lines they wrote, in rows and per-kind group totals", asy
   ] as const)
     assert.equal(writtenLines(content), lines, JSON.stringify(content));
   const a = f.call("write", "write-a", { path: "a.ts", content: "1\n2\n3\n" }, false);
-  assert.equal(plain(a.view), "… Write a.ts ▸", "pending writes add no count");
+  assert.equal(plain(a.view), "… Writing a.ts ▸", "pending writes add no count");
   a.result(result("written"));
   assert.equal(plain(a.view), "✓ Wrote a.ts +3 ▸");
   assert(
@@ -746,14 +748,14 @@ test("edit groups count distinct files and sum only completed diff snapshots", a
   const f = await fixture();
   const a = f.call("edit", "edits-a", { path: "a.txt" }, false);
   const b = f.call("edit", "edits-b", { path: "b.txt" }, false);
-  assert.equal(plain(a.view), "… Edit 2 files ▸");
+  assert.equal(plain(a.view), "… Editing 2 files ▸");
   assert.equal(plain(b.view), "");
   b.result(result("partial", { diff: "-1 old-b\n+1 new-b\n+2 extra" }), false, true);
   assert.equal(plain(a.view), "… Editing 2 files ▸", "partial diffs do not inflate totals");
   b.result(result("done", { diff: "-1 old-b\n+1 new-b\n+2 extra" }));
   a.context.executionStarted = true;
   a.redraw();
-  assert.equal(plain(a.view), "… Editing 2 files (+2 −1) ▸");
+  assert.equal(plain(a.view), "… Editing 1 file (1 finished) (+2 −1) ▸");
   a.result(result("done", { diff: "-1 old-a\n+1 new-a" }));
   assert.equal(plain(a.view), "✓ Edited 2 files (+3 −2) ▸");
   const cached = a.view.render(160);
@@ -980,7 +982,8 @@ test("grouped native images bind before first paint and expand independently wit
       });
     }
     // Neither image member has ever been painted; its slot must already exist.
-    assert.match(plain(leader), /Explored 3 files ▸/);
+    // A read of an image file is viewed, whatever its result holds: here all three.
+    assert.match(plain(leader), /Viewed 3 images ▸/);
     assert(!leader.render(160).some(isImageLine));
     leader.handleMouse(mouse(0, 1));
     const toggle = (path: string) => {
@@ -990,7 +993,7 @@ test("grouped native images bind before first paint and expand independently wit
       assert(y > 0);
       leader.handleMouse(mouse(0, y));
     };
-    assert.match(plain(leader), /Read picture.png \(image\)/);
+    assert.match(plain(leader), /Viewed picture.png ▸/);
     assert(!leader.render(160).some(isImageLine));
     toggle("picture.png");
     assert(leader.render(160).some(isImageLine));
@@ -1012,7 +1015,7 @@ test("grouped native images bind before first paint and expand independently wit
     );
     command.updateResult({ ...result("AFTER_BODY"), isError: false });
     components.push(command);
-    assert.match(plain(leader), /Read 3 files, ran 1 command/);
+    assert.match(plain(leader), /Viewed 3 images, ran 1 command/);
     for (const value of [true, false, true]) {
       f.expand(value);
       for (const item of components) item.setExpanded(value);
@@ -1051,7 +1054,7 @@ test("grouped native images bind before first paint and expand independently wit
   }
 });
 
-test("Pi executes its own tools; mirage draws only them and leaves other tools' renderers", async () => {
+test("Pi executes its own tools; mirage draws them, and other tools only when they have no renderer", async () => {
   const f = await fixture();
   assert.equal(
     f.pi.tools.size,
@@ -1060,10 +1063,13 @@ test("Pi executes its own tools; mirage draws only them and leaves other tools' 
   );
   const foreign: ToolRenderers = { renderCall: () => fake<Component>({}) };
   const base = () => foreign;
-  for (const name of ["read", "bash", "edit", "write", "codemode"])
+  for (const name of ["read", "bash", "edit", "write", "codemode", "grep", "find", "ls"])
     assert.notEqual(f.pi.renderers(name, base), foreign, `${name} is drawn by mirage`);
-  for (const name of ["grep", "mcp__docs__search", "web_search"])
+  for (const name of ["mcp__docs__search", "web_search"]) {
     assert.equal(f.pi.renderers(name, base), foreign, `${name} keeps its renderer`);
+    // With none, its own or another extension's, Pi would draw it in its default box.
+    assert(f.pi.renderers(name)?.renderCall, `${name} without a renderer is drawn by mirage`);
+  }
   // A tool another extension registered under a built-in name keeps that extension's renderer.
   const sources: Record<string, string> = { read: "builtin", bash: "local", codemode: "builtin" };
   Object.assign(f.pi.api, {
@@ -1155,12 +1161,12 @@ test("reconstruction keeps images in persisted groups and failures discoverable"
   for (const event of ["session_start", "session_tree", "session_compact"]) {
     await f.rebuild(event, entries);
     const view = f.call("read", "saved1", { path: "a" }).view;
-    assert.equal(plain(view), "✓ Explored 4 files ▸");
+    assert.equal(plain(view), "✓ Explored 3 files, viewed 1 image ▸");
     assert.equal(plain(f.call("read", "picture", { path: "image.png" }).view), "");
     view.handleMouse(mouse(0));
     assert.match(plain(view), /✗ Read b/);
     assert(!plain(view).includes("SAVED_ERROR"));
-    assert.match(plain(view), /Read image.png \(image\)/);
+    assert.match(plain(view), /Viewed image.png ▸/);
     assert.match(plain(view), /Read c/);
     view.handleMouse(mouse(0));
   }
@@ -1206,6 +1212,106 @@ test("in-runtime reconstruction preserves rows and local expansion without editi
     assert.equal(plain(f.call("edit", "b", { path: "b.txt" }).view), "");
   }
   assert.equal(JSON.stringify(entries), before, "grouping is presentation-only");
+});
+
+test("Pi's searches and listings are drawn in their own words, and explore with reads", async () => {
+  const f = await fixture();
+  const grep = f.call("grep", "s-grep", { pattern: "parseList", path: "src", glob: "*.ts" });
+  assert.equal(plain(grep.view), '… Searching "parseList" in src (*.ts) ▸');
+  grep.result(result("src/a.ts:1: parseList"));
+  assert.equal(plain(grep.view), '✓ Searched "parseList" in src (*.ts) ▸');
+  f.call("find", "s-find", { pattern: "*.test.ts" }).result(result("a.test.ts"));
+  f.call("ls", "s-ls", {}).result(result("a\nb"));
+  f.call("read", "s-read", { path: "a.ts" }).result(result("x"));
+  // Searches count together, per call; reads among only searches and listings explore.
+  assert.equal(plain(grep.view), "✓ Ran 2 searches, listed 1 directory, explored 1 file ▸");
+  f.expand(true);
+  const open = plain(grep.view).split("\n");
+  for (const line of [
+    '  ✓ Searched "parseList" in src (*.ts) ▾',
+    "    src/a.ts:1: parseList",
+    '  ✓ Found "*.test.ts" ▾',
+    "  ✓ Listed . ▾",
+    "    b",
+  ])
+    assert(open.includes(line), `${line}\n${open.join("\n")}`);
+  // With a command among them, reads are reads again.
+  f.call("bash", "s-bash", { command: "true" }).result(result(""));
+  f.expand(false);
+  assert.equal(
+    plain(grep.view),
+    "✓ Ran 2 searches, listed 1 directory, read 1 file, ran 1 command ▸",
+  );
+});
+
+test("a summary counts the calls in progress and how many have finished", async () => {
+  const f = await fixture();
+  const first = f.call("bash", "tally-1", { command: "echo one" }, false);
+  // In progress from its first argument: never `Run`, and counted even on its own.
+  assert.equal(plain(first.view), "… Running 1 command ▸");
+  first.result(result("one"));
+  assert.equal(plain(first.view), "✓ Ran 1 command ▸");
+  f.call("bash", "tally-2", { command: "echo two" }).result(result("two"));
+  f.call("bash", "tally-3", { command: "sleep 9" });
+  f.call("grep", "tally-4", { pattern: "x" }).result(result(""));
+  assert.equal(plain(first.view), "… Running 1 command (2 finished), ran 1 search ▸");
+  f.call("bash", "tally-3", { command: "sleep 9" }).result(result(""));
+  assert.equal(plain(first.view), "✓ Ran 3 commands, ran 1 search ▸");
+});
+
+test("a tool with no renderer of its own is drawn as a plain call, grouped with Pi's own", async () => {
+  const f = await fixture();
+  const read = f.call("read", "g-read", { path: "a.ts" });
+  read.result(result("x"));
+  f.call("mcp__docs__search", "g-mcp", { query: "auth bug" }).result(
+    result('{"hits":[{"title":"Auth"}]}'),
+  );
+  f.call("source_check", "g-check", { claim: "x" }).result(result("ok"));
+  f.call("source_check", "g-check-2", { claim: "y" }).result(result("ok"));
+  // An MCP tool counts by its server, any other by its name.
+  assert.equal(
+    plain(read.view),
+    "✓ Read 1 file, called 1 docs tool, called source_check 2 times ▸",
+  );
+  f.expand(true);
+  const open = plain(read.view).split("\n");
+  for (const line of [
+    // Named by its server and tool, and by what an argument says it is about.
+    "  ✓ docs · search auth bug ▾",
+    // JSON output laid out.
+    "    {",
+    '      "hits": [',
+    // Without such an argument, all of them.
+    '  ✓ source_check {"claim":"x"} ▾',
+  ])
+    assert(open.includes(line), `${line}\n${open.join("\n")}`);
+});
+
+test("a call seen before Pi resolves its renderer joins its group once mirage draws it", async () => {
+  const f = await fixture();
+  const before = f.call("read", "late-read", { path: "a.ts" });
+  const ask = (id: string, name: string) =>
+    f.pi.event(
+      "message_end",
+      { message: assistantMessage("", [{ type: "toolCall", id, name, arguments: {} }]) },
+      f.ctx,
+    );
+  // Pi reports the call before it draws it: until it resolves the tool's renderer, the call
+  // holds its place and ends the group.
+  await ask("late-mcp", "mcp__late__lookup");
+  // Pi draws it, finding no renderer of its own: mirage draws it, in the read's group.
+  const late = f.call("mcp__late__lookup", "late-mcp", {});
+  assert.equal(late.view.row.group, before.view.row.group);
+  assert.equal(plain(before.view), "… Reading 1 file, calling 1 late tool ▸");
+  // A tool that draws itself stays a boundary, and the next call starts a new group.
+  const own: ToolRenderers = { renderCall: () => fake<Component>({}) };
+  await ask("late-own", "drawn_elsewhere");
+  assert.equal(
+    f.pi.renderers("drawn_elsewhere", () => own),
+    own,
+  );
+  const after = f.call("read", "after-own", { path: "b.ts" });
+  assert.notEqual(after.view.row.group, before.view.row.group);
 });
 
 test("calls in progress show Pi's working spinner while Pi works, and stop spinning when done", async (t) => {
@@ -1332,27 +1438,29 @@ test("a write's content is highlighted line by line while it streams, then whole
   assert.equal(streaming.size, 0);
 });
 
-test("multi-step commands are drawn as Amp draws them", async () => {
+test("multi-step commands are drawn one step per line, with where they ran and how they failed", async () => {
   const f = await fixture();
   const row = f.call("bash", "steps", {
     command: "cd ~/src/app && jj status && printf 'conflicts:\\n' && jj resolve --list",
   });
   row.result(result("Working copy clean\n\nCommand exited with code 2"), true);
-  assert.equal(
-    plain(row.view),
-    [
-      "$ jj status && \\",
-      "    printf 'conflicts:\\n' && \\",
-      "    jj resolve --list (in ~/src/app) (exit code: 2) ▸",
-    ].join("\n"),
-  );
-  const [first] = row.view.render(160).map(unmark);
-  assert(first.startsWith(paint(themes.theme, "red", "$")), "a failed command's $ is red");
-  assert(first.includes(themes.theme.bold("jj")), "command names are bold");
-
-  // The header shows the whole command, so the output does not repeat it.
+  assert.equal(plain(row.view), "✗ Ran 1 command ▸");
+  // Expanded, the command one step per line, then its output.
   f.expand(true);
   const expanded = plain(row.view).split("\n");
-  assert.equal(expanded[3]?.trim(), "Working copy clean");
+  assert.deepEqual(expanded.slice(0, 4), [
+    "✗ Ran 1 command ▾",
+    "  $ jj status && \\",
+    "      printf 'conflicts:\\n' && \\",
+    "      jj resolve --list (in ~/src/app) (exit code: 2)",
+  ]);
+  const lines = row.view.render(160).map(unmark);
+  assert(
+    lines[1].trimStart().startsWith(paint(themes.theme, "red", "$")),
+    "a failed command's $ is red",
+  );
+  assert(lines[1].includes(themes.theme.bold("jj")), "command names are bold");
+  // The command's lines show the whole command, so the output does not repeat it.
+  assert.equal(expanded[4]?.trim(), "Working copy clean");
   assert(!expanded.some((line) => line.trim().startsWith("$ cd")), "no repeated command");
 });

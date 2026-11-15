@@ -1,4 +1,4 @@
-// Shell commands drawn the way Amp draws them: one line per step of an `&&`, `||`, `|` or `;`
+// Shell commands drawn for reading: one line per step of an `&&`, `||`, `|` or `;`
 // chain, a leading `cd DIR &&` shown as `(in DIR)`, heredoc bodies counted rather than shown,
 // and light highlighting. Display only: the command itself is never changed.
 

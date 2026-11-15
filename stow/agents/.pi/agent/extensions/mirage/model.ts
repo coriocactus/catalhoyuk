@@ -12,12 +12,17 @@ import {
   scriptCalls,
 } from "./nested.ts";
 
-export type ToolName = FileToolName | "bash" | "codemode";
+/** Pi's own tools that mirage draws in their own words. */
+export type ToolName = FileToolName | "bash" | "codemode" | SearchToolName;
+/** Pi's own tools that search or list files. */
+export type SearchToolName = "grep" | "find" | "ls";
 /**
- * Call kinds. Calls inside scripts may use any tool (`tool`) or the script's `models` API
+ * Call kinds: Pi's own tools by name, any other tool (`tool`), and a script's `models` calls
  * (`model`).
  */
 export type ToolKind = ToolName | "tool" | "model";
+/** The kind mirage draws a tool's calls as, or undefined for a tool it leaves to its renderer. */
+export type ToolKinds = (name: string) => ToolKind | undefined;
 export type ToolArgs = Readonly<Record<string, unknown>>;
 export type ToolStatus = "pending" | CallStatus;
 type Expansion = { epoch: number; value: boolean };
@@ -84,9 +89,26 @@ export const TOOL_NAMES: ReadonlySet<string> = new Set([
   "edit",
   "write",
   "codemode",
+  "grep",
+  "find",
+  "ls",
 ] satisfies ToolName[]);
 /** Native tools whose calls keep their own kind inside scripts. */
-const NATIVE_KINDS: ReadonlySet<string> = new Set(["read", "bash", "edit", "write"]);
+const NATIVE_KINDS: ReadonlySet<string> = new Set([
+  "read",
+  "bash",
+  "edit",
+  "write",
+  "grep",
+  "find",
+  "ls",
+]);
+
+/** Pi's own tools by name, and every other tool as `tool`: how a call is drawn in any case. */
+export const everyKind: ToolKinds = (name) => (TOOL_NAMES.has(name) ? (name as ToolName) : "tool");
+/** Only Pi's own tools that mirage draws in their own words. */
+export const nativeKinds: ToolKinds = (name) =>
+  TOOL_NAMES.has(name) ? (name as ToolName) : undefined;
 
 export function normalizeArgs(value: unknown): ToolArgs {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -131,7 +153,7 @@ export class ToolGroups {
   /** Calls inside scripts, by their own ids, such as `<script id>/<n>`. */
   private readonly nested = new Map<string, ToolCallState>();
   private readonly seen = new Set<string>();
-  private readonly managed: (name: string) => boolean;
+  private readonly kinds: ToolKinds;
   private tail?: ToolGroup;
   private allExpanded = false;
   private thinkingHidden = false;
@@ -139,9 +161,32 @@ export class ToolGroups {
   private messageBoundary?: Boundary;
   epoch = 0;
 
-  /** `managed` decides which top-level tools join groups. Any other call is a boundary. */
-  constructor(managed: (name: string) => boolean = () => true) {
-    this.managed = (name) => TOOL_NAMES.has(name) && managed(name);
+  /**
+   * `kinds` decides which top-level tools mirage draws, and as what. A call to any other tool is
+   * a boundary. It is asked again whenever groups are formed: see reconsider().
+   */
+  constructor(kinds: ToolKinds = nativeKinds) {
+    this.kinds = kinds;
+  }
+
+  /** Whether mirage draws this call, rather than another renderer: one that does not ends a group. */
+  private drawn(row: ToolCallState): boolean {
+    return this.kinds(row.name) !== undefined;
+  }
+
+  /**
+   * Which tools mirage draws changed: groups are formed again, so a call to a tool it now draws
+   * joins its neighbours, and one to a tool it no longer draws separates them.
+   */
+  reconsider(): void {
+    for (const row of this.rows.values()) {
+      const kind = this.kinds(row.name);
+      if (kind && kind !== row.kind) {
+        row.kind = kind;
+        this.changed(row);
+      }
+    }
+    this.regroup();
   }
 
   reset(): void {
@@ -212,7 +257,7 @@ export class ToolGroups {
   private trailingGroup(): ToolGroup | undefined {
     for (let i = this.sequence.length - 1; i >= 0; i--) {
       const item = this.sequence[i];
-      if ("id" in item) return item.group;
+      if ("id" in item) return this.drawn(item) ? item.group : undefined;
       if (this.separates(item)) return undefined;
     }
     return undefined;
@@ -222,27 +267,22 @@ export class ToolGroups {
     const existing = this.rows.get(id);
     if (existing) {
       this.updateCall(existing, args, cwd);
-      return existing;
-    }
-    if (!this.managed(name)) {
-      if (!this.seen.has(id)) {
-        this.sequence.push({ kind: "hard" });
-        this.tail = undefined;
-      }
-      this.seen.add(id);
-      return undefined;
+      return this.drawn(existing) ? existing : undefined;
     }
     this.seen.add(id);
-    const group: ToolGroup = this.tail ?? { rows: [], revision: 0 };
-    const keepExpanded = this.groupVisible(group);
-    const row = this.createRow(id, name, name as ToolName, cwd, group);
+    // Every call is kept, drawn or not: which tools mirage draws can change as Pi resolves their
+    // renderers, and a call it does not draw holds its place as a boundary meanwhile.
+    const kind = this.kinds(name);
+    const group: ToolGroup = (kind && this.tail) || { rows: [], revision: 0 };
+    const keepExpanded = kind !== undefined && this.groupVisible(group);
+    const row = this.createRow(id, name, kind ?? "tool", cwd, group);
     group.rows.push(row);
     if (keepExpanded) group.expansion = { epoch: this.epoch, value: true };
     this.rows.set(id, row);
     this.sequence.push(row);
-    this.tail = group;
+    this.tail = kind ? group : undefined;
     this.updateCall(row, args, cwd);
-    return row;
+    return kind ? row : undefined;
   }
 
   private createRow(
@@ -631,6 +671,13 @@ export class ToolGroups {
     for (const item of this.sequence) {
       if (!("id" in item)) {
         if (this.separates(item)) span = undefined;
+        continue;
+      }
+      // A call mirage does not draw keeps a group of its own, which nothing shows.
+      if (!this.drawn(item)) {
+        span = undefined;
+        if (item.group.rows[0] !== item || item.group.rows.length > 1)
+          item.group = { rows: [item], revision: 0 };
         continue;
       }
       if (!span) {

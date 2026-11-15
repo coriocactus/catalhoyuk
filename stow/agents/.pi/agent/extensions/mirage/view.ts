@@ -1,8 +1,12 @@
+import { basename } from "node:path";
 import {
+  DEFAULT_MAX_BYTES,
+  DEFAULT_MAX_LINES,
   formatReadLineRange,
   getLanguageFromPath,
   highlightCode,
   type Theme,
+  truncateHead,
 } from "@earendil-works/pi-coding-agent";
 import {
   type Component,
@@ -33,10 +37,10 @@ import {
   type Expandable,
   isComplete,
   isFailed,
+  type SearchToolName,
   type ToolCallState,
   type ToolGroup,
   type ToolGroups,
-  type ToolKind,
   toolCalls,
 } from "./model.ts";
 import { scriptOutput } from "./nested.ts";
@@ -47,35 +51,122 @@ import { colouredDiff } from "./style.ts";
 const FILE_LINK = "mirage:file:";
 // biome-ignore lint/suspicious/noControlCharactersInRegex: OSC 8 links use ESC/BEL delimiters.
 const FILE_LINK_OPEN = /\x1b\]8;[^;\x07\x1b]*;mirage:file:[^\x07\x1b]*(?:\x07|\x1b\\)/g;
+/**
+ * A file call on its own. A call is in progress from its first argument to its result, so one
+ * whose arguments still stream already says `Reading`, as one Pi runs does.
+ */
 const FILE_VERBS = {
-  read: { pending: "Read", running: "Reading", success: "Read", error: "Read", cancelled: "Read" },
+  read: {
+    pending: "Reading",
+    running: "Reading",
+    success: "Read",
+    error: "Read",
+    cancelled: "Read",
+  },
   edit: {
-    pending: "Edit",
+    pending: "Editing",
     running: "Editing",
     success: "Edited",
     error: "Edit",
     cancelled: "Edit",
   },
   write: {
-    pending: "Write",
+    pending: "Writing",
     running: "Writing",
     success: "Wrote",
     error: "Write",
     cancelled: "Write",
   },
 };
+/** Pi's searching tools, a call on its own: `Searched "parseList" in src`. */
+const SEARCH_VERBS: Record<SearchToolName, Record<ToolCallState["status"], string>> = {
+  grep: {
+    pending: "Searching",
+    running: "Searching",
+    success: "Searched",
+    error: "Search",
+    cancelled: "Search",
+  },
+  find: {
+    pending: "Finding",
+    running: "Finding",
+    success: "Found",
+    error: "Find",
+    cancelled: "Find",
+  },
+  ls: {
+    pending: "Listing",
+    running: "Listing",
+    success: "Listed",
+    error: "List",
+    cancelled: "List",
+  },
+};
+type Verbs = { running: string; success: string; error?: string };
+const RUN: Verbs = { running: "Running", success: "Ran" };
+/**
+ * What a group's summary counts calls under, and how it words each. `grep` and `find` are both
+ * searches; any other tool counts under its family: an MCP tool's server, or the tool.
+ */
 const GROUP_VERBS: Record<
-  Exclude<ToolKind, "model">,
-  { pending: string; running: string; success: string; error?: string }
+  "read" | "image" | "edit" | "write" | "bash" | "codemode" | "search" | "ls" | "tool",
+  Verbs
 > = {
-  read: { pending: "Explore", running: "Exploring", success: "Explored" },
-  bash: { pending: "Run", running: "Running", success: "Ran" },
+  read: { running: "Exploring", success: "Explored" },
+  image: { running: "Viewing", success: "Viewed", error: "View" },
+  bash: RUN,
   edit: FILE_VERBS.edit,
   write: FILE_VERBS.write,
-  codemode: { pending: "Run", running: "Running", success: "Ran" },
-  tool: { pending: "Call", running: "Calling", success: "Called" },
+  codemode: RUN,
+  search: RUN,
+  ls: { running: "Listing", success: "Listed" },
+  tool: { running: "Calling", success: "Called" },
 };
-const NOUNS = { bash: "command", codemode: "script", tool: "tool" } as const;
+const NOUNS = { bash: "command", codemode: "script", search: "search", ls: "directory" } as const;
+/** Kinds whose calls a summary counts as files explored, so reads among them say `Explored`. */
+const EXPLORING: ReadonlySet<string> = new Set(["read", "image", "search", "ls"]);
+/** Argument names that say what a call to an unfamiliar tool is about, in this order. */
+const SUBJECTS = ["command", "path", "pattern", "url", "query"];
+
+const plural = (count: number, noun: string) =>
+  `${count} ${count === 1 ? noun : noun.endsWith("y") ? `${noun.slice(0, -1)}ies` : noun.endsWith("h") ? `${noun}es` : `${noun}s`}`;
+
+/** A tool as a row names it: an MCP tool by its server and name, `docs · search`. */
+export function toolTitle(name: string): string {
+  const parts = name.split("__");
+  return parts[0] === "mcp" && parts.length >= 3
+    ? `${parts[1]} · ${parts.slice(2).join("__")}`
+    : name;
+}
+
+/** What a file call counts as in a summary: its file, or itself when it names none. */
+const fileKey = (row: ToolCallState) =>
+  row.file ? JSON.stringify([row.file.cwd, row.file.path]) : row.id;
+
+/** Pi's `read` reads these as images, which it attaches to the model's context. */
+const IMAGE_FILE = /\.(?:png|jpe?g|gif|webp|bmp)$/i;
+/**
+ * Whether a read is of an image: by its name, or by an image in its result. A result can lack
+ * the image Pi read, when Pi could not shrink it to fit, so the name decides on its own too.
+ */
+const isImage = (row: ToolCallState) =>
+  row.kind === "read" && (row.hasImages || IMAGE_FILE.test(row.file?.path ?? ""));
+const IMAGE_VERBS: Record<ToolCallState["status"], string> = {
+  pending: "Viewing",
+  running: "Viewing",
+  success: "Viewed",
+  error: "View",
+  cancelled: "View",
+};
+
+/** Which summary count a call falls under. */
+function tallyOf(row: ToolCallState): string {
+  if (isImage(row)) return "image";
+  if (row.kind === "grep" || row.kind === "find") return "search";
+  if (row.kind !== "tool") return row.kind;
+  const parts = row.name.split("__");
+  return parts[0] === "mcp" && parts.length >= 3 ? `server\0${parts[1]}` : `tool\0${row.name}`;
+}
 export type ToggleTarget = Expandable;
 type GroupState = Pick<ToolGroups, "epoch" | "expanded"> & {
   rows: ReadonlyMap<string, ToolCallState>;
@@ -249,17 +340,28 @@ export class ToolGroupView implements Component {
     this.rawLines = [];
     this.targets.clear();
     this.files.clear();
-    if (group.rows.length === 1) {
+    if (group.rows.length === 1 && this.row.kind === "bash") {
+      // A command on its own is counted as a group of one is: `Ran 1 command`.
+      // Expanded, the command, then its output.
+      const row = this.row;
+      // A summary, so a tick or a cross: only a command's own line has the dollar.
+      this.header(`${this.status(row.status)} ${this.summary([row])}`, row, contentWidth);
+      if (this.model.expanded(row)) {
+        const note = argumentsNote(row);
+        if (text(row.args.command).trim()) this.commandHeader(row, 2, contentWidth, false);
+        else if (note) this.addLines([this.theme.fg("dim", note)], row, 2);
+        this.body(row, contentWidth, 2);
+      }
+    } else if (group.rows.length === 1) {
       this.entry(this.row, 0, contentWidth);
     } else {
       const expanded = this.model.expanded(group);
-      const commandsOnly = group.rows.every((row) => row.kind === "bash");
-      // Like Amp: a group is red only when every call failed. Individual failures
+      // A group is red only when every call failed. Individual failures
       // show on their own lines once the group is expanded.
       let state: ToolCallState["status"] = "success";
       if (!group.rows.every(isComplete)) state = "pending";
       else if (group.rows.every(isFailed)) state = "error";
-      const status = this.status(state, commandsOnly);
+      const status = this.status(state);
       this.header(`${status} ${this.summary(leaves(group.rows))}`, group, contentWidth);
       if (expanded) for (const row of group.rows) this.entry(row, 2, contentWidth);
     }
@@ -357,15 +459,26 @@ export class ToolGroupView implements Component {
     } else if (row.kind === "codemode") {
       const summary = this.summary(toolCalls(row), true);
       label = summary ? `Script: ${summary}` : "Script";
+    } else if (row.kind === "grep" || row.kind === "find" || row.kind === "ls") {
+      label = this.searchLabel(row, row.kind);
     } else if (row.kind === "tool" || row.kind === "model") {
-      // Headers truncate anyway: clean only what one line can show.
+      // What the call is about, if an argument says so; else all of them, as one line. Headers
+      // truncate anyway: clean only what one line can show.
+      const subject = SUBJECTS.find((key) => typeof row.args[key] === "string");
       const args =
         row.kind === "model" || !Object.keys(row.args).length
           ? argumentsNote(row)
-          : oneLine(json(row.args).slice(0, 400));
-      label = oneLine(row.name);
+          : subject
+            ? oneLine(text(row.args[subject]).slice(0, 400))
+            : oneLine(json(row.args).slice(0, 400));
+      label = oneLine(row.kind === "tool" ? toolTitle(row.name) : row.name);
       if (args) label += ` ${this.theme.fg("dim", args)}`;
       if (row.cost) label += ` ${this.theme.fg("dim", formatCost(row.cost))}`;
+    } else if (isImage(row)) {
+      // An image is viewed, not read, and is not a file to open in an editor: its name, no link.
+      const note = argumentsNote(row);
+      const name = row.file ? clean(basename(row.file.path)).replace(/\n/g, " ") : "";
+      label = `${IMAGE_VERBS[row.status]} ${name || (note ? this.theme.fg("dim", note) : "…")}`;
     } else {
       const note = argumentsNote(row);
       let filename = note ? this.theme.fg("dim", note) : "…";
@@ -382,43 +495,91 @@ export class ToolGroupView implements Component {
       // Pi's own range label: `:40-89`, also for numeric strings; empty when malformed.
       const range = row.kind === "read" ? formatReadLineRange(row.args.offset, row.args.limit) : "";
       if (range) label += this.theme.fg("dim", range);
-      if (row.hasImages) label += this.theme.fg("dim", " (image)");
       if (row.kind === "edit" || row.kind === "write") label += this.changeSummary([row]);
     }
     return `${this.status(row.status, row.kind === "bash")} ${label}`;
   }
 
-  /** `Read 2 files, ran 1 command`: counts per kind, in first-call order. */
+  /**
+   * `Read 2 files, ran 1 command`: counts per kind, in first-call order. Reads among only
+   * searches and listings say `Explored`. Other tools count by family: `called 3 docs tools`,
+   * `called source_check 2 times`.
+   */
   private summary(rows: readonly ToolCallState[], lower = false): string {
-    const kinds = [...new Set(rows.flatMap((row) => (row.kind === "model" ? [] : [row.kind])))];
-    return kinds
-      .map((kind, index) => {
-        const members = rows.filter((row) => row.kind === kind);
-        let state: "pending" | "running" | "success" = "pending";
-        if (members.every(isComplete)) state = "success";
-        else if (members.some((row) => row.status === "running")) state = "running";
-        const verbs = kind === "read" && kinds.length > 1 ? FILE_VERBS.read : GROUP_VERBS[kind];
+    const counted = rows.filter((row) => row.kind !== "model");
+    const tallies = [...new Set(counted.map(tallyOf))];
+    const exploring = tallies.every((tally) => EXPLORING.has(tally));
+    return tallies
+      .map((tally, index) => {
+        const members = counted.filter((row) => tallyOf(row) === tally);
+        const kind = members[0].kind;
+        const group: keyof typeof GROUP_VERBS =
+          tally === "image"
+            ? "image"
+            : kind === "grep" || kind === "find"
+              ? "search"
+              : kind === "model"
+                ? "tool"
+                : kind;
+        const verbs = group === "read" && !exploring ? FILE_VERBS.read : GROUP_VERBS[group];
+        // While some are in progress, it counts those, and how many have finished.
+        const going = members.filter((row) => !isComplete(row));
+        const done = members.filter(isComplete);
         // All-failed edits/writes did not happen: use the failed-row verb.
-        const word = verbs.error && members.every(isFailed) ? verbs.error : verbs[state];
+        const word = going.length
+          ? verbs.running
+          : verbs.error && members.every(isFailed)
+            ? verbs.error
+            : verbs.success;
         const verb = index || lower ? word.toLowerCase() : word;
-        // Commands, scripts and other tools count per call. File tools count distinct files.
-        const counted = kind === "bash" || kind === "codemode" || kind === "tool";
-        const count = counted
-          ? members.length
-          : new Set(
-              members.map((row) =>
-                row.file ? JSON.stringify([row.file.cwd, row.file.path]) : row.id,
-              ),
-            ).size;
-        const noun = counted ? NOUNS[kind] : "file";
-        return `${verb} ${count} ${noun}${count === 1 ? "" : "s"}${this.changeSummary(members, true)}`;
+        const files =
+          group === "read" || group === "image" || group === "edit" || group === "write";
+        const howMany = (rows: readonly ToolCallState[], except = new Set<string>()) =>
+          files
+            ? // File tools count distinct files.
+              new Set(rows.map(fileKey).filter((key) => !except.has(key))).size
+            : rows.length;
+        const count = howMany(going.length ? going : members);
+        const finished = going.length ? howMany(done, new Set(going.map(fileKey))) : 0;
+        const tail = finished ? this.theme.fg("dim", ` (${finished} finished)`) : "";
+        let phrase: string;
+        if (group === "tool") {
+          const [type, name] = tally.split("\0");
+          phrase =
+            type === "server"
+              ? `${verb} ${plural(count, `${name} tool`)}`
+              : count === 1
+                ? `${verb} ${name}`
+                : `${verb} ${name} ${count} times`;
+        } else if (group === "image") phrase = `${verb} ${plural(count, "image")}`;
+        else if (files)
+          return `${verb} ${plural(count, "file")}${tail}${this.changeSummary(members, true)}`;
+        // Commands, scripts, searches and listings count per call.
+        else phrase = `${verb} ${plural(count, NOUNS[group])}`;
+        return phrase + tail;
       })
       .join(", ");
   }
 
+  /** `Searched "parseList" in src (*.ts)`, `Found "*.test.ts"`, `Listed packages/core`. */
+  private searchLabel(row: ToolCallState, kind: SearchToolName): string {
+    const verb = SEARCH_VERBS[kind][row.status];
+    const dim = (value: string) => this.theme.fg("dim", value);
+    const note = argumentsNote(row);
+    const where = oneLine(text(row.args.path));
+    const place = where ? homePath(where) : "";
+    if (kind === "ls") return `${verb} ${place || (note ? dim(note) : ".")}`;
+    const pattern = oneLine(text(row.args.pattern));
+    let label = `${verb} ${pattern ? `"${pattern}"` : dim(note || "…")}`;
+    if (place) label += dim(` in ${place}`);
+    const glob = kind === "grep" ? oneLine(text(row.args.glob)) : "";
+    if (glob) label += dim(` (${glob})`);
+    return label;
+  }
+
   /**
    * Sums successful edits' diffs and writes' lines. Rows show coloured `+A −R`. Group
-   * summaries, like Amp, show plain `(+A −R)` in grey brackets.
+   * summaries show plain `(+A −R)` in grey brackets.
    */
   private changeSummary(rows: readonly ToolCallState[], group = false): string {
     let added = 0,
@@ -442,8 +603,8 @@ export class ToolGroupView implements Component {
     );
   }
 
-  /** A command as Amp draws it: a line per step, then where it ran and how it failed. */
-  private commandHeader(row: ToolCallState, indent: number, width: number): void {
+  /** A command's own lines: a line per step, then where it ran and how it failed. */
+  private commandHeader(row: ToolCallState, indent: number, width: number, caret = true): void {
     const shown = showCommand(clean(text(row.args.command)), this.shellPaint());
     const note = (value: string) => this.theme.italic(this.theme.fg("dim", value));
     const trailer: string[] = [];
@@ -456,12 +617,12 @@ export class ToolGroupView implements Component {
       index ? `${pad}    ${line}` : `${pad}${this.status(row.status, true)} ${line}`,
     );
     if (trailer.length) lines[lines.length - 1] += ` ${trailer.join(" ")}`;
-    // Every line toggles the row. The caret ends the last one.
-    for (const line of lines.slice(0, -1)) {
+    // Every line toggles the row. The caret ends the last one, unless a header above has it.
+    for (const line of caret ? lines.slice(0, -1) : lines) {
       this.targets.set(this.rawLines.length, row);
       this.rawLines.push(markStart(truncateToWidth(line, Math.max(0, width))));
     }
-    this.header(lines[lines.length - 1], row, width);
+    if (caret) this.header(lines[lines.length - 1], row, width);
   }
 
   private shellPaint(): ShellPaint {
@@ -570,8 +731,16 @@ export class ToolGroupView implements Component {
         output = unkept;
       } else if (row.kind === "read") {
         output = this.code(row.id, output, row.file?.path);
-      } else if (row.kind === "codemode" || row.kind === "tool") {
-        // Colouring nothing would still emit escape codes, and an empty line.
+      } else if (row.kind === "tool") {
+        output = this.toolOutput(row.id, output);
+      } else if (
+        row.kind === "codemode" ||
+        row.kind === "grep" ||
+        row.kind === "find" ||
+        row.kind === "ls"
+      ) {
+        // A script's, and Pi's searches and listings. Colouring nothing would still emit escape
+        // codes, and an empty line.
         if (output) output = this.theme.fg("toolOutput", output);
       }
       if (imageLines.length === 0) {
@@ -668,6 +837,33 @@ export class ToolGroupView implements Component {
     }
     known.source = source;
     return known.lines.join("\n");
+  }
+
+  /**
+   * The output of a tool Pi does not bound, as Pi bounds its own: its first 2000 lines or 50KB,
+   * then a note of how much more there was. JSON is laid out and highlighted.
+   */
+  private toolOutput(key: string, output: string): string {
+    if (!output) return "";
+    const cut = truncateHead(output, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
+    const more = cut.truncated
+      ? `\n${this.theme.fg("dim", `Showing the first ${cut.outputLines} of ${cut.totalLines} lines.`)}`
+      : "";
+    const shown = cut.content;
+    const trimmed = shown.trim();
+    if (!cut.truncated && (trimmed.startsWith("{") || trimmed.startsWith("["))) {
+      let value: unknown;
+      try {
+        value = JSON.parse(trimmed);
+      } catch {
+        value = undefined;
+      }
+      if (value !== undefined && typeof value === "object") {
+        const laid = JSON.stringify(value, null, 2);
+        return this.once(key, "json", laid, () => highlightCode(laid, "json").join("\n"));
+      }
+    }
+    return this.theme.fg("toolOutput", shown) + more;
   }
 
   private code(key: string, source: string, path?: string): string {

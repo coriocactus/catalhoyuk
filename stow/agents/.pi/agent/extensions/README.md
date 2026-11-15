@@ -3,7 +3,7 @@
 Seven local TypeScript extensions for the Pi terminal coding agent, installed at `~/.pi/agent/extensions`. [`GLOSSARY.md`](GLOSSARY.md) defines the terms their code and docs use.
 
 - [`rearview`](rearview/README.md) starts the fullscreen transcript with its most recent entries and adds older pages above them as you scroll to the top.
-- [`mirage`](mirage/README.md) draws Pi's `read`, `bash`, `edit`, `write`, and `codemode` calls as compact rows, and consecutive calls as one group with collapsible output, image previews, and its own colours. It only draws these tools: Pi still runs them.
+- [`mirage`](mirage/README.md) draws Pi's own tools (`read`, `bash`, `edit`, `write`, `codemode`, `grep`, `find`, `ls`) as compact rows, and consecutive calls as one group with collapsible output, image previews, and its own colours. Any other tool with no renderer of its own, such as an MCP tool, is drawn as a plain call. It only draws tools: Pi still runs them.
 - [`inspector`](inspector/README.md) opens a call's filename in your editor, in the same terminal, when you click it, also while Pi works.
 - [`interupt`](interupt/README.md) makes `Esc` stop a running response only on its second press within 1.5 seconds.
 - [`echo`](echo/README.md) expands an `@@name` token at the editor cursor into the Markdown snippet `~/.pi/agent/echo/name.md`.

@@ -60,7 +60,7 @@ test("a script joins its run; its calls count in the summary and expand with liv
   before.result(result("DIRECT_BODY"));
   const run = f.call("codemode", "script", { code: CODE }, false);
   assert.equal(run.view.row.group, before.view.row.group, "a script does not split its run");
-  assert.equal(plain(before.view), "… Read 1 file, run 1 script ▸");
+  assert.equal(plain(before.view), "… Read 1 file, running 1 script ▸");
   run.context.executionStarted = true;
   run.redraw();
   const nested = events(f, "script");
@@ -69,7 +69,8 @@ test("a script joins its run; its calls count in the summary and expand with liv
   await nested.start("2", "bash", { command: "npm test" });
   assert(f.invalidations > redraws, "events redraw the script's row");
   await nested.update("2", "bash", result("STREAMING"));
-  assert.equal(plain(before.view), "… Reading 2 files, running 1 command ▸");
+  // The direct read has finished; the script's own read is in progress.
+  assert.equal(plain(before.view), "… Reading 1 file (1 finished), running 1 command ▸");
   await nested.end("1", "read", result("NESTED_READ_BODY"));
   await nested.end("2", "bash", result("NESTED_COMMAND_FAILED"), true);
   await nested.start("3", "edit", { path: "e.txt", edits: [] });
@@ -272,7 +273,7 @@ test("saved scripts rebuild calls from Pi's record, without a store() boundary",
   const view = f.call("read", "saved-read", { path: "first.txt" }).view;
   assert.equal(f.call("codemode", "saved-script", { code: CODE }).view.render(160).length, 0);
   const summary =
-    "✓ Read 2 files, edited 1 file (+2 −1), ran 2 commands, write 1 file, called 1 tool ▸";
+    "✓ Read 2 files, edited 1 file (+2 −1), ran 2 commands, write 1 file, called 1 docs tool ▸";
   assert.equal(plain(view), summary);
   view.handleMouse(mouse(0));
   plain(view);
@@ -284,7 +285,7 @@ test("saved scripts rebuild calls from Pi's record, without a store() boundary",
     /^ {4}✓ models\.classify m ▸$/m,
     /^ {4}\$ sleep ▸$/m,
     /^ {4}✗ Write 9000 bytes of arguments ▸$/m,
-    /^ {4}✓ mcp__docs__search \{"q":"x"\} ▸$/m,
+    /^ {4}✓ docs · search \{"q":"x"\} ▸$/m,
     /^ {4}SAVED_OUTPUT$/m,
   ])
     assert.match(open, row);

@@ -1,14 +1,18 @@
 # Mirage
 
-Mirage draws Pi's `read`, `bash`, `edit`, `write`, and `codemode` calls as compact rows, and draws consecutive calls as one group under a summary. It only draws these tools: Pi still runs them.
+Mirage draws Pi's own tools (`read`, `bash`, `edit`, `write`, `codemode`, `grep`, `find`, and `ls`) as compact rows, and draws consecutive calls as one group under a summary. It also draws any other tool that has no renderer of its own, such as an MCP tool, as a plain call. It only draws tools: Pi still runs them.
 
 ```text
 ✓ Ran 2 commands, read 3 files, wrote 2 files (+48) ▸
 ✓ Explored 4 files ▸
+✓ Ran 2 searches, listed 1 directory, explored 1 file ▸
+✓ Read 1 file, called 1 docs tool, called source_check 2 times ▸
 ✓ Edited 3 files (+14 −22) ▸
 ✓ Edited ~/project/index.ts +12 −8 ▸
 ✓ Wrote ~/project/notes.md +30 ▸
-$ npm test ▸
+✓ Viewed screenshot.png ▸
+✓ Ran 1 command ▸
+⠋ Running 1 command (2 finished), ran 1 search ▸
 ✓ Script: read 3 files, ran 1 command ▸
 ```
 
@@ -16,7 +20,8 @@ $ npm test ▸
 
 - Rows follow Pi's **Output padding** setting for headers, output, and images, and change with it at once.
 - Click a row or the caret at its end to expand or collapse it. In an expanded group, each call has its own toggle. **Ctrl+O** expands or collapses all output, errors and image previews included. Clicks need fullscreen mode.
-- A command, and a group of commands only, is marked **$**: green when it succeeded, red when it failed. Other rows and mixed groups are marked **✓** or **✗**.
+- A summary is marked **✓** or **✗**, a group of commands and a command on its own included, as is any other row. A command's own lines, which its row shows expanded, are marked **$**: green when it succeeded, red when it failed.
+- A command on its own is counted as a group is, as Amp does: `Ran 1 command`. Expanded, it shows the command, then its output.
 - A collapsed group is one line. Its mark turns red only when every call in it failed. Expand the group to see which calls failed: each is red on its own line. Error output stays hidden until expanded.
 - When a command or script ends, its output ends with a muted `Took 1.2s`: the time Pi recorded, as on Pi's native `bash` and `codemode` rows. It survives `/reload` and `/resume`, also for commands a script ran. Pi's running `Elapsed` counter is not shown.
 - Each line marks where its content starts, after its padding and indent, so [`prose`](../prose/README.md) can start a selection there. A tool's output keeps its own indentation when copied.
@@ -24,7 +29,9 @@ $ npm test ▸
 
 ### In progress
 
-While Pi works, a row or group with calls in progress shows Pi's working spinner (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`) in the accent colour. This includes the calls inside a script. A call left in progress while Pi is idle shows a muted **…**, or a muted **$** for a command.
+A call is in progress from its first argument until its result, so it says `Running`, `Reading` or `Editing` while its arguments still stream, never `Run`, `Read` or `Edit`. While some calls of a kind are in progress, a summary counts those, and in grey how many have finished, as Amp does: `Running 1 command (2 finished), ran 1 search`. A kind whose calls have all finished says so in the past tense.
+
+While Pi works, a row or group with calls in progress shows Pi's working spinner (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`) in the accent colour. This includes the calls inside a script. A call left in progress while Pi is idle shows a muted **…**, and a command's own line a muted **$**.
 
 A row reads its spinner frame from the clock each time Pi draws it. Pi's own working indicator makes Pi draw a frame every 80 ms, so the rows turn with it and Mirage asks for no frame of its own. Its timer asks Pi for a frame only when 80 ms passed in which no frame drew a spinning row, and then nothing but the frame is drawn again: output already built is kept. The timer stops once nothing is in progress or Pi is idle.
 
@@ -36,25 +43,40 @@ Pi reports a result again when it records it, and each event builds the row agai
 
 - Consecutive edits become `Edited X files (+A −R) ▸`, each file a row of its own inside, with its diff and line numbers. Files are counted by distinct path in each working directory. Line totals sum the diffs of the edits that succeeded: they are not the net Git diff. Zero counts are left out. A group's summary shows plain counts in grey brackets, and a file row shows them in green and red.
 - A group of reads, commands, edits, and writes has one summary, ordered by the first appearance of each kind. Expanded, it shows the calls in the order they were made. A call that is not in a group keeps its filename or command in its header.
-- A read row ends with Pi's line range (`:40-89`). A read of an image groups with other reads. Its preview starts hidden, and its row's toggle or **Ctrl+O** shows or hides it.
+- A read row ends with Pi's line range (`:40-89`).
+- A read of an image says `Viewed picture.png`: its file's name, not its path, and no link, since an editor cannot show an image. It groups with other reads, and a summary counts images apart (`Explored 2 files, viewed 1 image`). Its preview starts hidden, and its row's toggle or **Ctrl+O** shows or hides it. A read is taken for an image by its name (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.bmp`), or by an image in its result: Pi can leave the image out of the result when it cannot shrink it to fit.
 - A write row says `Wrote`, not `Created`, because `write` may overwrite a file. Pi reports no diff for a write, so a write row counts only the lines written (`+N`) and never lines removed.
 - In a summary, each kind totals its own calls that succeeded (`wrote 6 files (+420), edited 3 files (+26 −16)`). Commands and reads have no line totals.
 - A call whose arguments are not valid JSON shows a dim `invalid arguments` in its header. Expanded, it shows Pi's error and the text the model sent.
 
+### Searches and listings
+
+- `grep` says what it searched for and where: `Searched "parseList" in src (*.ts)`. `find` says `Found "*.test.ts" in src`, and `ls` says `Listed src`, or `Listed .` for the working directory. Expanded, each shows Pi's output.
+- In a summary, `grep` and `find` count together as searches, per call, and `ls` counts directories listed. Reads among only searches and listings say `Explored`, as reads alone do.
+
+### Other tools
+
+A tool that is not Pi's own is drawn by mirage only when nothing else would draw it: neither the tool itself, nor another extension. Pi would otherwise draw it in its default box. A tool with a renderer keeps it, and its calls end a group.
+
+- A call is named by its tool, and an MCP tool by its server and tool: `docs · search`. After the name comes what an argument says the call is about (its `command`, `path`, `pattern`, `url`, or `query`), or else all its arguments as one line of JSON.
+- Expanded, it shows the tool's text output, and its images as other rows do. JSON output is laid out and highlighted. Pi bounds its own tools' output, but not other tools', so mirage shows at most the first 2000 lines or 50KB, and says how many lines there were.
+- In a summary, an MCP tool counts under its server (`called 3 docs tools`), and any other tool under its name (`called source_check 2 times`).
+- Pi says whether a tool has a renderer only when it first draws one of its calls, which is after mirage hears of the call. Until then, the call holds its place in the transcript and ends the group. Once Pi has asked, a call mirage draws joins the calls beside it.
+
 ### Commands
 
-Commands are drawn as Amp draws them.
+A command's own lines, under its row or its group once expanded, are drawn as Amp draws them.
 
 - A chain of `&&`, `||`, `|`, or `;` steps shows one step per line. Each line ends in its operator and a backslash, and the lines after the first are indented.
 - Quotes, `$(…)`, subshells, loops, conditionals, and `{ …; }` groups are never split.
 - A command's own line breaks are kept. Its later lines are indented by four columns, plus whatever they indent beyond each other.
 - A leading `cd DIR &&` shows as a dim italic `(in DIR)` after the command. A failed command ends with `(exit code: N)`, the code in red.
 - Command names are bold. Flags, strings, variables, redirects, operators, and comments use the theme's syntax colours.
-- A heredoc body is counted, not shown (`python3 - <<'EOF' … 48 lines`), and a header stops after eight lines. The expanded output repeats the whole command only when its header left part of it out.
+- A heredoc body is counted, not shown (`python3 - <<'EOF' … 48 lines`), and a command shows at most eight lines. Its output repeats the whole command only when those lines left part of it out.
 
 ## Groups, thinking, and scripts
 
-Consecutive calls group across assistant turns as long as nothing visible separates them, and a new call joins the group while its arguments still stream. A boundary ends a group: assistant text, a visible thinking block, a user message, a call Mirage does not draw (MCP tools and `tool_search` included), and a failed, aborted, or truncated assistant turn. If text streams in after a call, that call leaves the group at once. Expanding and collapsing done by hand is forgotten on `/reload` and `/resume`.
+Consecutive calls group across assistant turns as long as nothing visible separates them, and a new call joins the group while its arguments still stream. A boundary ends a group: assistant text, a visible thinking block, a user message, a call to a tool that draws itself, and a failed, aborted, or truncated assistant turn. If text streams in after a call, that call leaves the group at once. Expanding and collapsing done by hand is forgotten on `/reload` and `/resume`.
 
 When thinking is hidden, a thinking block takes **no lines**: no `Thinking...` placeholder and no blank gap. **Ctrl+T** shows thinking again and splits groups at each block, and hiding it again joins them back.
 
@@ -66,11 +88,11 @@ With [`rearview`](../rearview/README.md), loaded pages and new output form one t
 
 ## Architecture
 
-Mirage registers renderers through Pi's `registerToolRenderer` for Pi's native `read`, `bash`, `edit`, `write`, and `codemode` tools. Pi runs the tools, with its own shell, image, trust, and codemode settings. If another extension registers a tool under one of those five names, that extension draws it, and its calls are boundaries. Apply changes to Mirage with `/reload`.
+Mirage registers its renderers through Pi's `registerToolRenderer`. For Pi's own tools it draws them in their own words. For any other tool, `next()` says what would draw it otherwise, and mirage draws it only when that is nothing. Pi runs the tools, with its own shell, image, trust, and codemode settings. If another extension registers a tool under one of Pi's names, that extension's tool is treated as any other tool. Apply changes to Mirage with `/reload`.
 
 `index.ts` adapts Pi's events and settings, `model.ts` owns the groups and what is expanded, and `view.ts` draws them. `nested.ts` reads a script result's `details.calls` and the `nestedCalls` Pi saves with it. The `shared` modules connect Mirage to the file opener (`inspector`) and the history pager (`rearview`), which are optional, without putting anything about drawing into saved session messages.
 
-Mirage also draws another agent's calls for an extension that shows that agent's work, as [`comrade`](../comrade/README.md) shows a comrade's. The extension asks over Pi's event bus with `shared/nested.ts`'s `NESTED_ROWS_EVENT`, and Mirage answers with a service that keeps one model per agent. The extension adds each of the agent's messages as it ends, and asks for the row that each group's leader draws. A reply that ended asking for calls has them in progress (`Exploring 2 files`), since Pi runs them at once. These rows are grouped, worded, and coloured as Pi's own are, and their clicks expand groups and open files. They start collapsed whatever `Ctrl+O` says, and they follow `Ctrl+T`, which the service also reports, so the extension can show the agent's thinking only where Pi shows thinking. Without Mirage, no one answers, and the extension draws the calls itself.
+Mirage also draws another agent's calls for an extension that shows that agent's work, as [`comrade`](../comrade/README.md) shows a comrade's. The extension asks over Pi's event bus with `shared/nested.ts`'s `NESTED_ROWS_EVENT`, and Mirage answers with a service that keeps one model per agent. The extension adds each of the agent's messages as it ends, and asks for the row that each group's leader draws. A reply that ended asking for calls has them in progress (`Exploring 2 files`), since Pi runs them at once. These rows are grouped, worded, and coloured as Pi's own are, and their clicks expand groups and open files. The agent's calls have no renderers in this Pi, so mirage draws all of them, other tools as plain calls. They start collapsed whatever `Ctrl+O` says, and they follow `Ctrl+T`, which the service also reports, so the extension can show the agent's thinking only where Pi shows thinking. Without Mirage, no one answers, and the extension draws the calls itself.
 
 Output padding and execution times come from Pi's tool render context (Pi 1.1+). Without `outputPad`, rows are drawn unpadded, with one warning.
 

@@ -303,7 +303,7 @@ test("one line at rest, three while running, and its work behind Ctrl+O or a cli
       "  ✓ Read /tmp/a.ts",
       "  ✓ Read /tmp/b.ts",
       "  ✓ Read /tmp/a.ts",
-      "  ✓ grep TODO /tmp",
+      '  ✓ Searched "TODO" in /tmp',
       "  ⠋ Editing /tmp/a.ts",
       "  ⠋ Writing /tmp/c.md",
       "  ⠋ npm test …",
@@ -332,7 +332,7 @@ test("one line at rest, three while running, and its work behind Ctrl+O or a cli
       "  ✓ Read /tmp/a.ts",
       "  ✓ Read /tmp/b.ts",
       "  ✓ Read /tmp/a.ts",
-      "  ✓ grep TODO /tmp",
+      '  ✓ Searched "TODO" in /tmp',
       "  ✓ Edited /tmp/a.ts +2 −1",
       "  ✓ Wrote /tmp/c.md +2",
       "  $ npm test …",
@@ -2406,7 +2406,7 @@ test("a run is interrupted when its last reply asked for tools or was aborted", 
   write(user, reply, { role: "toolResult", toolCallId: "x", isError: false, content: [] });
   assert.deepEqual(interruption(file)?.calls, [], "between turns, with every call answered");
   write(user, reply);
-  assert.deepEqual(interruption(file)?.calls, ["ls /tmp"]);
+  assert.deepEqual(interruption(file)?.calls, ["List /tmp"]);
   // Pi stopped mid-call: it aborts the calls, then the reply it was about to request.
   const two = {
     ...reply,
@@ -2434,7 +2434,7 @@ test("a run is interrupted when its last reply asked for tools or was aborted", 
   // A line cut short by a killed process is skipped.
   write(user, reply);
   writeFileSync(file, `${readFileSync(file, "utf8")}\n{"type":"mess`);
-  assert.deepEqual(interruption(file)?.calls, ["ls /tmp"]);
+  assert.deepEqual(interruption(file)?.calls, ["List /tmp"]);
 
   // A failed request Pi was retrying, and the entries Pi writes beside messages.
   write(

@@ -124,6 +124,9 @@ for (const [i, id, name] of [
     timestamp: Date.now(),
   };
 const seamHeader = "Read 1 file, ran 1 command";
+/** The two commands while they run: both, or the one left and the one finished. */
+const RUNNING = ["Running 2 commands", "Running 1 command (1 finished)"];
+const runningCommands = (screen: string) => RUNNING.find((label) => screen.includes(label));
 archive[80].message.content = [
   { type: "toolCall", id: "archive-read-a", name: "read", arguments: { path: "archived.txt" } },
   { type: "toolCall", id: "archive-read-b", name: "read", arguments: { path: "b.txt" } },
@@ -287,7 +290,14 @@ function cpuSeconds(pid: number): number {
 // The current PTY session. `running` tracks the one that still needs cleanup.
 let terminal!: HeadlessTerminal;
 let running: HeadlessTerminal | undefined;
-/** A command header from its `$` line, through any continuation lines, to its caret. */
+/** A summary of commands: a tick or a cross, its counts, its caret, in the status's colour. */
+function assertSummary(needle: string, tone: keyof typeof colours, caret = "▸") {
+  const { row } = terminal.locate(needle);
+  const text = row.text.trim();
+  assert(text.startsWith(tone === "red" ? "✗ " : "✓ ") && text.endsWith(` ${caret}`), text);
+  terminal.assertColour(text[0], colours[tone]);
+}
+/** A command's own lines, from its `$` line through any continuation lines, to its caret. */
 function assertCommandHeader(needle: string, tone: keyof typeof colours, caret = "▸") {
   const { rows } = terminal.snapshot;
   let y = terminal.locate(needle).y;
@@ -309,9 +319,9 @@ function assertOutputPadding(padding: number) {
   assert.equal(terminal.locate("✓ Explored 2 files").x, padding);
   assert.equal(terminal.locate("✓ Edited ").x, padding);
   // While the commands run, Pi's working spinner and a space come before the label.
-  const running = terminal.screen.includes("Running 2 commands");
-  const command = running ? "Running 2 commands" : "$ Ran 2 commands";
-  assert.equal(terminal.locate(command).x - (running ? 2 : 0), padding);
+  const label = runningCommands(terminal.screen);
+  const command = label ?? "✓ Ran 2 commands";
+  assert.equal(terminal.locate(command).x - (label ? 2 : 0), padding);
 }
 async function expandEditGroup() {
   terminal.click("Edited 2 files");
@@ -414,8 +424,9 @@ try {
   terminal.send("Run the fixture\r");
   // The second read's arguments are still streaming: it belongs to its group at once. While
   // Pi works, a call in progress shows Pi's working spinner.
+  // It counts the read in progress, and the one that has finished.
   let screen = await terminal.waitFor(
-    (s) => /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Explore 2 files ▸/.test(s),
+    (s) => /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Exploring 1 file \(1 finished\) ▸/.test(s),
     "a loading call joins its group, spinning",
   );
   assert(!/[…⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Read/.test(screen), "no loading call outside its group");
@@ -423,13 +434,13 @@ try {
   screen = await terminal.waitFor(
     (s) =>
       s.includes("Explored 2 files") &&
-      s.includes("Running 2 commands") &&
+      runningCommands(s) !== undefined &&
       s.includes("Edited 2 files (+3 −2)"),
     "live groups and completed edits",
   );
   assert(!screen.includes("VIM_BUSY_TARGET") && !screen.includes("READ_B_RESULT"));
   terminal.assertColour("✓", colours.green);
-  // Group summaries, like Amp: grey brackets (the caret's colour) around plain counts.
+  // Group summaries: grey brackets (the caret's colour) around plain counts.
   const edits = terminal.locate("Edited 2 files (+3 −2)");
   const fg = (x: number) => edits.row.cells.find((cell) => cell.x === x)?.style.foreground;
   const open = edits.x + "Edited 2 files ".length;
@@ -439,7 +450,11 @@ try {
   assert.notDeepEqual(fg(open), fg(open + 1));
   assert(!terminal.locate("+3").cell.style.underline, "diff counts are not underlined");
   assert(!screen.includes("edited.txt") && !screen.includes("edited-other.txt"));
-  for (const label of ["Explored 2 files", "Edited 2 files", "Running 2 commands"]) {
+  for (const label of [
+    "Explored 2 files",
+    "Edited 2 files",
+    runningCommands(screen) ?? RUNNING[0],
+  ]) {
     const row = terminal.locate(label).row;
     assert(row.text.trimEnd().endsWith(" ▸"), "tool carets trail the header text");
     assert(!row.cells.findLast((cell) => cell.text === "▸")?.style.underline);
@@ -477,7 +492,7 @@ try {
   );
   assert.equal(terminal.locate("Explored 2 files").y, liveAnchor);
   assert(
-    terminal.screen.includes("Running 2 commands"),
+    runningCommands(terminal.screen) !== undefined,
     "paging does not disturb live pending tools",
   );
 
@@ -529,7 +544,7 @@ try {
   terminal.click("printf SCRIPT_COMMAND");
   terminal.click(scriptHeader);
   await terminal.waitFor((s) => !s.includes("SCRIPT_RESULT"), "collapse script group");
-  const mixedHeader = "Wrote 1 file (+1), read 1 file, ran 1 command";
+  const mixedHeader = "Wrote 1 file (+1), viewed 1 image, ran 1 command";
   assert(
     screen.includes(mixedHeader),
     "mixed tool types share one summary across hidden reasoning",
@@ -556,13 +571,13 @@ try {
   terminal.click(mixedHeader);
   await terminal.waitFor(
     (s) =>
-      s.includes("mixed.txt") && s.includes("picture.png (image)") && s.includes("MIXED_COMMAND"),
+      s.includes("mixed.txt") && s.includes("Viewed picture.png") && s.includes("MIXED_COMMAND"),
     "mixed group expands into individual calls, including the image",
   );
-  terminal.assertColour("picture.png", colours.blue);
   assert(terminal.locate("mixed.txt").row.text.trimEnd().endsWith(" +1 ▸"), "writes count lines");
-  assert(terminal.locate("picture.png").cell.style.underline, "clickable filenames are underlined");
-  assert(!terminal.locate("(image)").cell.style.underline, "underline ends at the filename");
+  assert(terminal.locate("mixed.txt").cell.style.underline, "clickable filenames are underlined");
+  // An image is viewed, and is not a file to open in an editor: named, not linked.
+  assert(!terminal.locate("picture.png").cell.style.underline, "an image's name is not a link");
   assert(terminal.locate("picture.png").row.text.trimEnd().endsWith(" ▸"));
   let mark = terminal.mark();
   terminal.click("picture.png");
@@ -581,13 +596,13 @@ try {
   assert(screen.includes("Ran 2 commands") && !screen.includes("ERROR_BODY_MARKER"));
   assert(!screen.includes("failed"), "no failure count in summaries");
   assert(!screen.includes("DISPLAY_FIXTURE_ERROR"), "closed groups hide failed calls");
-  assertCommandHeader("Ran 2 commands", "green"); // Red only when every call failed.
+  assertSummary("Ran 2 commands", "green"); // Red only when every call failed.
   terminal.click("Ran 2 commands");
   await terminal.waitFor((s) => s.includes("DISPLAY_FIXTURE_PREFIX"), "expand command group");
-  assertCommandHeader("Ran 2 commands", "green", "▾");
+  assertSummary("Ran 2 commands", "green", "▾");
   assertCommandHeader("DISPLAY_FIXTURE_PREFIX", "green");
   assertCommandHeader("DISPLAY_FIXTURE_ERROR", "red");
-  // Its steps on their own lines, as Amp shows them, with how it failed at the end.
+  // Its steps on their own lines, with how it failed at the end.
   screen = terminal.screen;
   assert(
     /\$ printf '%s\\n' "\$DISPLAY_FIXTURE_ERROR" >&2; \\\n\s+exit 1 \(exit code: 1\) ▸/.test(
@@ -783,10 +798,13 @@ try {
   );
   terminal.click(seamHeader);
   await terminal.waitFor((s) => !s.includes("seam.txt"), "seam group collapses");
-  assert(terminal.screen.includes("Explored 3 files"), "historical images group with their reads");
+  assert(
+    terminal.screen.includes("Explored 2 files, viewed 1 image"),
+    "historical images group with their reads",
+  );
   assert(!terminal.screen.includes("ARCHIVED_READ_RESULT"), "historical results start collapsed");
-  assert.equal(terminal.locate("✓ Explored 3 files").x, 1, "history also honors output padding");
-  terminal.click("Explored 3 files");
+  assert.equal(terminal.locate("✓ Explored 2 files").x, 1, "history also honors output padding");
+  terminal.click("Explored 2 files, viewed 1 image");
   await terminal.waitFor((s) => s.includes("archived.txt"), "historical filenames expand");
   assert(terminal.locate("archived.txt").cell.style.underline);
   assert.equal(terminal.locate("archived.txt").row.text.indexOf("✓"), 3);
