@@ -6,8 +6,8 @@ Prose changes how Pi draws Markdown and plain text, and bounds its text selectio
 
 In fullscreen mode, Pi draws its own mouse selection and copies it. With Prose, a selection is bounded to text everywhere in the transcript:
 
-- Every line's selection ends at its last character, whatever padding or background the line has: in messages, tool rows, and everything else.
-- A line's selection starts at its content, after margins and indents, where the line marks it. Markdown and plain-text lines do, and so do [`mirage`](../mirage/README.md)'s tool rows. A code line starts after the block's indent but keeps the code's own indentation, and a continuation line starts after its hanging indent. A selection that starts in the indent begins at the content, and one that ends there selects nothing on that line. Lines that nobody marks start where Pi starts them.
+- Every line's selection ends at its last character, whatever padding or background the line has: in messages, calls, and everything else.
+- A line's selection starts at its content, after margins and indents, where the line marks it. Markdown and plain-text lines do, and so do [`mirage`](../mirage/README.md)'s rows. A code line starts after the block's indent but keeps the code's own indentation, and a continuation line starts after its hanging indent. A selection that starts in the indent begins at the content, and one that ends there selects nothing on that line. Lines that nobody marks start where Pi starts them.
 - A copy joins continuation lines back into the lines they came from, with the space the wrap dropped, or with none where the wrap broke inside a word. Separate lines and paragraphs stay separate, including soft and hard line breaks inside a paragraph.
 - A triple-click selects a wrapped line with its continuation lines, not just the line clicked.
 

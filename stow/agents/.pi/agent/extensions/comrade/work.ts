@@ -8,7 +8,7 @@ import { diffCounts, exitCode, homePath, writtenLines } from "../shared/format.t
 
 export type Kind = "read" | "search" | "command" | "edit" | "write" | "script" | "tool";
 export type Status = "success" | "error" | "cancelled";
-/** A call still running, which only live rows show. */
+/** A call still running, which only rows in progress show. */
 export type Live = Status | "running";
 
 export interface Tally {
@@ -69,7 +69,7 @@ const VERBS = {
 
 export const emptyWork = (): Work => ({ tallies: [], rows: [], omitted: 0 });
 
-// biome-ignore lint/suspicious/noControlCharactersInRegex: strip control bytes from child text.
+// biome-ignore lint/suspicious/noControlCharactersInRegex: strip control bytes from a comrade's text.
 const CONTROLS = /[\x00-\x1f\x7f]+/g;
 const clip = (value: string, length: number) =>
   value.length > length ? `${value.slice(0, length - 1)}…` : value;
@@ -272,7 +272,7 @@ export class Ledger {
     }
   }
 
-  /** Calls still running when the comrade exits were cut off. */
+  /** Calls still running when the comrade exits were cancelled. */
   close(): void {
     for (const call of this.calls.values()) this.fail(call, "cancelled");
     this.calls.clear();

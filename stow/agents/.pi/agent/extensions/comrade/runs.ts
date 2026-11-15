@@ -1,7 +1,7 @@
 // What the caller knows of each comrade run, saved beside the comrade's conversation as it goes
 // (`comrade-3.jsonl` keeps `comrade-3.runs.json`). It says which Pi runs it, so no other Pi
-// carries it on meanwhile; whether its prompt has reached the comrade, so one that never did is
-// sent again rather than told to carry on; what it sends, to send it again; and, once it ends,
+// resumes it meanwhile; whether its task has reached the comrade, so one that never did is
+// sent again rather than told to resume; what it sends, to send it again; and, once it ends,
 // its answer until the caller's session holds it. Pi holds a message that arrives during a turn
 // in memory until the turn ends, so an answer Pi exits with first is delivered from here.
 import { readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -10,7 +10,7 @@ import type { Progress, Request } from "./run.ts";
 export interface RunRecord<D = unknown> {
   /** The run: its start row's tool call id, or a resumed run's own. */
   run: string;
-  /** A background run, which the session carries on if Pi exits during it. */
+  /** A background run, which the session resumes if Pi exits during it. */
   background: boolean;
   /** The Pi running it. */
   owner: number;
@@ -18,9 +18,9 @@ export interface RunRecord<D = unknown> {
   child?: number;
   /** When this run started. */
   started: number;
-  /** When this record last changed: when the run was cut off, if it was. */
+  /** When this run record last changed: when the run was interrupted, if it was. */
   at: number;
-  /** `starting`: its prompt may not have reached the comrade. `asked`: Pi saved it. `done`: ended. */
+  /** `starting`: its task may not have reached the comrade. `asked`: Pi saved it. `done`: ended. */
   phase: "starting" | "asked" | "done";
   /** What it sends, to send again if it never reached the comrade. */
   task: string;
@@ -31,7 +31,7 @@ export interface RunRecord<D = unknown> {
   answer?: { delivery: D; body: string };
 }
 
-/** Saves a run's record; one that cannot be saved costs only its recovery, never the run. */
+/** Saves a run record. One that cannot be saved costs only reconciling the run later, never the run. */
 export function quietly(save: () => void): void {
   try {
     save();
@@ -40,7 +40,7 @@ export function quietly(save: () => void): void {
   }
 }
 
-/** A run's record as it starts, run by this Pi. */
+/** A run record as it starts, run by this Pi. */
 export const launched = (request: Request, run: string, background: boolean, started: number) => ({
   run,
   background,
@@ -53,7 +53,7 @@ export const launched = (request: Request, run: string, background: boolean, sta
   ...(request.timeoutMs !== undefined ? { timeoutMs: request.timeoutMs } : {}),
 });
 
-/** Saves what a run's progress shows of it: its comrade's Pi, and its prompt reaching it. */
+/** Saves what a run's progress shows of it: its comrade's Pi, and its task reaching it. */
 export const follow = (session: string, run: string) => {
   let child: number | undefined;
   let asked = false;
@@ -72,18 +72,18 @@ export const follow = (session: string, run: string) => {
 /** `comrade-3.jsonl` keeps its runs in `comrade-3.runs.json`. */
 export const runsFile = (session: string) => `${session.replace(/\.jsonl$/, "")}.runs.json`;
 
-const isRecord = (value: unknown): value is RunRecord =>
+const isRunRecord = (value: unknown): value is RunRecord =>
   typeof value === "object" &&
   value !== null &&
   typeof (value as RunRecord).run === "string" &&
   typeof (value as RunRecord).owner === "number" &&
   typeof (value as RunRecord).task === "string";
 
-/** The comrade's runs. A missing or damaged file holds none, and a damaged record is skipped. */
+/** The comrade's runs. A missing or damaged file holds none, and a damaged run record is skipped. */
 export function readRuns<D>(session: string): RunRecord<D>[] {
   try {
     const runs = JSON.parse(readFileSync(runsFile(session), "utf8"));
-    return Array.isArray(runs) ? (runs.filter(isRecord) as RunRecord<D>[]) : [];
+    return Array.isArray(runs) ? (runs.filter(isRunRecord) as RunRecord<D>[]) : [];
   } catch {
     return [];
   }
@@ -101,13 +101,13 @@ function writeRuns<D>(session: string, runs: RunRecord<D>[]): void {
   renameSync(partial, file);
 }
 
-/** Saves a run's record, replacing any of the same run, stamped with the time. */
+/** Saves a run record, replacing any of the same run, stamped with the time. */
 export function saveRun<D>(session: string, record: Omit<RunRecord<D>, "at">): void {
   const runs = readRuns<D>(session).filter((saved) => saved.run !== record.run);
   writeRuns(session, [...runs, { ...record, at: Date.now() }]);
 }
 
-/** Changes a saved run's record, stamped with the time. A run with no record stays without. */
+/** Changes a saved run record, stamped with the time. A run with none stays without. */
 export function updateRun<D>(session: string, run: string, change: Partial<RunRecord<D>>): void {
   const runs = readRuns<D>(session);
   const index = runs.findIndex((record) => record.run === run);
@@ -116,7 +116,7 @@ export function updateRun<D>(session: string, run: string, change: Partial<RunRe
   writeRuns(session, runs);
 }
 
-/** Drops the records of these runs. */
+/** Drops the run records of these runs. */
 export function dropRuns(session: string, runs: ReadonlySet<string>): void {
   const all = readRuns(session);
   const left = all.filter((record) => !runs.has(record.run));
@@ -135,7 +135,7 @@ export function alive(pid: number | undefined): boolean {
 }
 
 /**
- * Whether another Pi runs it now: its owner is alive and not this Pi, and its comrade's Pi,
+ * Whether another Pi runs it now: its host is alive and not this Pi, and its comrade's Pi,
  * once started, is alive too, so a process id reused since does not hold it forever.
  */
 export const elsewhere = (record: RunRecord) =>

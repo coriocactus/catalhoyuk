@@ -21,7 +21,7 @@ import { fixture, models, render, standIn, toolNames } from "./fixture.ts";
 const {
   default: install,
   currentPi,
-  watchParent,
+  watchHost,
 } = await load<typeof import("../index.ts")>("../index.ts", import.meta.url);
 const resume = await load<typeof import("../resume.ts")>("../resume.ts", import.meta.url);
 const { interruption, interruptionNote, finished } = resume;
@@ -463,7 +463,7 @@ test("a background comrade returns at once, then its answer arrives and wakes th
   const result = await call(args);
   assert.equal(
     text(result),
-    "Comrade #1 started in the background. Keep working. Its answer will arrive as a [comrade #1 …] message, and if you finish first, your turn waits for it. Check on it or stop it with the comrades tool.",
+    "Comrade #1 started in the background. Keep working. Its answer will arrive as a [comrade #1 …] message, and if you finish first, your turn waits for it, so there is no need to check on it. Stop it with the comrades tool if you no longer need it.",
   );
   assert.equal(details(result).id, 1);
   const startRow = () =>
@@ -525,30 +525,213 @@ test("a background comrade returns at once, then its answer arrives and wakes th
   );
 });
 
-test("/comrades lists and stops background comrades without waking the agent", async (t) => {
-  const { call, slash, delivered, notices } = fixture(t, "hang");
-  await call({ task: "first", background: true });
-  await call({ task: "second", background: true });
-  await slash("");
-  assert.match(
-    notices.at(-1) ?? "",
-    /^#1 · first · .*\n#2 · second · .*\n2 running · \$0\.00 so far$/,
-  );
+const SPIN = "[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]";
+const noHints = { keyHint: () => "", keyText: () => "" };
+const click = (component: { handleMouse?(event: never): unknown } | undefined, y: number) =>
+  component?.handleMouse?.({
+    type: "click",
+    button: "left",
+    x: 3,
+    y,
+    width: 120,
+    height: 99,
+  } as never);
 
-  await slash("stop #1");
-  const [first] = await delivered(1);
-  assert.deepEqual(first[1], { deliverAs: "followUp", triggerTurn: false });
-  assert.equal(body(first), "[comrade #1 stopped] first\n\nStopped by the user.");
+test("/comrades puts background comrades at the end of the thread, live, then as history", async (t) => {
+  const { call, slash, delivered, notices, entries, entryRenderers, pi, ctx } = fixture(t, "hang");
+  const first = await call({ task: "first", background: true }, undefined, undefined, "call-1");
+  await call({ task: "second", background: true }, undefined, undefined, "call-2");
+  const said = notices.length;
+  await slash("");
+  assert.equal(notices.length, said, "nothing is said: the rows show it");
+  // An entry Pi draws and saves, which it never sends to the model.
+  const entry = entries.at(-1);
+  assert(entry?.type === "custom" && entry.customType === "comrades");
+  const renderer = entryRenderers.get("comrades");
+  assert(renderer);
+  const listing = renderer(entry, { expanded: false, ...noHints }, themes.theme);
+  assert.match(
+    render(listing),
+    new RegExp(
+      `^ ${SPIN} Comrade #1  first  background · \\d+s ▸\n ${SPIN} Comrade #2  second  background · \\d+s ▸$`,
+    ),
+  );
+  // A click expands one row; a blank line keeps its work from the next header.
+  click(listing, 0);
+  const open = render(listing).split("\n");
+  assert.match(open[0], /Comrade #1 .*▾$/);
+  assert(open.includes("   │ first"), "its task, behind a bar");
+  assert.equal(open.at(-2), "");
+  assert.match(open.at(-1) ?? "", /Comrade #2 .*▸$/);
+  click(listing, 0);
+
+  // Stopped, its row says so once the session holds the stop, as its start row does.
+  await slash("stop 1");
+  const [stop] = await delivered(1);
+  assert.match(render(listing), /^ ↗ Comrade #1 {2}first {2}background ▸\n/);
+  entries.push(startRow(first, "call-1"), saved(stop));
+  pi.emit("message_end", { message: { role: "custom", customType: "comrade" } }, ctx);
+  await new Promise((wake) => setTimeout(wake, 20));
+  assert.match(render(listing), /^ ↗ Comrade #1 {2}first {2}background · stopped ▸\n/);
+  // Drawn again from the session, as after /reload: the same history, and the live row.
+  assert.match(
+    render(renderer(entry, { expanded: false, ...noHints }, themes.theme)),
+    new RegExp(`^ ↗ Comrade #1  first  background · stopped ▸\n ${SPIN} Comrade #2  second`),
+  );
+  // An entry not in the shape a listing saves draws nothing.
+  const broken = { ...entry, data: { listed: [{ details: { id: 1 } }] } };
+  assert.equal(renderer(broken, { expanded: false, ...noHints }, themes.theme), undefined);
 
   await slash("stop all");
-  const [, second] = await delivered(2);
-  assert.equal(delivery(second).status, "stopped");
+  await delivered(2);
   await slash("");
   assert.equal(notices.at(-1), "No comrades running.");
   await slash("stop 9");
   assert.equal(notices.at(-1), "No running comrade 9");
   await slash("pause");
   assert.equal(notices.at(-1), "Usage: /comrades [stop <n|all>]");
+});
+
+test("only the newest listing follows its runs; an older one is a line of how they stood", async (t) => {
+  const { call, slash, entries, entryRenderers, comrades, delivered, pi } = fixture(t, "hang");
+  const first = await call({ task: "first", background: true }, undefined, undefined, "call-1");
+  await call({ task: "second", background: true }, undefined, undefined, "call-2");
+  const renderer = entryRenderers.get("comrades");
+  const list = pi.tools.get("comrades");
+  assert(renderer && list?.renderResult);
+  const draw = (entry: SessionEntry | undefined) => {
+    assert(entry?.type === "custom");
+    return renderer(entry, { expanded: false, ...noHints }, themes.theme);
+  };
+  await slash("");
+  const older = entries.at(-1);
+  // At once again: the listing is already the last thing in the thread, so nothing is added.
+  await slash("");
+  assert.equal(entries.at(-1), older);
+  const shown = draw(older);
+  assert.match(
+    render(shown),
+    new RegExp(`^ ${SPIN} Comrade #1  first  background · \\d+s ▸\n ${SPIN} Comrade #2`),
+  );
+
+  // The agent lists them: its listing is the newest, and follows them.
+  const listed = await comrades({});
+  const agentRow = () =>
+    render(
+      list.renderResult?.(
+        listed,
+        { expanded: false, isPartial: false },
+        themes.theme,
+        fake<RenderContext>({
+          args: {},
+          state: {},
+          toolCallId: "list",
+          isPartial: false,
+          expanded: false,
+          isError: false,
+          outputPad: 0,
+          invalidate() {},
+        }),
+      ),
+    );
+  assert.match(agentRow(), new RegExp(`^${SPIN} Comrade #1  first  background · \\d+s ▸\n`));
+  // The older listing is one line now: each run's number and what it was doing, then their cost.
+  assert.match(render(shown), /^ · Comrades #1, #2 {2}#1 .+ · #2 .+ · \$\S+ {2}▸$/);
+  // Expanded, its rows as they stood when it was made, with their clock then, still.
+  click(shown, 0);
+  const stood = render(shown).split("\n");
+  assert.equal(stood.length, 3);
+  assert.match(stood[1], /^ {3}· Comrade #1 {2}first {2}background(?: · \$\S+)? · \d+\.\ds ▸$/);
+  assert.match(stood[2], /^ {3}· Comrade #2 {2}second {2}background/);
+  // Drawn afresh, as after /reload, it is still the older one.
+  assert.match(render(draw(older)), /^ · Comrades #1, #2 /);
+
+  // After anything else in the thread, /comrades adds a listing, which takes over from the agent's.
+  entries.push(startRow(first, "call-1"));
+  await slash("");
+  assert.notEqual(entries.at(-1), older);
+  assert.match(render(draw(entries.at(-1))), new RegExp(`^ ${SPIN} Comrade #1  first`));
+  assert.match(agentRow(), /^· Comrades #1, #2 /);
+
+  await slash("stop all");
+  await delivered(2);
+});
+
+test("/comrades lists background comrades as text outside the terminal", async (t) => {
+  const { call, slash, notices, entries } = fixture(t, "hang", { mode: "rpc" });
+  await call({ task: "first", background: true });
+  await call({ task: "second", background: true });
+  const before = entries.length;
+  await slash("");
+  assert.equal(entries.length, before, "no transcript to put rows in");
+  assert.match(
+    notices.at(-1) ?? "",
+    /^#1 · first · .*\n#2 · second · .*\n2 running · \$0\.00 so far$/,
+  );
+});
+
+test("an agent's comrades call reads text; its row shows the runs as their start rows do", async (t) => {
+  const { call, comrades, pi, entries } = fixture(t, "hang");
+  const first = await call({ task: "first", background: true });
+  const list = pi.tools.get("comrades");
+  assert(list?.renderCall && list.renderResult);
+  assert.equal(list.renderShell, "self");
+  const context = (toolCallId: string, args: object) =>
+    fake<RenderContext>({
+      args,
+      state: {},
+      toolCallId,
+      isPartial: false,
+      expanded: false,
+      isError: false,
+      outputPad: 0,
+      invalidate() {},
+    });
+  const row = (result: Result, toolCallId: string, args: object = {}) =>
+    render(
+      list.renderResult?.(
+        result,
+        { expanded: false, isPartial: false },
+        themes.theme,
+        context(toolCallId, args),
+      ),
+    );
+  // The model reads what it always read; the row is drawn from details, which it never reads.
+  const listed = await comrades({});
+  assert.match(text(listed), /^#1 · first · anthropic\/claude-opus-5-5:xhigh · turn \d+ · /);
+  assert.match(
+    row(listed, "list"),
+    new RegExp(`^${SPIN} Comrade #1  first  background · \\d+s ▸$`),
+  );
+
+  // Stopping: what it stops while it waits, then each as its start row says it ended.
+  assert.equal(
+    render(list.renderCall({ stop: [1, 5] }, themes.theme, context("stop", { stop: [1, 5] }))),
+    "Stopping comrade #1, #5",
+  );
+  const stopped = await comrades({ stop: [1, 5] });
+  assert.equal(text(stopped), "Stopped comrade #1. No running comrade #5.");
+  assert.equal(row(stopped, "stop"), "↗ Comrade #1  first  background ▸\nNo running comrade #5.");
+  entries.push(
+    startRow(first),
+    fake<SessionEntry>({
+      type: "message",
+      message: {
+        role: "toolResult",
+        toolName: "comrades",
+        toolCallId: "stop",
+        details: stopped.details,
+      },
+    } as never),
+  );
+  assert.equal(
+    row(stopped, "stop-again"),
+    "↗ Comrade #1  first  background · stopped ▸\nNo running comrade #5.",
+  );
+  // The listing made while it ran is history now too.
+  assert.equal(row(listed, "list-again"), "↗ Comrade #1  first  background · stopped ▸");
+  // With nothing running, the row is what the agent read.
+  assert.equal(row(await comrades({}), "none"), "No background comrades are running.");
 });
 
 test("at most four background comrades run; shutdown stops them silently", async (t) => {
@@ -759,7 +942,17 @@ test("the comrades tool lists and stops background comrades, and a stop sends no
   const stopped = await comrades({ stop: [1, 9] });
   assert.equal(text(stopped), "Stopped comrade #1. No running comrade #9.");
   assert.equal(stopped.isError, false);
-  assert.deepEqual(stopped.details, { stopped: [1] });
+  const { listed, ...stop } = stopped.details;
+  assert.deepEqual(stop, { stopped: [1], missing: [9] });
+  // As its row shows it: the comrade it stopped, as it stood.
+  assert.deepEqual(
+    listed.map((item: { details: { id: number; task: string }; run: string }) => [
+      item.details.id,
+      item.details.task,
+      item.run,
+    ]),
+    [[1, "first", "call"]],
+  );
   assert.match(text(await comrades({})), /^#2 · second · /);
 
   const missing = await comrades({ stop: [9] });
@@ -938,7 +1131,7 @@ test("a run's work is built as its messages arrive, never again from the start",
     second.map((block) => block.kind),
     ["text", "call", "text"],
   );
-  // Ended, the calls left without a result were cut off: that changes them all, so it starts over.
+  // Ended, the calls left without a result were cancelled: that changes them all, so it starts over.
   messages.push(asks("b"));
   transcripts.track("run", messages, false);
   const ended = transcripts.blocksFor("run", () => undefined, "/tmp", themes.theme, false);
@@ -1125,18 +1318,18 @@ test("a run line ends the result for the calling model, and the row does not rep
   assert.match(text(failed), /^Comrade failed: 529 overloaded\n\n\[comrade #1: .* · error\]$/);
 });
 
-test("an answer cut off at the output limit says so first, and is not an error", async (t) => {
+test("a partial answer at the output limit says so first, and is not an error", async (t) => {
   const { tool, call } = fixture(t, "length");
   const result = await call({ task: "✓" });
   assert.equal(result.isError, undefined);
   assert.match(
     text(result),
-    /^\[Comrade's answer is cut off: its last turn ended with stopReason "length", the model's output token limit\. It is not a final answer\.\]\n\nThe first half of an\n\n\[comrade #1: .* · length\]$/,
+    /^\[Comrade's answer is partial: its last turn ended with stopReason "length", the model's output token limit\. It is not a final answer\.\]\n\nThe first half of an\n\n\[comrade #1: .* · length\]$/,
   );
   assert.equal(details(result).stopReason, "length");
   assert.equal(
     row(tool, result, "✓"),
-    "! Comrade #1  ✓  cut off · $0.01 · 1.0s ▸\n  Reached its output token limit. The answer is partial.",
+    "! Comrade #1  ✓  partial · $0.01 · 1.0s ▸\n  Reached its output token limit. The answer is partial.",
   );
   assert.match(row(tool, result, "✓", true), /\n\n {2}│ ✓\n\n {2}The first half of an$/);
 });
@@ -1450,7 +1643,7 @@ test("conversations are kept beside the caller's session, or in tmp without one"
 });
 
 test("the comrades listing says what each background comrade is doing", async (t) => {
-  const { call, comrades, slash, notices } = fixture(t, "hang");
+  const { call, comrades } = fixture(t, "hang");
   await call({ task: "slow", background: true });
   assert.match(
     text(await comrades({})),
@@ -1463,8 +1656,6 @@ test("the comrades listing says what each background comrade is doing", async (t
     text(await comrades({})),
     /^#1 · slow · [^·]+ · turn 1 · Reading \/tmp\/forever\.md · /,
   );
-  await slash("");
-  assert.match(notices.at(-1) ?? "", /^#1 · slow · [^·]+ · turn 1 · Reading \/tmp\/forever\.md · /);
   await comrades({ stop: [1] });
 });
 
@@ -1504,7 +1695,7 @@ test("a message to a running comrade carries only its task, and needs a comrade 
   await call({ task: "slow", background: true });
   await assert.rejects(
     call({ task: "x", to: 1, model: "anthropic/claude-fable-5-1", tools: [] }),
-    /^Error: Comrade #1 is running, so a message to it can carry only task\. Wait for its answer to change its model, tools\.$/,
+    /^Error: Comrade #1 is running, so a steer to it can carry only task\. Wait for its answer to change its model, tools\.$/,
   );
   await assert.rejects(call({ task: " ", to: 1 }), /needs a task/);
   await comrades({ stop: [1] });
@@ -1725,17 +1916,17 @@ test("a comrade stops once its parent is gone", async (t) => {
   const gone = spawnSync(process.execPath, ["-e", "0"]).pid;
   assert(gone);
   const stopped = new Promise<void>((resolve) => {
-    const cancel = watchParent(gone, 5, resolve);
+    const cancel = watchHost(gone, 5, resolve);
     t.after(cancel);
   });
   await stopped;
   // A living parent keeps it running; a missing or unusable pid is ignored.
   let stops = 0;
-  const cancel = watchParent(process.pid, 5, () => stops++);
+  const cancel = watchHost(process.pid, 5, () => stops++);
   await new Promise((wake) => setTimeout(wake, 30));
   cancel();
   assert.equal(stops, 0);
-  for (const pid of [Number.NaN, 0, 1, 1.5]) watchParent(pid, 5, () => stops++);
+  for (const pid of [Number.NaN, 0, 1, 1.5]) watchHost(pid, 5, () => stops++);
   await new Promise((wake) => setTimeout(wake, 30));
   assert.equal(stops, 0);
 });
@@ -1852,7 +2043,7 @@ test("an answer Pi exited before saving is delivered when the session next start
   first.shutdown();
 
   const again = fixture(t, "echo", { entries: [startRow(started)] });
-  assert.equal(again.sent.length, 1, "delivered, not carried on");
+  assert.equal(again.sent.length, 1, "delivered, not resumed");
   assert.equal(body(again.sent[0]), body(message));
   assert.deepEqual(again.sent[0][1], { deliverAs: "followUp", triggerTurn: false });
   assert.equal(delivery(again.sent[0]).run, "call");
@@ -1900,14 +2091,14 @@ test("an answer delivered on another branch is delivered here too, not run again
   assert.equal(text(await again.comrades({})), "No background comrades are running.");
 });
 
-test("a background comrade Pi exited during carries on, told which calls may not have run", async (t) => {
+test("a background comrade Pi exited during is resumed, told which calls may not have run", async (t) => {
   const { started } = await cutMidCall(t);
   const again = fixture(t, "echo", { entries: [startRow(started)] });
   const [resumed] = again.sent;
   assert.deepEqual(resumed[1], { deliverAs: "followUp", triggerTurn: false });
   assert.equal(
     body(resumed),
-    "[comrade #1 resumed] Survey the parser\n\nPi exited while this comrade ran, so it carries on from where it stopped. Its answer will arrive as another [comrade #1 …] message.",
+    "[comrade #1 resumed] Survey the parser\n\nPi exited while this comrade ran, so it resumes from where it stopped. Its answer will arrive as another [comrade #1 …] message.",
   );
   const renderer = again.renderers.get("comrade");
   assert(renderer);
@@ -1922,7 +2113,7 @@ test("a background comrade Pi exited during carries on, told which calls may not
   assert.equal(shown(resumed, false), "↻ Comrade #1  Survey the parser  resumed ▸");
   assert.match(
     shown(resumed, true),
-    /^↻ Comrade #1 {2}Survey the parser {2}resumed ▾\n {2}Pi exited while this comrade ran, so it carries on from where it stopped\. Its answer will arrive as another \[comrade\n {2}#1 …\] message\.$/,
+    /^↻ Comrade #1 {2}Survey the parser {2}resumed ▾\n {2}Pi exited while this comrade ran, so it resumes from where it stopped\. Its answer will arrive as another \[comrade #1\n {2}…\] message\.$/,
   );
   const [, finished] = await again.delivered(2);
   assert.deepEqual(finished[1], { deliverAs: "followUp", triggerTurn: true });
@@ -1931,22 +2122,22 @@ test("a background comrade Pi exited during carries on, told which calls may not
   const echoed = JSON.parse(json);
   assert.equal(
     echoed.task,
-    "[Your previous run was cut off before it finished: the Pi that started you exited. These calls had not finished cleanly when it stopped, so each may or may not have taken effect: `Read /tmp/forever.md`. Check what they did before repeating any that change files or run commands.]\n\nCarry on with your task from where you stopped, and end with your final answer as before.",
+    "[Your previous run was interrupted before it finished: the Pi that started you exited. These calls had not finished cleanly when it stopped, so each may or may not have taken effect: `Read /tmp/forever.md`. Check what they did before repeating any that change files or run commands.]\n\nResume your task from where you stopped, and end with your final answer as before.",
   );
   assert.deepEqual(echoed.history, ["Survey the parser"], "the same conversation");
   assert.match(echoed.args.join(" "), /--model claude-opus-5-5 --thinking xhigh --tools read,grep/);
   assert.equal(delivery(finished).run, delivery(resumed).run);
   assert.equal(delivery(finished).resumed, true);
-  // Opened, its answer shows what both runs did: the call it was cut off in, the note it was
+  // Expanded, its answer shows what both runs did: the call it was interrupted in, the note it was
   // sent, and what it did then.
   const both = shown(finished, true);
   assert.match(both, /\n {2}✗ Read \/tmp\/forever\.md {2}Operation aborted\n/);
-  assert.match(both, /\n {2}│ \[Your previous run was cut off before it finished/);
+  assert.match(both, /\n {2}│ \[Your previous run was interrupted before it finished/);
 
   // Its answer is saved for a session that never held it, which delivers it.
   const later = fixture(t, "hang", { entries: [startRow(started), saved(resumed)] });
   assert.equal(body(later.sent[0]), body(finished));
-  // Once it has answered here, it is done; and print mode never carries one on.
+  // Once it has answered here, it is done; and print mode never resumes one.
   const done = [startRow(started), saved(resumed), saved(finished)];
   assert.equal(fixture(t, "echo", { entries: done }).sent.length, 0);
   assert.equal(fixture(t, "echo", { entries: [startRow(started)], mode: "print" }).sent.length, 0);
@@ -1963,7 +2154,7 @@ test("a run whose prompt never reached the comrade is sent it again, even a resu
   const sentAgain = runs.readRuns(session).find((record) => record.run === delivery(resumed).run);
   assert.equal(sentAgain?.task, "Survey the parser", "its own task, again");
 
-  // That run is cut off before its prompt reached the comrade too: its own prompt, once more.
+  // That run is interrupted before its task reached the comrade too: its own prompt, once more.
   runs.updateRun(session, delivery(resumed).run ?? "", { phase: "starting" });
   const third = fixture(t, "echo", { entries: [startRow(started), saved(resumed)] });
   const [, finished] = await third.delivered(2);
@@ -2014,7 +2205,7 @@ test("a run its conversation shows answered is delivered from there, without run
   assert.equal(record.phase, "asked");
 });
 
-test("a run cut off while Pi retried a failed request carries on", async (t) => {
+test("a run interrupted while Pi retried a failed request is resumed", async (t) => {
   const { started, session } = await cutMidCall(t);
   const lines = readFileSync(session, "utf8").trimEnd().split("\n");
   const last = JSON.parse(lines.at(-1) ?? "{}");
@@ -2032,11 +2223,11 @@ test("a run cut off while Pi retried a failed request carries on", async (t) => 
   const [, finished] = await again.delivered(2);
   assert.match(
     JSON.parse(body(finished).split("\n\n")[1]).task,
-    /^\[Your previous run was cut off before it finished: the Pi that started you exited\. These calls had not finished cleanly .*`Read \/tmp\/forever\.md`.*\]\n\nCarry on with your task/,
+    /^\[Your previous run was interrupted before it finished: the Pi that started you exited\. These calls had not finished cleanly .*`Read \/tmp\/forever\.md`.*\]\n\nResume your task from where you stopped/,
   );
 });
 
-test("a run cut off more than a day ago is reported, not carried on", async (t) => {
+test("a run interrupted more than a day ago is reported, not resumed", async (t) => {
   const { started, session } = await cutMidCall(t);
   const old = Date.now() - 25 * 3600_000;
   runs.saveRun(session, { ...runs.readRuns(session)[0], started: old });
@@ -2049,7 +2240,7 @@ test("a run cut off more than a day ago is reported, not carried on", async (t) 
   const again = fixture(t, "echo", { entries: [startRow(started)] });
   assert.match(
     body(again.sent[0]),
-    /^\[comrade #1 lost\] Survey the parser\n\nPi exited or switched sessions while this comrade ran, and it was not carried on: it stopped 25h 0m \d+s ago\. Its conversation is saved: continue it with to: 1\.$/,
+    /^\[comrade #1 lost\] Survey the parser\n\nPi exited or switched sessions while this comrade ran, and it was not resumed: it stopped 25h 0m \d+s ago\. Its conversation is saved: continue it with to: 1\.$/,
   );
   assert.deepEqual(runs.readRuns(session), [], "reported once");
 });
@@ -2068,7 +2259,7 @@ test("a run another Pi is running is left to it, and cannot be continued meanwhi
     again.call({ task: "x", to: 1 }),
     /^Error: Comrade #1 is running in another Pi \(process \d+\)\. Wait for its answer there, or start a new comrade\.$/,
   );
-  // Once that Pi is gone, it is this one's to carry on.
+  // Once that Pi is gone, it is this one's to resume.
   runs.saveRun(session, { ...runs.readRuns(session)[0], owner: 2 ** 22 + 12345 });
   assert.equal(
     delivery(fixture(t, "echo", { entries: [startRow(started)] }).sent[0]).status,
@@ -2076,7 +2267,7 @@ test("a run another Pi is running is left to it, and cannot be continued meanwhi
   );
 });
 
-test("a comrade that cannot carry on is reported, saying why and whether it can be continued", async (t) => {
+test("a comrade that cannot be resumed is reported, saying why and whether it can be continued", async (t) => {
   const { started } = await cutMidCall(t);
   const moved = {
     ...started,
@@ -2085,11 +2276,11 @@ test("a comrade that cannot carry on is reported, saying why and whether it can 
   const again = fixture(t, "echo", { entries: [startRow(moved)] });
   assert.equal(
     body(again.sent[0]),
-    "[comrade #1 lost] Survey the parser\n\nPi exited or switched sessions while this comrade ran, and it was not carried on: its directory /nonexistent/dir is gone. Its conversation is saved: continue it with to: 1.",
+    "[comrade #1 lost] Survey the parser\n\nPi exited or switched sessions while this comrade ran, and it was not resumed: its directory /nonexistent/dir is gone. Its conversation is saved: continue it with to: 1.",
   );
 });
 
-test("a damaged record is passed over, and the other comrades still carry on", async (t) => {
+test("a damaged run record is passed over, and the other comrades are still resumed", async (t) => {
   const one = await cutMidCall(t, "First");
   writeFileSync(runs.runsFile(one.session), '[{"run":"call"},');
   const two = await cutMidCall(t, "Second");
@@ -2109,15 +2300,15 @@ test("a damaged record is passed over, and the other comrades still carry on", a
   await again.delivered(4);
 });
 
-test("a comrade continued in the foreground after Pi exited is not carried on as well", async (t) => {
+test("a comrade continued in the foreground after Pi exited is not resumed as well", async (t) => {
   const { started } = await cutMidCall(t);
   const later = { ...(started.details as Details), background: undefined, followUp: true };
   const continued = startRow({ ...started, details: later }, "later");
   assert.equal(fixture(t, "echo", { entries: [startRow(started), continued] }).sent.length, 0);
 });
 
-/** A conversation as Pi saves it, cut off while a reply's calls ran. */
-function cutOff(file: string, cwd: string) {
+/** A conversation as Pi saves it, interrupted while a reply's calls ran. */
+function partialAnswer(file: string, cwd: string) {
   const line = (entry: object) => JSON.stringify(entry);
   const call = (id: string, name: string, args: object) => ({
     type: "toolCall",
@@ -2163,23 +2354,23 @@ function cutOff(file: string, cwd: string) {
   );
 }
 
-test("a comrade continued after a cut-off run first reads what may or may not have run", async (t) => {
+test("a comrade continued after an interrupted run first reads what may or may not have run", async (t) => {
   const { call, remember, cwd } = fixture(t, "echo");
   remember(await call({ task: "Deploy it" }));
   const conversation = join(cwd, "parent.comrades", "comrade-1.jsonl");
-  cutOff(conversation, cwd);
+  partialAnswer(conversation, cwd);
   const hours = Date.now() / 1000 - 2 * 3600;
   utimesSync(conversation, hours, hours);
   const echoed = JSON.parse(answer(await call({ task: "Carry on", to: 1 })));
   assert.match(
     echoed.task,
     new RegExp(
-      `^\\[Your previous run was cut off before it finished\\. These calls had not finished cleanly when it stopped, so each may or may not have taken effect: \`\\$ npm run deploy\`, \`Edit ${join(cwd, "src/a.ts").replaceAll("/", "\\/")}\`\\. Check what they did before repeating any that change files or run commands\\. That was 2h 0m \\d+s ago, so files may have changed since\\.\\]\\n\\nCarry on$`,
+      `^\\[Your previous run was interrupted before it finished\\. These calls had not finished cleanly when it stopped, so each may or may not have taken effect: \`\\$ npm run deploy\`, \`Edit ${join(cwd, "src/a.ts").replaceAll("/", "\\/")}\`\\. Check what they did before repeating any that change files or run commands\\. That was 2h 0m \\d+s ago, so files may have changed since\\.\\]\\n\\nCarry on$`,
     ),
   );
 });
 
-test("a run is cut off when its last reply asked for tools or was aborted", (t) => {
+test("a run is interrupted when its last reply asked for tools or was aborted", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "comrade-cut-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const file = join(dir, "c.jsonl");
@@ -2204,7 +2395,7 @@ test("a run is cut off when its last reply asked for tools or was aborted", (t) 
   write(user, { role: "assistant", stopReason: "stop", content: [] });
   assert.equal(interruption(file), undefined, "finished");
   write(user, { role: "assistant", stopReason: "length", content: [] });
-  assert.equal(interruption(file), undefined, "cut off by its output limit, not by Pi");
+  assert.equal(interruption(file), undefined, "ended by its output limit, not interrupted by Pi");
   write(user, { role: "assistant", stopReason: "aborted", content: [] });
   assert.deepEqual(interruption(file)?.calls, [], "aborted while it wrote");
   const reply = {
@@ -2260,7 +2451,7 @@ test("a run is cut off when its last reply asked for tools or was aborted", (t) 
     file,
     `${readFileSync(file, "utf8")}\n${JSON.stringify({ type: "context_edit", id: "e", parentId: "3" })}\n${JSON.stringify({ type: "message", id: "c", parentId: "e", message: { role: "custom", content: "x" } })}`,
   );
-  assert.deepEqual(interruption(file)?.calls, [], "cut off while Pi retried");
+  assert.deepEqual(interruption(file)?.calls, [], "interrupted while Pi retried");
 
   // A run that finished: its answer, from the messages since it started.
   write(
@@ -2305,10 +2496,13 @@ test("a run is cut off when its last reply asked for tools or was aborted", (t) 
   assert.equal(done?.model, "p/m");
   assert.equal(finished(file, 9000), undefined, "nothing asked since");
 
-  assert.equal(interruptionNote(undefined), "[Your previous run was cut off before it finished.]");
+  assert.equal(
+    interruptionNote(undefined),
+    "[Your previous run was interrupted before it finished.]",
+  );
   assert.equal(
     interruptionNote({ calls: ["$ make"], saved: 0 }, "it was stopped", 60_000),
-    "[Your previous run was cut off before it finished: it was stopped. These calls had not finished cleanly when it stopped, so each may or may not have taken effect: `$ make`. Check what they did before repeating any that change files or run commands.]",
+    "[Your previous run was interrupted before it finished: it was stopped. These calls had not finished cleanly when it stopped, so each may or may not have taken effect: `$ make`. Check what they did before repeating any that change files or run commands.]",
   );
 });
 
@@ -2456,7 +2650,7 @@ test("a running row says the call it runs and the last complete thing its comrad
     durationMs: 61_000,
   };
   assert.equal(
-    render(new view.CardView(look, card, "", theme, 1, { row() {} })),
+    render(new view.RowView(look, card, "", theme, 1, { row() {} })),
     [
       " ⠋ Comrade #3  Review parser error paths  $0.12 · 1m 1s ▸",
       "   ⠋ Reading /src/b.ts",
@@ -2467,15 +2661,15 @@ test("a running row says the call it runs and the last complete thing its comrad
   // nothing written yet, its tokens.
   const thought = { ...card, saidThinking: true };
   assert.match(
-    render(new view.CardView(look, thought, "", theme, 1)),
+    render(new view.RowView(look, thought, "", theme, 1)),
     /\n {3}⠋ Reading \/src\/b\.ts\n {3}↑1\.0k ↓100$/,
   );
   assert.match(
-    render(new view.CardView(look, { ...thought, spoke: "The parser is next." }, "", theme, 1)),
+    render(new view.RowView(look, { ...thought, spoke: "The parser is next." }, "", theme, 1)),
     /\n {3}The parser is next\.$/,
   );
   assert.match(
-    render(new view.CardView({ ...look, thinking: true }, thought, "", theme, 1)),
+    render(new view.RowView({ ...look, thinking: true }, thought, "", theme, 1)),
     /\n {3}parseList swallows the error that parseBlock rethrows\.$/,
   );
   // Between calls, what it waits on, over what it said, kept from an earlier turn, dimmer.
@@ -2488,12 +2682,12 @@ test("a running row says the call it runs and the last complete thing its comrad
     ...ended,
     activity: { state: "waiting" as const, since: Date.now() - 61_500, turn: 5 },
   };
-  const lines = new view.CardView(look, waiting, "", theme, 1).render(120);
+  const lines = new view.RowView(look, waiting, "", theme, 1).render(120);
   assert.deepEqual(lines.slice(1).map(tui.stripTerminalSequences), [
     "   waiting 1m 1s",
     "   parseList swallows the error that parseBlock rethrows.",
   ]);
-  const fresh = new view.CardView(look, { ...waiting, saidBefore: false }, "", theme, 1);
+  const fresh = new view.RowView(look, { ...waiting, saidBefore: false }, "", theme, 1);
   assert.notEqual(fresh.render(120)[2], lines[2], "a sentence from this turn is brighter");
   // A retry, in the warning colour, in place of what it waits on.
   const retrying = {
@@ -2501,7 +2695,7 @@ test("a running row says the call it runs and the last complete thing its comrad
     activity: { state: "retrying" as const, since: 0, detail: "1/3 · 529" },
   };
   assert.match(
-    render(new view.CardView(look, retrying, "", theme, 0)),
+    render(new view.RowView(look, retrying, "", theme, 0)),
     /\n {2}retrying · 1\/3 · 529\n {2}parseList/,
   );
   // While the words it is writing show below, the line above names the last call, not "writing".
@@ -2511,7 +2705,7 @@ test("a running row says the call it runs and the last complete thing its comrad
     activity: { state: "writing" as const, since: 0, turn: 5 },
   };
   assert.match(
-    render(new view.CardView(look, writing, "", theme, 0)),
+    render(new view.RowView(look, writing, "", theme, 0)),
     /\n {2}\$ npm test {2}exit code 1\n/,
   );
 });
@@ -2566,7 +2760,7 @@ test("an open row shows its task, then its work in order, mirage's rows among it
     durationMs: 61_000,
     blocks,
   };
-  const row = new view.CardView(look, card, "", theme, 1);
+  const row = new view.RowView(look, card, "", theme, 1);
   assert.equal(
     render(row),
     [
@@ -2595,7 +2789,7 @@ test("an open row shows its task, then its work in order, mirage's rows among it
   // Closed, it says the calls it runs, mirage's line for them without its caret, as a click
   // there opens the comrade, not the group.
   assert.equal(
-    render(new view.CardView({ ...look, expanded: false }, card, "", theme, 1)),
+    render(new view.RowView({ ...look, expanded: false }, card, "", theme, 1)),
     [
       " ⠋ Comrade #3  Review parser error paths  $0.12 · 1m 1s ▸",
       "   ⠋ Run 2 commands",
@@ -2733,11 +2927,11 @@ test("a row that did not succeed says why in up to three lines until opened", ()
   const theme = themes.theme;
   const note = `Tool "grep" is not active here, so a comrade cannot have it. Active: ${Array.from({ length: 30 }, (_, i) => `tool${i}`).join(", ")}.`;
   const look = { phase: "failed" as const, task: "x", title: "Review", expanded: false, note };
-  const closed = render(new view.CardView(look, undefined, "", theme, 0), 60).split("\n");
+  const closed = render(new view.RowView(look, undefined, "", theme, 0), 60).split("\n");
   assert.equal(closed.length, 4);
   assert.match(closed[1], /^ {2}Tool "grep" is not active here, so a comrade cannot have/);
   assert.match(closed[3], /…$/);
-  const open = render(new view.CardView({ ...look, expanded: true }, undefined, "", theme, 0), 60);
+  const open = render(new view.RowView({ ...look, expanded: true }, undefined, "", theme, 0), 60);
   assert(open.includes("tool29."), "whole once opened");
 });
 
@@ -2750,7 +2944,7 @@ test("an open row shows its latest work, and the rest on a click", () => {
   const look = { phase: "finished" as const, task: "x", expanded: true, blocks };
   const toggled: string[] = [];
   const toggles = { earlier: () => void toggled.push("earlier") };
-  const row = new view.CardView(look, undefined, "", theme, 0, toggles);
+  const row = new view.RowView(look, undefined, "", theme, 0, toggles);
   const lines = render(row).split("\n");
   const toggle = lines.indexOf("  … 6 earlier ▸");
   assert(toggle > 0, lines.join("\n"));
@@ -2762,7 +2956,7 @@ test("an open row shows its latest work, and the rest on a click", () => {
   });
   assert.deepEqual(toggled, ["earlier"]);
   const all = render(
-    new view.CardView({ ...look, earlierOpen: true }, undefined, "", theme, 0, toggles),
+    new view.RowView({ ...look, earlierExpanded: true }, undefined, "", theme, 0, toggles),
   );
   assert(all.includes("  show only the latest ▴") && all.includes("  Step 0."));
 });
@@ -2793,7 +2987,7 @@ test("a running group of one call is named as that call, not as mirage's group",
     blocks: [{ kind: "rows" as const, component: rows, calls: 1, running: 0, last }],
   };
   assert.match(
-    render(new view.CardView(look, card, "", theme, 0)),
+    render(new view.RowView(look, card, "", theme, 0)),
     /\n {2}\$ cd \/src && … \(exit code: 2\)\n/,
   );
 });
@@ -2805,7 +2999,7 @@ test("control bytes in what a comrade thought, or in a title, never reach the te
     text: "Clear\x1b[2J the\tscreen\x07 \x1b]0;title\x07now.",
   };
   const look = { phase: "finished" as const, task: "x", expanded: true, blocks: [block] };
-  const lines = new view.CardView(look, undefined, "", theme, 0).render(80);
+  const lines = new view.RowView(look, undefined, "", theme, 0).render(80);
   for (const line of lines) {
     for (const bad of ["\x1b[2J", "\x07", "\t", "\x1b]0;"])
       assert(!line.includes(bad), JSON.stringify(line));
@@ -2918,7 +3112,7 @@ test("outside the terminal, an answer is not sent again after the agent settles"
 
 test("a resumed run reported lost tells its start row so", async (t) => {
   const { started, session } = await cutMidCall(t);
-  // Carried on, then cut off again, a day ago.
+  // Resumed, then interrupted again, a day ago.
   const again = fixture(t, "hang", { entries: [startRow(started)] });
   const [resumed] = again.sent;
   const run = delivery(resumed).run ?? "";

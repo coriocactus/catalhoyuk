@@ -1,4 +1,4 @@
-// What each run did, as its row shows it: its words, its thinking, what it was told, and its
+// What each run did, as its row shows it: its words, its thinking, the steers sent to it, and its
 // calls, as mirage's rows where mirage is loaded. Built as the run's messages arrive, so a row
 // drawn again costs nothing until its run has said or done more.
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -37,7 +37,7 @@ interface Built {
   blocks: Block[];
   /** `blocks` as last handed out: a new array each time they change, so a row can tell. */
   view: Block[];
-  /** Its first prompt has passed: it is the row's own task, and left out. */
+  /** Its task has passed: it is the row's own, and left out. */
   prompted: boolean;
   /** The group mirage's latest row holds, and the last call in it. */
   group?: RowsBlock;
@@ -104,7 +104,7 @@ export function createTranscripts(pi: ExtensionAPI) {
   const thinkingShown = () => !(rowsService()?.thinkingHidden() ?? settingHidden());
 
   // By run: a foreground row's tool call, or a background run's id. The few last drawn, as kept
-  // in memory; another is read again from its conversation when its row is opened. A run whose
+  // in memory; another is read again from its conversation when its row is expanded. A run whose
   // conversation is not known is kept too, with no messages, so it is not looked for again.
   const shown = new Map<string, Shown>();
   const keep = (key: string, entry: Shown) => {
@@ -204,7 +204,7 @@ export function createTranscripts(pi: ExtensionAPI) {
 
   /**
    * What a run did, in order, for its row: its words, its thinking where Pi shows thinking, the
-   * messages sent to it, and its calls, mirage's rows for mirage's tools. Its first prompt is the
+   * steers sent to it, and its calls, mirage's rows for mirage's tools. Its task is the
    * row's own, so it is left out. Nothing for a run whose conversation is not known. The array is
    * the same one until the run has said or done more.
    */

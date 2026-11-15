@@ -3,7 +3,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { formatCost, formatDuration } from "../shared/format.ts";
 import { reasonOf, respond } from "./answer.ts";
-import { type Delivery, emptyProgress, live, summary } from "./details.ts";
+import { type Delivery, emptyProgress, type Listed, live, summary } from "./details.ts";
 import type { Outbox } from "./outbox.ts";
 import {
   Channel,
@@ -32,7 +32,7 @@ export interface Job {
   toolCallId?: string;
   /** The run its answer ends. Absent in jobs adopted from older versions. */
   run?: string;
-  /** Messages sent to it while it runs. Absent in jobs adopted from older versions. */
+  /** Steers sent to it. Absent in jobs adopted from older versions. */
   channel?: Channel;
   task: string;
   request: Request;
@@ -42,10 +42,10 @@ export interface Job {
   stoppedBy?: "user" | "agent";
   /** Settles once the comrade has exited and its result has been handled. */
   done: Promise<void>;
-  /** A resumed run: when the run it carries on started. */
+  /** A resumed run: when the run it resumes started. */
   from?: number;
   outcome?: Outcome;
-  /** Delivers the result. Unset while the job waits across a /reload for the new extension. */
+  /** Delivers the answer. Unset while the job waits across a /reload for the new extension. */
   owner?: (job: Job, outcome: Outcome) => void;
 }
 
@@ -74,6 +74,20 @@ export function createBackground(deps: BackgroundDeps) {
   const { session, outbox, transcripts, refreshWidget } = deps;
   /** By comrade: a comrade runs once at a time. */
   const jobs = new Map<number, Job>();
+
+  /** The runs in progress, as a listing keeps them: each as its start row shows it now. */
+  const listed = (): Listed[] =>
+    [...jobs.values()].map((job) => ({
+      // What it was doing too, for a listing that later says how its runs stood.
+      details: {
+        ...live(job.request, job.progress, job.started),
+        id: job.id,
+        task: job.task,
+        background: true,
+      },
+      ...(job.run ? { run: job.run } : {}),
+      ...(job.toolCallId ? { row: job.toolCallId } : {}),
+    }));
 
   /** What the agent and `/comrades` read: a line per job, then their cost together. */
   const listing = () => {
@@ -123,7 +137,8 @@ export function createBackground(deps: BackgroundDeps) {
       if (run) quietly(() => dropRuns(conversation, new Set([run])));
       return refreshWidget();
     }
-    // Leaving the session cut it off: its record carries it on when the session next starts.
+    // Leaving the session interrupted it: the session resumes it from its run record when it
+    // next starts.
     if (!session.ui && outcome.aborted && !job.stoppedBy && !outcome.timedOut)
       return refreshWidget();
     const base = {
@@ -134,7 +149,7 @@ export function createBackground(deps: BackgroundDeps) {
       id: job.id,
       task: job.task,
       durationMs: Date.now() - job.started,
-      // What it did is its conversation from then: from the run it carries on, if resumed.
+      // What it did is its conversation from then: from the run it resumes, if any.
       started: job.from ?? job.started,
       ended: Date.now(),
       ...(run ? { run } : {}),
@@ -266,7 +281,7 @@ export function createBackground(deps: BackgroundDeps) {
 
   /**
    * Stops every job as its session is left. Stopped, each comrade's Pi records the calls it cut
-   * off. The session carries them on when it next starts, perhaps at once in this Pi, so the
+   * off. The session resumes them when it next starts, perhaps at once in this Pi, so the
    * old ones must be gone by then.
    */
   const stop = async () => {
@@ -279,5 +294,5 @@ export function createBackground(deps: BackgroundDeps) {
     ]);
   };
 
-  return { jobs, listing, working, start, finish, adopt, park, stop };
+  return { jobs, listed, listing, working, start, finish, adopt, park, stop };
 }

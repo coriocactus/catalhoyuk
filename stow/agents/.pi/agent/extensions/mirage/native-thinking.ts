@@ -15,13 +15,13 @@ interface Owner {
 const internals = (component: AssistantMessageComponent) => component as unknown as NativeComponent;
 
 /**
- * Hidden thinking takes no rows. Project only the render input, retaining the original message
+ * Hidden thinking takes no lines. Project only the render input, retaining the original message
  * for native toggles and invalidation. No session, provider, or event message is edited.
  *
- * Since Pi 1.5.0 a hidden block with an empty label takes no rows natively, and
+ * Since Pi 1.5.0 a hidden block with an empty label takes no lines natively, and
  * `ctx.ui.setHiddenThinkingLabel("")` would ask for that. It is not used: Pi puts its own label
  * back and draws a frame before every /reload and session switch, long before session_start can
- * empty it again, so each hidden block would flash a label row.
+ * empty it again, so each hidden block would flash a label line.
  */
 export function installNativeThinking(
   report: Owner["report"],

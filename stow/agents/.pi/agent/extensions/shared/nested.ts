@@ -3,7 +3,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 
 // This directory has no extension entry point; both extensions import this contract.
-// An extension that shows another agent's work, such as comrade showing its sub-agents, asks
+// An extension that shows another agent's work, such as comrade showing its comrades, asks
 // mirage to draw that agent's tool calls the way mirage draws Pi's own, so they look the same
 // everywhere. Without mirage, no one answers, and the asker draws them itself.
 
@@ -33,8 +33,8 @@ export interface NestedTranscript {
   /** Whether mirage draws calls of this tool. Others are the asker's to draw, and end a group. */
   draws(name: string): boolean;
   /**
-   * The row a call leads, as mirage draws tool rows, its group's later calls inside it. Nothing
-   * for a call an earlier call's row holds. Its clicks open and close it, and open files.
+   * The row a call leads, as mirage draws calls, its group's later calls inside it. Nothing
+   * for a call an earlier call's row holds. Its clicks expand and collapse it, and open files.
    */
   row(toolCallId: string, theme: Theme): Component | undefined;
 }

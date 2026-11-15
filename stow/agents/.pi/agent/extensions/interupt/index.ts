@@ -52,7 +52,7 @@ export default function (pi: ExtensionAPI) {
           timer === undefined
         ) {
           timer = setTimeout(reset, ARMED_MS);
-          // Replace "Working" beside the existing spinner, without adding a row.
+          // Replace "Working" beside the existing spinner, without adding a line.
           ctx.ui.setWorkingMessage("Press Esc again to stop");
           return;
         }

@@ -2,7 +2,7 @@
 
 Comrade adds two tools. `comrade` hands a self-contained task to a fresh Pi process, a comrade, and returns its answer. `comrades` lists the background runs in progress and stops them.
 
-Every comrade has a number (`#N`) and keeps its conversation. The caller continues it with `to: N` instead of briefing a new comrade, and the same call reaches a comrade while it runs. A background run that Pi exited during is resumed when its session next starts.
+Every comrade has a number (`#N`) and keeps its conversation. The caller continues it with `to: N` instead of starting a new comrade with a new task, and the same call reaches a comrade while it runs. A background run that Pi exited during is resumed when its session next starts.
 
 One `comrade` call does what running Pi from a shell would:
 
@@ -57,7 +57,7 @@ The number at its start is what a follow-up's `to` takes. Its last part is the s
 | Ending | Result |
 | --- | --- |
 | Finished | The answer, then the run line. |
-| Partial answer: the last turn ended for a reason other than `stop`, usually `length`, the model's output token limit | A result, not an error, since partial text can be useful. Its first line says so: `[Comrade's answer is cut off: its last turn ended with stopReason "length", the model's output token limit. It is not a final answer.]` |
+| Partial answer: the last turn ended for a reason other than `stop`, usually `length`, the model's output token limit | A result, not an error, since partial text can be useful. Its first line says so: `[Comrade's answer is partial: its last turn ended with stopReason "length", the model's output token limit. It is not a final answer.]` |
 | Timed out | An error. Its first line is `[Comrade timed out after 10m 0s and was stopped. Its last text follows. It is not a final answer.]`, then that text. With no text: `Comrade timed out after 10m 0s and was stopped.` |
 | Stopped with `Esc`, in the foreground | `Comrade #N stopped.` |
 
@@ -65,7 +65,7 @@ The number at its start is what a follow-up's `to` takes. Its last part is the s
 
 Each comrade's conversation is a Pi session file beside the caller's session. For the session `~/.pi/agent/sessions/<cwd>/<stamp>_<id>.jsonl`, comrade #3 is `<stamp>_<id>.comrades/comrade-3.jsonl`. When the caller's session is not saved, conversations go in `$TMPDIR/pi-comrades/<session id>/`. Pi's session lists ignore the subdirectory. A row never prints the file, but `pi --session <file>` opens it, and an expanded row reads what the comrade did from it.
 
-A call with `to: N` runs Pi again on comrade #N's file, with `task` as the next prompt. The comrade still has its first task, its attached files, what it read, and what it answered, so the caller sends only the new message: a correction, a question about the answer, or the next step. The comrade keeps its model, thinking level, and tools unless the call passes others, which then become its own. `files`, `output`, `timeout`, and `background` apply to that run as usual. The follow-up's row shows that run alone, and a background follow-up's answer arrives as another `[comrade #N …]` delivery.
+A call with `to: N` runs Pi again on comrade #N's file, with `task` as the next message. The comrade still has its first task, its attached files, what it read, and what it answered, so the caller sends only the new message: a correction, a question about the answer, or the next step. The comrade keeps its model, thinking level, and tools unless the call passes others, which then become its own. `files`, `output`, `timeout`, and `background` apply to that run as usual. The follow-up's row shows that run alone, and a background follow-up's answer arrives as another `[comrade #N …]` delivery.
 
 ### After an interrupted run
 
@@ -92,7 +92,7 @@ Comrades are numbered across all branches of the session. A new comrade claims i
 
 A call with `to: N` while comrade #N runs sends `task` to it as a steer and starts no run. Pi queues the steer and gives it to the comrade once its current calls finish, before its next model request. The call returns once Pi has taken the steer, saying it was sent. The comrade's answer comes as it would have: from the call that started the run, or as a delivery.
 
-- The steer reaches the comrade behind a line saying it came from the agent that started it. The line asks for a complete final answer covering the task and the steer: the comrade may have been finishing its answer when the steer arrived, and its last reply is what comes back.
+- The steer reaches the comrade behind a line saying it came from the agent that started it. The line asks for a complete final answer covering the task and the steer: the comrade may have been finishing its answer when the steer arrived, and its last text is what comes back.
 - Only `task` may be given. A running comrade's model, tools, files, directory, output, and timeout are fixed until its answer arrives.
 - Its row is one line, `→ Comrade #N  <message>  sent`. Expanded, it shows the whole message.
 
@@ -110,7 +110,7 @@ With `background: true` the call returns at once with the comrade's number, and 
 
 A caller does not end its turn while its background runs go on. If it finishes its other work first, its turn waits, using no tokens. The editor then shows `Waiting for comrade #N` in place of `Working`, or `Waiting for comrades` with several, which the widget above the editor names. The first answer to arrive continues the turn, and the caller waits again if more runs go on. A message you type, or `Esc`, ends the wait at once: the comrades keep running, and their answers arrive as before. The wait happens only in the terminal UI, where `Esc` can end it.
 
-- **Listing and stopping.** `comrades` lists the runs in progress by number and title, with what each is doing and its cost so far, and a total when there are several, since background costs are not in the session's totals. `comrades` with `stop: [N]` stops runs the caller no longer needs: the call waits for them to exit, and no delivery arrives for them. `/comrades` and `/comrades stop <n|all>` do the same for you. When you stop a comrade, the caller is told without a turn starting.
+- **Listing and stopping.** `comrades` tells the caller the runs in progress by number and title, with what each is doing and its cost so far, and a total when there are several, since background costs are not in the session's totals. `comrades` with `stop: [N]` stops runs the caller no longer needs: the call waits for them to exit, and no delivery arrives for them. `/comrades` puts the runs in progress at the end of the thread for you (see [Listings](#listings)), and `/comrades stop <n|all>` stops them. When you stop a comrade, the caller is told without a turn starting.
 - **Limits.** At most four background runs go on at once. A background run's `timeout` still applies, and one that runs out is delivered as `failed`.
 - **`/reload`.** Background runs keep going, and the reloaded extension delivers their answers, including any that finished during the reload.
 - **Leaving the session.** Quitting Pi, `/new`, `/resume`, and `/fork` stop the runs and wait for their Pis to exit. Each Pi records the calls it interrupted as it stops.
@@ -122,11 +122,11 @@ A caller does not end its turn while its background runs go on. If it finishes i
 Each run has a run record beside its conversation (`comrade-N.runs.json`). It holds:
 
 - which Pi hosts the run, and the comrade's Pi;
-- whether Pi has saved the run's prompt in the comrade's conversation;
+- whether Pi has saved the run's task in the comrade's conversation;
 - what the run sends: task, files, output, timeout;
 - once it ends, a background run's answer.
 
-The answer is saved before it is sent. Pi holds a message that arrives during a turn in memory until the turn ends, so an answer that Pi exits with first, or that `Esc` clears, would otherwise be lost. A record goes once the caller's session holds the run's answer, or for a foreground run, once its call returns.
+The answer is saved before it is sent. Pi holds a message that arrives during a turn in memory until the turn ends, so an answer that Pi exits with first, or that `Esc` clears, would otherwise be lost. A run record goes once the caller's session holds the run's answer, or for a foreground run, once its call returns.
 
 In the terminal, once the caller has settled and stayed idle for one second, saved answers that the session does not hold are sent again without starting a turn. An answer that `Esc` or Pi's dequeue key took from the queue is one. This happens only in the terminal, which clears the queue whenever it aborts a turn. An abort elsewhere, such as RPC's `abort`, leaves the answer queued for the next turn, so sending it again would deliver it twice. There, an answer that never arrived is delivered when the session next starts.
 
@@ -143,7 +143,7 @@ When the session starts again, in the terminal or in RPC mode, Comrade reconcile
 | It was interrupted within the last day. | It is resumed: see below. |
 | It was interrupted longer ago, or cannot be resumed. | It is reported `lost` with the reason, and with `Continue it with to: N` when its conversation is saved. |
 
-A resumed run continues in its conversation with its model, thinking level, tools, and directory, and with its call's `output` and `timeout`. If its prompt never reached the comrade, the prompt is sent again. Otherwise the comrade reads the note described in [After an interrupted run](#after-an-interrupted-run) and is asked to carry on and end with its final answer. A `[comrade #N resumed]` message records this. The answer arrives as another `[comrade #N …]` delivery, which does start a turn. Expanded, that delivery shows what both runs did, with the note between them.
+A resumed run continues in its conversation with its model, thinking level, tools, and directory, and with its call's `output` and `timeout`. If its task never reached the comrade, the task is sent again. Otherwise the comrade reads the note described in [After an interrupted run](#after-an-interrupted-run) and is asked to resume its task and end with its final answer. A `[comrade #N resumed]` message records this. The answer arrives as another `[comrade #N …]` delivery, which does start a turn. Expanded, that delivery shows what both runs did, with the note between them.
 
 A run cannot be resumed when its directory or an attached file is gone, or when it ran before comrades kept run records and its conversation shows no interruption. At most four runs are resumed at once, and the rest wait for the session's next start. Print and JSON modes end with their turn, so nothing is resumed there, and such runs are left for a session that can. Comrade numbers stay unique across the session.
 
@@ -158,7 +158,7 @@ Collapsed, a row is one line: a glyph, `Comrade #N`, its title, what the run use
 ✓ Comrade #4  List lexer exports  claude-fable-5-2:high · in packages/lexer  $0.08 · 1m 2s ▸
 ✗ Comrade #5  Port tabs to motion  failed · $0.02 · 3.1s ▸
   No credentials for provider openrouter
-! Comrade #6  Draft migration guide  cut off · $2.40 · 6m 11s ▸
+! Comrade #6  Draft migration guide  partial · $2.40 · 6m 11s ▸
   Reached its output token limit. The answer is partial.
 ✗ Comrade #7  Check Safari focus ring  stopped · $0.12 · 48.0s ▸
 ```
@@ -195,7 +195,7 @@ The spinner costs no frame of its own while Pi's working indicator turns: a row 
 
 ### Expanded
 
-`Ctrl+O` expands every row, and a click expands or collapses one row, as on any tool row. Expanded, a row is the run in order: its task behind a bar, then what the comrade did, as Pi's transcript shows Pi's own work. That is what it said, its thinking where Pi shows thinking, the steers sent to it, and its calls.
+`Ctrl+O` expands every row, and a click expands or collapses one row, as on any call's row. Expanded, a row is the run in order: its task behind a bar, then what the comrade did, as Pi's transcript shows Pi's own work. That is what it said, its thinking where Pi shows thinking, the steers sent to it, and its calls.
 
 ```text
 ✓ Comrade #3  Review parser error paths  $0.71 · 12m 43s ▾
@@ -247,10 +247,34 @@ A widget above the editor shows the runs in progress, in the terminal only, one 
 → Comrade #12  Glide indicators  "Keep the reduced-motion guard on every indicator"  sent ▸
 ↻ Comrade #12  Glide indicators  resumed ▸
 ✗ Comrade #9  Compare token sets  lost
-  Not carried on: it stopped 25h 0m 3s ago. Continue it with to: 9.
+  Not resumed: it stopped 25h 0m 3s ago. Continue it with to: 9.
 ```
 
 A steer's row names the comrade by its title and expands to the whole message. A resumed run's message expands to the note the comrade read. A lost run's message says why, and how to continue the comrade when that is possible.
+
+### Listings
+
+A listing shows the background runs in progress at one moment, each as its start row. `/comrades` adds one at the end of the thread, and so does each `comrades` call the caller makes.
+
+Only the newest listing follows its runs: each row spins while its run goes on, then says how the run ended. An older listing shows how its runs stood when it was made, so checking again repeats nothing that moves. An older listing of one run is that run's row, dim, with its cost and clock then. An older listing of several runs is one line, which a click expands to their rows as they stood.
+
+```text
+· Comrades #8, #9  #8 thinking · #9 calling bash · $21.59  ▸
+⠋ Comrade #8  Implement bridges and operations  background · $8.89 · 31m 37s ▸
+⠋ Comrade #9  Implement one runner lifecycle  background · $12.70 · 31m 37s ▸
+```
+
+Once the runs have ended, the newest listing says how:
+
+```text
+↗ Comrade #8  Implement bridges and operations  background · finished ▸
+↗ Comrade #9  Implement one runner lifecycle  background · stopped ▸
+```
+
+- **Expanding.** A click expands or collapses one row, which then shows the task and, while the run goes on, the work so far. `Ctrl+O` expands or collapses every row and forgets the clicks. A blank line separates an expanded row from the rows beside it.
+- **`/comrades`.** It adds a session entry that Pi draws and saves but never sends to the model, so it costs no tokens and the caller never sees it. It is drawn again after `/reload` and `/resume`. While the caller is writing a reply, Pi puts the entry just above that reply. When the last thing in the thread is already a listing, it adds nothing: that listing follows the runs. With nothing running, `/comrades` says so and adds nothing. Outside the terminal, it lists the runs as text.
+- **A `comrades` call.** The caller reads the same text as before. The row is drawn from the call's details, which the model never reads. A call with `stop` shows `Stopping comrade #N` while it waits, then each run it stopped and how it ended, and under them any number that no comrade had. A stop is not a listing: it never makes an older listing stop following its runs.
+- **Checking less.** The `comrades` tool tells the caller there is no need to check: each answer arrives by itself, and its turn waits for its comrades before it ends. A background start tells it the same.
 
 ## Architecture
 
@@ -260,7 +284,7 @@ A steer's row names the comrade by its title and expands to the whole message. A
 | --- | --- |
 | `tool.ts` | The `comrade` tool: its parameters, what running it does, and how a steer reaches a comrade. |
 | `request.ts` | Turning the caller's arguments into a run request, and refusing what the comrade could not use. |
-| `run.ts` | One run: the comrade's Pi, its event stream folded into progress, and its outcome. |
+| `run.ts` | One run: the comrade's Pi, its event stream folded into progress, and its ending. |
 | `answer.ts` | What the caller reads of a run. |
 | `conversation.ts` | Where a conversation is kept, and what a later run needs to continue it. |
 | `runs.ts` | Run records. |
@@ -268,7 +292,7 @@ A steer's row names the comrade by its title and expands to the whole message. A
 | `background.ts` | Jobs: the background runs in progress in this Pi. |
 | `outbox.ts` | Delivering a background run's answer into the session, at least once. |
 | `reconcile.ts` | Reconciling at session start. |
-| `rows.ts` | What each row shows, and keeping the rows in progress turning. |
+| `rows.ts` | What each row shows, listings included, and keeping the rows in progress turning. |
 | `view.ts` | How a row looks. |
 | `transcripts.ts` | What each run did, for its row, built as the run's messages arrive. |
 | `work.ts` | What a comrade did, folded into counts by kind and the calls worth naming. |

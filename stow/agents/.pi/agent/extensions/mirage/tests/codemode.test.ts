@@ -179,7 +179,11 @@ test("single scripts: model calls, cancelled calls, failures, and scripts withou
   );
   run.view.handleMouse(mouse(0));
   const open = plain(run.view);
-  assert.match(open, /^ {2}✗ Read slow\.txt ▸$/m, "cut-off calls are cancelled");
+  assert.match(
+    open,
+    /^ {2}✗ Read slow\.txt ▸$/m,
+    "calls the script's end interrupted are cancelled",
+  );
   assert.match(open, /^ {2}✓ models\.classify typesafe\/jev-latest \$0\.0012 ▸$/m);
   assert.match(open, /^ {2}PARTIAL_OUTPUT\n {2}Script error:\n {2}TimeoutError$/m);
   const cancelled = run.view.render(160).map(unmark)[lineOf(run.view, "slow.txt")];

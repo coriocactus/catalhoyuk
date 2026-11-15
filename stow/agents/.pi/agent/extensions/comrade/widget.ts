@@ -29,7 +29,7 @@ export function createWidget(session: Session, rows: () => Running[]) {
     return list.map((row) => widgetLine(row, idWidth, titleWidth, width, theme));
   };
 
-  /** Shows the widget, draws it again, or takes it away, as its rows now ask. */
+  /** Shows the widget, draws it again, or takes it away, as its lines now ask. */
   const refresh = () => {
     const wanted = session.terminal && session.ui !== undefined && rows().length > 0;
     if (wanted && !shown && session.ui) {
@@ -70,5 +70,8 @@ export function createWidget(session: Session, rows: () => Running[]) {
     tui = undefined;
   };
 
-  return { refresh, close };
+  /** Asks Pi for a frame while the widget is shown, which it is while background runs go on. */
+  const requestRender = () => tui?.requestRender();
+
+  return { refresh, close, requestRender };
 }

@@ -14,16 +14,16 @@ import {
 
 export type ToolName = FileToolName | "bash" | "codemode";
 /**
- * Row kinds. Calls inside scripts may use any tool (`tool`) or the script's `models` API
+ * Call kinds. Calls inside scripts may use any tool (`tool`) or the script's `models` API
  * (`model`).
  */
 export type ToolKind = ToolName | "tool" | "model";
 export type ToolArgs = Readonly<Record<string, unknown>>;
 export type ToolStatus = "pending" | CallStatus;
 type Expansion = { epoch: number; value: boolean };
-type Fence = { kind: "hard" | "thinking" | "none" };
+type Boundary = { kind: "hard" | "thinking" | "none" };
 
-export interface ToolRow {
+export interface ToolCallState {
   id: string;
   name: string;
   kind: ToolKind;
@@ -32,9 +32,9 @@ export interface ToolRow {
   file?: FileReference;
   group: ToolGroup;
   /** The script that made this call. */
-  parent?: ToolRow;
+  parent?: ToolCallState;
   /** Calls a script made, in start order. */
-  calls?: ToolRow[];
+  calls?: ToolCallState[];
   /** The toggle for a script's source. */
   source?: ScriptSource;
   result?: AgentToolResult<unknown>;
@@ -59,17 +59,17 @@ export interface ToolRow {
 }
 
 export interface ToolGroup {
-  rows: ToolRow[];
+  rows: ToolCallState[];
   revision: number;
   expansion?: Expansion;
 }
 
 export interface ScriptSource {
-  script: ToolRow;
+  script: ToolCallState;
   expansion?: Expansion;
 }
 
-export type Expandable = ToolGroup | ToolRow | ScriptSource;
+export type Expandable = ToolGroup | ToolCallState | ScriptSource;
 
 /** What Pi records with a final result besides its content. */
 export interface ResultRecord {
@@ -85,8 +85,8 @@ export const TOOL_NAMES: ReadonlySet<string> = new Set([
   "write",
   "codemode",
 ] satisfies ToolName[]);
-/** Built-in tools whose calls keep their own kind inside scripts. */
-const BUILT_IN_KINDS: ReadonlySet<string> = new Set(["read", "bash", "edit", "write"]);
+/** Native tools whose calls keep their own kind inside scripts. */
+const NATIVE_KINDS: ReadonlySet<string> = new Set(["read", "bash", "edit", "write"]);
 
 export function normalizeArgs(value: unknown): ToolArgs {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -94,22 +94,22 @@ export function normalizeArgs(value: unknown): ToolArgs {
     : {};
 }
 
-export function isFailed(row: ToolRow): boolean {
+export function isFailed(row: ToolCallState): boolean {
   return row.status === "error" || row.status === "cancelled";
 }
 
-export function isComplete(row: ToolRow): boolean {
+export function isComplete(row: ToolCallState): boolean {
   return row.status === "success" || isFailed(row);
 }
 
 /** Calls a script made through tools, not its `models` calls. */
-export function toolCalls(row: ToolRow): ToolRow[] {
+export function toolCalls(row: ToolCallState): ToolCallState[] {
   return row.calls?.filter((call) => call.kind !== "model") ?? [];
 }
 
 function kindOf(name: string): ToolKind {
   if (isModelCall(name)) return "model";
-  if (BUILT_IN_KINDS.has(name)) return name as ToolName;
+  if (NATIVE_KINDS.has(name)) return name as ToolName;
   return "tool";
 }
 
@@ -127,16 +127,16 @@ function retained(result: AgentToolResult<unknown>): AgentToolResult<unknown> {
 
 /** Owns group membership, normalized snapshots, and expansion choices. No TUI or I/O. */
 export class ToolGroups {
-  readonly rows = new Map<string, ToolRow>();
+  readonly rows = new Map<string, ToolCallState>();
   /** Calls inside scripts, by their own ids, such as `<script id>/<n>`. */
-  private readonly nested = new Map<string, ToolRow>();
+  private readonly nested = new Map<string, ToolCallState>();
   private readonly seen = new Set<string>();
   private readonly managed: (name: string) => boolean;
   private tail?: ToolGroup;
   private allExpanded = false;
   private thinkingHidden = false;
-  private sequence: (ToolRow | Fence)[] = [];
-  private messageFence?: Fence;
+  private sequence: (ToolCallState | Boundary)[] = [];
+  private messageBoundary?: Boundary;
   epoch = 0;
 
   /** `managed` decides which top-level tools join groups. Any other call is a boundary. */
@@ -156,11 +156,11 @@ export class ToolGroups {
   boundary(): void {
     this.sequence.push({ kind: "hard" });
     this.tail = undefined;
-    this.messageFence = undefined;
+    this.messageBoundary = undefined;
   }
 
-  private separates(fence: Fence): boolean {
-    return fence.kind === "hard" || (fence.kind === "thinking" && !this.thinkingHidden);
+  private separates(boundary: Boundary): boolean {
+    return boundary.kind === "hard" || (boundary.kind === "thinking" && !this.thinkingHidden);
   }
 
   setThinkingHidden(hidden: boolean): void {
@@ -171,10 +171,10 @@ export class ToolGroups {
 
   startMessage(message: AgentMessage, cwd: string): void {
     if (message.role === "assistant") {
-      // Optimistic: a streaming call joins the run at once. Visible commentary
-      // or thinking arriving later turns this fence into a separator.
-      this.messageFence = { kind: "none" };
-      this.sequence.push(this.messageFence);
+      // Optimistic: a streaming call joins the group at once. Visible commentary
+      // or thinking arriving later makes this boundary end the group.
+      this.messageBoundary = { kind: "none" };
+      this.sequence.push(this.messageBoundary);
     } else if (message.role !== "toolResult") {
       this.boundary();
     }
@@ -184,14 +184,14 @@ export class ToolGroups {
   finishMessage(message: AgentMessage, cwd: string): void {
     this.observe(message, cwd);
     if (message.role !== "assistant") return;
-    this.messageFence = undefined;
+    this.messageBoundary = undefined;
     if (["error", "aborted", "length"].includes(message.stopReason)) this.boundary();
   }
 
-  /** Classify the in-flight message before adding its calls, so fences precede rows. */
+  /** Classify the in-flight message before adding its calls, so boundaries precede calls. */
   private classify(message: Extract<AgentMessage, { role: "assistant" }>): void {
-    const fence = this.messageFence;
-    if (!fence) return;
+    const boundary = this.messageBoundary;
+    if (!boundary) return;
     const kind = ["error", "aborted", "length"].includes(message.stopReason)
       ? "hard"
       : message.content.some((block) => block.type === "text" && block.text.trim())
@@ -199,17 +199,17 @@ export class ToolGroups {
         : message.content.some((block) => block.type === "thinking" && block.thinking.trim())
           ? "thinking"
           : "none";
-    if (kind === fence.kind) return;
-    const before = this.separates(fence);
-    fence.kind = kind;
-    if (before === this.separates(fence)) return;
-    // Usually nothing follows the fence yet, so this only changes the tail.
-    if (this.sequence.at(-1) === fence)
-      this.tail = this.separates(fence) ? undefined : this.lastRunGroup();
+    if (kind === boundary.kind) return;
+    const before = this.separates(boundary);
+    boundary.kind = kind;
+    if (before === this.separates(boundary)) return;
+    // Usually nothing follows the boundary yet, so this only changes the tail.
+    if (this.sequence.at(-1) === boundary)
+      this.tail = this.separates(boundary) ? undefined : this.trailingGroup();
     else this.regroup();
   }
 
-  private lastRunGroup(): ToolGroup | undefined {
+  private trailingGroup(): ToolGroup | undefined {
     for (let i = this.sequence.length - 1; i >= 0; i--) {
       const item = this.sequence[i];
       if ("id" in item) return item.group;
@@ -218,7 +218,7 @@ export class ToolGroups {
     return undefined;
   }
 
-  addCall(id: string, name: string, args: unknown, cwd: string): ToolRow | undefined {
+  addCall(id: string, name: string, args: unknown, cwd: string): ToolCallState | undefined {
     const existing = this.rows.get(id);
     if (existing) {
       this.updateCall(existing, args, cwd);
@@ -234,10 +234,10 @@ export class ToolGroups {
     }
     this.seen.add(id);
     const group: ToolGroup = this.tail ?? { rows: [], revision: 0 };
-    const keepOpen = this.groupVisible(group);
+    const keepExpanded = this.groupVisible(group);
     const row = this.createRow(id, name, name as ToolName, cwd, group);
     group.rows.push(row);
-    if (keepOpen) group.expansion = { epoch: this.epoch, value: true };
+    if (keepExpanded) group.expansion = { epoch: this.epoch, value: true };
     this.rows.set(id, row);
     this.sequence.push(row);
     this.tail = group;
@@ -251,9 +251,9 @@ export class ToolGroups {
     kind: ToolKind,
     cwd: string,
     group: ToolGroup,
-    parent?: ToolRow,
-  ): ToolRow {
-    const row: ToolRow = {
+    parent?: ToolCallState,
+  ): ToolCallState {
+    const row: ToolCallState = {
       id,
       name,
       kind,
@@ -272,7 +272,7 @@ export class ToolGroups {
     return row;
   }
 
-  private updateCall(row: ToolRow, value: unknown, cwd: string): void {
+  private updateCall(row: ToolCallState, value: unknown, cwd: string): void {
     row.args = normalizeArgs(value);
     row.cwd = cwd;
     const path = row.args.path ?? row.args.file_path;
@@ -285,14 +285,14 @@ export class ToolGroups {
     this.changed(row);
   }
 
-  markStarted(row: ToolRow): void {
+  markStarted(row: ToolCallState): void {
     if (row.status !== "pending") return;
     row.status = "running";
     this.changed(row);
   }
 
   updateResult(
-    row: ToolRow,
+    row: ToolCallState,
     result: AgentToolResult<unknown>,
     partial: boolean,
     failed: boolean,
@@ -305,7 +305,7 @@ export class ToolGroups {
   }
 
   private applyResult(
-    row: ToolRow,
+    row: ToolCallState,
     result: AgentToolResult<unknown>,
     partial: boolean,
     failed: boolean,
@@ -326,10 +326,10 @@ export class ToolGroups {
     name: string,
     args: unknown,
     cwd: string,
-  ): ToolRow | undefined {
+  ): ToolCallState | undefined {
     const script = this.scriptOf(parentId);
     if (!script) return undefined;
-    const row = this.nestedRow(script, id, name, cwd);
+    const row = this.nestedCall(script, id, name, cwd);
     row.saved = false;
     row.preview = undefined;
     row.omittedBytes = undefined;
@@ -345,7 +345,7 @@ export class ToolGroups {
     partial: boolean,
     failed: boolean,
     durationMs?: number,
-  ): ToolRow | undefined {
+  ): ToolCallState | undefined {
     const row = this.nested.get(id);
     if (!row?.parent) return undefined;
     row.saved = false;
@@ -355,13 +355,13 @@ export class ToolGroups {
   }
 
   /** Finds the script a call belongs to. Calls made by a script's calls belong to the script. */
-  private scriptOf(id: string): ToolRow | undefined {
+  private scriptOf(id: string): ToolCallState | undefined {
     let row = this.rows.get(id) ?? this.nested.get(id);
     while (row?.parent) row = row.parent;
     return row?.kind === "codemode" ? row : undefined;
   }
 
-  private nestedRow(script: ToolRow, id: string, name: string, cwd: string): ToolRow {
+  private nestedCall(script: ToolCallState, id: string, name: string, cwd: string): ToolCallState {
     const existing = this.nested.get(id);
     if (existing?.parent === script) return existing;
     const row = this.createRow(id, name, kindOf(name), cwd, script.group, script);
@@ -377,14 +377,19 @@ export class ToolGroups {
    * `nestedCalls` adds calls this runtime never saw. Calls still running when the script ends
    * become cancelled.
    */
-  private updateScript(script: ToolRow, details: unknown, record: unknown, final: boolean): void {
+  private updateScript(
+    script: ToolCallState,
+    details: unknown,
+    record: unknown,
+    final: boolean,
+  ): void {
     const saved = new Map(savedCalls(record).map((call) => [call.id, call]));
     const remaining = new Map(saved);
     const listed = scriptCalls(details);
     for (const call of listed) if (!isPlaceholder(call.id)) remaining.delete(call.id);
     for (const call of listed) {
       if (isModelCall(call.name)) {
-        const row = this.nestedRow(script, call.id, call.name, script.cwd);
+        const row = this.nestedCall(script, call.id, call.name, script.cwd);
         if (row.preview !== call.preview || row.cost !== call.cost) {
           row.preview = call.preview;
           row.cost = call.cost;
@@ -399,9 +404,9 @@ export class ToolGroups {
         if (match) remaining.delete(match.id);
       }
       const id = match?.id ?? (isPlaceholder(call.id) ? undefined : call.id);
-      if (!id) continue; // Still running: its live events supply the row.
-      const row = this.nestedRow(script, id, call.name, script.cwd);
-      if (match) this.restore(row, match);
+      if (!id) continue; // Still running: its live events supply the call.
+      const row = this.nestedCall(script, id, call.name, script.cwd);
+      if (match) this.loadSaved(row, match);
       else if (row.saved !== false && !Object.keys(row.args).length) {
         // Without `nestedCalls`, the `details.calls` preview is the only copy of the arguments.
         const args = previewArgs(call.preview);
@@ -412,8 +417,8 @@ export class ToolGroups {
       this.settle(row, call.status, call.error, call.durationMs ?? match?.durationMs);
     }
     for (const call of remaining.values()) {
-      const row = this.nestedRow(script, call.id, call.name, script.cwd);
-      this.restore(row, call);
+      const row = this.nestedCall(script, call.id, call.name, script.cwd);
+      this.loadSaved(row, call);
       this.settle(row, call.status, call.error, call.durationMs);
     }
     if (final)
@@ -421,8 +426,8 @@ export class ToolGroups {
         if (!isComplete(row)) this.settle(row, "cancelled", undefined, undefined);
   }
 
-  /** Restores the saved arguments of a call this runtime did not see run. */
-  private restore(row: ToolRow, call: SavedCall): void {
+  /** Loads the saved arguments of a call this runtime did not see run. */
+  private loadSaved(row: ToolCallState, call: SavedCall): void {
     if (row.saved === false) return;
     row.saved = true;
     if (call.args) this.updateCall(row, call.args, row.cwd);
@@ -438,7 +443,7 @@ export class ToolGroups {
    * live stay; a saved duration fills in one the live events did not report.
    */
   private settle(
-    row: ToolRow,
+    row: ToolCallState,
     status: CallStatus,
     error: string | undefined,
     durationMs: number | undefined,
@@ -507,9 +512,9 @@ export class ToolGroups {
       : group.rows.length > 1 && this.expanded(group);
   }
 
-  /** Reconstruct the loaded range without invalidating existing components or local choices. */
+  /** Reconstruct the loaded range without invalidating existing rows or local choices. */
   replace(source: ToolGroups): void {
-    const retainedRows = new Map<string, ToolRow>();
+    const retainedRows = new Map<string, ToolCallState>();
     for (const snapshot of source.rows.values()) {
       const row = this.rows.get(snapshot.id) ?? snapshot;
       if (row !== snapshot) {
@@ -539,12 +544,12 @@ export class ToolGroups {
     this.sequence = source.sequence.map((item) =>
       "id" in item ? (retainedRows.get(item.id) ?? item) : item,
     );
-    this.messageFence = undefined;
+    this.messageBoundary = undefined;
     this.regroup();
   }
 
-  /** Saved calls never replace the outputs and expansion of calls seen running. */
-  private mergeCalls(script: ToolRow, snapshots: ToolRow[]): ToolRow[] {
+  /** Saved calls never replace the outputs and expansion of live calls. */
+  private mergeCalls(script: ToolCallState, snapshots: ToolCallState[]): ToolCallState[] {
     const live = new Map((script.calls ?? []).map((call) => [call.id, call]));
     const calls = snapshots.map((snapshot) => {
       const row = live.get(snapshot.id);
@@ -573,7 +578,7 @@ export class ToolGroups {
   }
 
   /** No recursion: calls made by a script's calls belong to the script itself. */
-  private indexCalls(row: ToolRow): void {
+  private indexCalls(row: ToolCallState): void {
     for (const call of row.calls ?? []) this.nested.set(call.id, call);
   }
 
@@ -592,7 +597,7 @@ export class ToolGroups {
       this.indexCalls(row);
       added.add(row.id);
     }
-    // Rendering an archived call must never append a fence to the live range.
+    // Rendering a saved call must never append a boundary to the live range.
     for (const id of source.seen) {
       if (this.seen.has(id)) continue;
       this.seen.add(id);
@@ -619,31 +624,31 @@ export class ToolGroups {
     };
   }
 
-  /** Visibility/range changes replay fences; streaming updates stay incremental. */
+  /** Visibility/range changes replay boundaries; streaming updates stay incremental. */
   private regroup(): void {
-    const runs: ToolRow[][] = [];
-    let run: ToolRow[] | undefined;
+    const spans: ToolCallState[][] = [];
+    let span: ToolCallState[] | undefined;
     for (const item of this.sequence) {
       if (!("id" in item)) {
-        if (this.separates(item)) run = undefined;
+        if (this.separates(item)) span = undefined;
         continue;
       }
-      if (!run) {
-        run = [];
-        runs.push(run);
+      if (!span) {
+        span = [];
+        spans.push(span);
       }
-      run.push(item);
+      span.push(item);
     }
     // Capture old visibility before changing any group membership.
-    const assignments = runs.map((rows) => ({
+    const assignments = spans.map((rows) => ({
       rows,
       group: rows[0].group.rows[0] === rows[0] ? rows[0].group : { rows: [], revision: 0 },
-      open: rows.some((row) => this.groupVisible(row.group)),
+      expanded: rows.some((row) => this.groupVisible(row.group)),
     }));
-    const tailRow = run?.at(-1);
-    for (const { rows, group, open } of assignments) {
+    const tailRow = span?.at(-1);
+    for (const { rows, group, expanded } of assignments) {
       group.rows = rows;
-      group.expansion = { epoch: this.epoch, value: open };
+      group.expansion = { epoch: this.epoch, value: expanded };
       group.revision++;
       for (const row of rows) {
         row.group = group;
@@ -653,7 +658,7 @@ export class ToolGroups {
     this.tail = tailRow?.group;
   }
 
-  private changed(row: ToolRow): void {
+  private changed(row: ToolCallState): void {
     row.revision++;
     if (row.parent) row.parent.revision++;
     row.group.revision++;

@@ -13,7 +13,7 @@ import { isNestedRowsRequest, NESTED_ROWS_EVENT, type NestedRows } from "../shar
 import { type FileReference, OPEN_FILE_EVENT, type OpenFileRequest } from "../shared/protocol.ts";
 import { Spinner, spinnerFrame } from "../shared/spinner.ts";
 import { isTranscriptView, TRANSCRIPT_VIEW, type TranscriptView } from "../shared/transcript.ts";
-import { isComplete, TOOL_NAMES, ToolGroups, type ToolName, type ToolRow } from "./model.ts";
+import { isComplete, TOOL_NAMES, type ToolCallState, ToolGroups, type ToolName } from "./model.ts";
 import { installNativeImageSlot, ownImageRendering, renderNativeImages } from "./native-images.ts";
 import { installNativeThinking } from "./native-thinking.ts";
 import { ToolGroupView } from "./view.ts";
@@ -60,18 +60,18 @@ export default function (pi: ExtensionAPI) {
   };
   const groups = new ToolGroups(claims);
   let historyGroups = new WeakMap<HistoryPage, ToolGroups>();
-  const images = new WeakMap<ToolRow, (width: number) => string[]>();
+  const images = new WeakMap<ToolCallState, (width: number) => string[]>();
   // Pi redraws a script's calls only when it redraws the script's row, so keep each script
   // row's redraw callback.
-  const redraws = new WeakMap<ToolRow, () => void>();
+  const redraws = new WeakMap<ToolCallState, () => void>();
   // Live rows whose group still has calls in progress spin while Pi works: see shared/spinner.ts.
   // Its timer stops once none remain or Pi is idle, when a row left in progress is redrawn once
   // to show its resting glyph, so nothing runs between turns.
   const working = () => sessionContext?.isIdle?.() === false;
-  const spinning = new Spinner<ToolRow>(working);
+  const spinning = new Spinner<ToolCallState>(working);
   const spinner = () => (working() ? spinnerFrame() : undefined);
   /** Whether a row still leads a group of the live model with calls in progress. */
-  const spins = (row: ToolRow) =>
+  const spins = (row: ToolCallState) =>
     groups.rows.get(row.id) === row &&
     row.group.rows[0] === row &&
     !row.group.rows.every(isComplete);
@@ -105,7 +105,7 @@ export default function (pi: ExtensionAPI) {
       paddingWarned = true;
       report(
         new Error(
-          `Pi ${VERSION}: tool render contexts lack outputPad; tool rows will use no outer padding. Run npm run verify in ~/.pi/agent/extensions.`,
+          `Pi ${VERSION}: tool render contexts lack outputPad; rows will use no outer padding. Run npm run verify in ~/.pi/agent/extensions.`,
         ),
       );
     }
@@ -183,15 +183,15 @@ export default function (pi: ExtensionAPI) {
   function groupsFor(state: object): ToolGroups {
     const page = (state as HistoryRenderState)[HISTORY_PAGE];
     if (!page || (page.scope && page.scope === transcript?.scope)) return groups;
-    let archived = historyGroups.get(page);
-    if (!archived) {
-      archived = new ToolGroups(claims);
-      archived.setThinkingHidden(thinkingHidden);
-      models.add(new WeakRef(archived));
-      replay(archived, page.entries, page.cwd);
-      historyGroups.set(page, archived);
+    let pageGroups = historyGroups.get(page);
+    if (!pageGroups) {
+      pageGroups = new ToolGroups(claims);
+      pageGroups.setThinkingHidden(thinkingHidden);
+      models.add(new WeakRef(pageGroups));
+      replay(pageGroups, page.entries, page.cwd);
+      historyGroups.set(page, pageGroups);
     }
-    return archived;
+    return pageGroups;
   }
 
   pi.on("session_start", (_event, ctx) => {
@@ -230,7 +230,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("user_bash", () => groups.boundary());
   // Pi reports calls inside scripts only as tool_execution_* events whose parentToolCallId
   // names the calling script or call.
-  const redraw = (script: ToolRow | undefined) => {
+  const redraw = (script: ToolCallState | undefined) => {
     if (script) redraws.get(script)?.();
   };
   pi.on("tool_execution_start", (event, ctx) => {

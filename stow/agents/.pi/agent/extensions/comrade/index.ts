@@ -2,7 +2,7 @@
 // wires the parts together and listens to Pi's session events. The parts:
 //
 //   tool.ts         the comrade tool: its parameters, what running it does
-//   rows.ts         what each of a comrade's rows shows; view.ts is how a row looks
+//   rows.ts         what each of a comrade's rows shows, listings too; view.ts is how a row looks
 //   background.ts   jobs: the background runs in progress in this Pi
 //   outbox.ts       delivering a background run's answer into the session, at least once
 //   reconcile.ts    at session start, what becomes of background runs that never answered
@@ -13,13 +13,13 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { Spinner } from "../shared/spinner.ts";
-import { createBackground, type Job } from "./background.ts";
+import { type Background, createBackground } from "./background.ts";
 import { createNumbers } from "./conversation.ts";
-import { type Delivery, MESSAGE, record } from "./details.ts";
+import { type Delivery, LISTING, type Listing, MESSAGE, notRunning, record } from "./details.ts";
 import { createOutbox, deliveries } from "./outbox.ts";
-import { currentPi, watchParent } from "./pi.ts";
+import { currentPi, watchHost } from "./pi.ts";
 import { createReconciler, pendingRuns } from "./reconcile.ts";
-import { createRows } from "./rows.ts";
+import { createRows, type Rows } from "./rows.ts";
 import { type Channel, type Invocation, NESTED } from "./run.ts";
 import { dropRuns, elsewhere, quietly, readRuns } from "./runs.ts";
 import type { Session } from "./session.ts";
@@ -28,7 +28,7 @@ import { createTranscripts } from "./transcripts.ts";
 import { createWidget } from "./widget.ts";
 
 export type { Delivery, Details } from "./details.ts";
-export { currentPi, watchParent } from "./pi.ts";
+export { currentPi, watchHost } from "./pi.ts";
 
 /** How often a turn waiting for its comrades checks for typed messages. */
 const WAIT_POLL_MS = 200;
@@ -71,6 +71,8 @@ export function register(pi: ExtensionAPI, invocation: Invocation | (() => Invoc
     returned,
     transcripts,
     spinner: new Spinner<string>(),
+    requestRender: () => widget.requestRender(),
+    outputPad: () => (pi.getSettings().outputPad === 0 ? 0 : 1),
   });
   const reconciler = createReconciler(pi, background, outbox);
 
@@ -82,13 +84,14 @@ export function register(pi: ExtensionAPI, invocation: Invocation | (() => Invoc
     session.terminal = ctx.mode === "tui";
     session.home = ctx.cwd;
     transcripts.started();
+    rows.started();
     // Comrades started before a /reload keep running; take them over.
     const adopted = background.adopt(session.id, event?.reason === "reload");
     // Number comrades past every one this session has seen, on any branch.
     const all = ctx.sessionManager.getEntries();
     const seen = all.flatMap((entry) => record(entry)?.id ?? []);
     numbers.past([...seen, ...jobs.keys()]);
-    // Records done with: runs whose answer the session holds, and foreground runs no Pi runs.
+    // Run records done with: runs whose answer the session holds, and foreground runs no Pi runs.
     const delivered = deliveries(all);
     for (const conversation of new Set(all.flatMap((entry) => record(entry)?.session ?? []))) {
       const stale = readRuns(conversation).filter(
@@ -100,7 +103,7 @@ export function register(pi: ExtensionAPI, invocation: Invocation | (() => Invoc
     const detached = ctx.mode === "tui" || ctx.mode === "rpc";
     for (const [id, pending] of pendingRuns(ctx.sessionManager.getBranch()))
       try {
-        reconciler.recover(id, pending, ctx, delivered, detached);
+        reconciler.reconcile(id, pending, ctx, delivered, detached);
       } catch (error) {
         ctx.ui.notify(`comrade #${id}: ${error instanceof Error ? error.message : error}`, "error");
       }
@@ -171,7 +174,8 @@ export function register(pi: ExtensionAPI, invocation: Invocation | (() => Invoc
   });
 
   pi.registerCommand("comrades", {
-    description: "List background comrades, or stop them with /comrades stop <n|all>",
+    description:
+      "Show background comrades at the end of the thread, or stop them with /comrades stop <n|all>",
     getArgumentCompletions: (prefix) => {
       const items = ["stop all", ...[...background.jobs.keys()].map((id) => `stop ${id}`)]
         .filter((value) => value.startsWith(prefix))
@@ -199,24 +203,42 @@ export function register(pi: ExtensionAPI, invocation: Invocation | (() => Invoc
         ctx.ui.notify("Usage: /comrades [stop <n|all>]", "warning");
         return;
       }
-      ctx.ui.notify(background.listing() || "No comrades running.", "info");
+      if (!jobs.size) {
+        ctx.ui.notify("No comrades running.", "info");
+        return;
+      }
+      if (!session.terminal) {
+        ctx.ui.notify(background.listing(), "info");
+        return;
+      }
+      // In the terminal, their rows at the end of the thread, updated while they run. The entry is
+      // the transcript's alone: Pi never sends a custom entry to the model. A listing that is
+      // already the last thing in the thread shows them as it would.
+      if (!rows.listingLast()) pi.appendEntry<Listing>(LISTING, rows.listing(background.listed()));
     },
   });
 
   pi.registerMessageRenderer<Delivery>(MESSAGE, rows.renderMessage);
+  pi.registerEntryRenderer(LISTING, rows.renderListing);
   registerComrade({ pi, resolve, background, foreground, returned, numbers, transcripts, rows });
-  registerList(pi, jobs, background.listing);
+  registerList(pi, background, rows);
 }
 
-/** The agent's view of its background comrades: list them, or stop some. */
-function registerList(pi: ExtensionAPI, jobs: Map<number, Job>, listing: () => string) {
+/**
+ * The agent's view of its background comrades: list them, or stop some. It reads text; its row
+ * shows the runs as their start rows do, from the details, which the model never reads.
+ */
+function registerList(pi: ExtensionAPI, background: Background, rows: Rows) {
+  const { jobs } = background;
   pi.registerTool({
     name: "comrades",
     label: "Comrades",
     description:
       "List your running background comrades, or stop some of them. Without stop, it lists each " +
       "comrade's number, progress, cost so far, and task. With stop, it stops those comrades and " +
-      "waits for them to exit. No message arrives for a comrade you stopped.",
+      "waits for them to exit. No message arrives for a comrade you stopped. There is no need to " +
+      "check on comrades: each answer arrives by itself, and your turn waits for them before it " +
+      "ends. List them only to decide something now.",
     promptSnippet: "List or stop your background comrades",
     parameters: Type.Object({
       stop: Type.Optional(
@@ -225,14 +247,21 @@ function registerList(pi: ExtensionAPI, jobs: Map<number, Job>, listing: () => s
         }),
       ),
     }),
+    renderShell: "self",
+    renderCall: rows.renderListCall,
+    renderResult: rows.renderListResult,
 
     async execute(_toolCallId, params) {
       const ids = [...new Set(params.stop ?? [])];
       if (!ids.length)
         return {
-          content: [{ type: "text", text: listing() || "No background comrades are running." }],
-          details: { stopped: [] as number[] },
+          content: [
+            { type: "text", text: background.listing() || "No background comrades are running." },
+          ],
+          details: rows.listing(background.listed()),
         };
+      // As they stood before they stopped: their rows say how they ended.
+      const listed = background.listed().filter((item) => ids.includes(item.details.id));
       const stopping = ids.flatMap((id) => jobs.get(id) ?? []);
       for (const job of stopping) {
         job.stoppedBy = "agent";
@@ -242,25 +271,25 @@ function registerList(pi: ExtensionAPI, jobs: Map<number, Job>, listing: () => s
       const missing = ids.filter((id) => !stopping.some((job) => job.id === id));
       const report = [
         stopping.length ? `Stopped comrade ${stopping.map((job) => `#${job.id}`).join(", ")}.` : "",
-        missing.length ? `No running comrade ${missing.map((id) => `#${id}`).join(", ")}.` : "",
+        missing.length ? notRunning(missing) : "",
       ];
       return {
         content: [{ type: "text", text: report.filter(Boolean).join(" ") }],
-        details: { stopped: stopping.map((job) => job.id) },
+        details: { stopped: stopping.map((job) => job.id), listed, missing },
         isError: stopping.length === 0,
       };
     },
   });
 }
 export default function (pi: ExtensionAPI) {
-  const parent = process.env[NESTED];
-  // A comrade offers no comrade of its own, and stops once its parent is gone. It watches from
+  const host = process.env[NESTED];
+  // A comrade offers no comrade of its own, and stops once its host is gone. It watches from
   // its session's start, not as the extension loads: Pi can load extensions and start no session.
-  if (parent !== undefined) {
+  if (host !== undefined) {
     let unwatch = () => {};
     pi.on("session_start", () => {
       unwatch();
-      unwatch = watchParent(Number(parent));
+      unwatch = watchHost(Number(host));
     });
     pi.on("session_shutdown", () => unwatch());
     return;

@@ -1,5 +1,5 @@
 // Delivering background runs' answers into the caller's session, at least once. An answer is
-// saved in its run's record before it is sent, and stays there until the session holds it: Pi
+// saved in its run record before it is sent, and stays there until the session holds it: Pi
 // keeps a message that arrives during a turn in memory until the turn ends, so one Pi exits
 // with first, or that Esc clears, would otherwise be lost.
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
@@ -35,7 +35,7 @@ export type Outbox = ReturnType<typeof createOutbox>;
 
 export function createOutbox(pi: ExtensionAPI, session: Session, hooks: OutboxHooks) {
   // Answers delivered to wake the agent, so a waiting turn knows one has arrived. Pi counts only
-  // typed messages as pending, not an extension's queued follow-ups.
+  // typed messages as pending, not the deliveries an extension queues.
   let woken = 0;
   // Background answers saved and sent whose message the session may not hold yet:
   // run -> the comrade's conversation.
@@ -59,7 +59,7 @@ export function createOutbox(pi: ExtensionAPI, session: Session, hooks: OutboxHo
     );
   };
 
-  /** Drops the records of runs whose answer the session now holds. */
+  /** Drops the run records of runs whose answer the session now holds. */
   const confirm = () => {
     if (!unconfirmed.size || !session.entries) return;
     const delivered = deliveries(session.entries());
@@ -112,7 +112,7 @@ export function createOutbox(pi: ExtensionAPI, session: Session, hooks: OutboxHo
   // settled has been taken, any the session still does not hold is sent again, without starting
   // a turn. Only in the terminal, whose every abort clears the queue first: elsewhere an abort,
   // such as RPC's, leaves the answer queued for the next run, so sending it again would deliver
-  // it twice. There, the saved record delivers an answer that never arrived at the next start.
+  // it twice. There, the saved run record delivers an answer that never arrived at the next start.
   let settleCheck: ReturnType<typeof setTimeout> | undefined;
   const settled = (ctx: ExtensionContext) => {
     confirm();

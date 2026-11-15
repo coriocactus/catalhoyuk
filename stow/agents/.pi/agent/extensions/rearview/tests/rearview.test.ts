@@ -75,7 +75,7 @@ test("ancestor pages are demand-driven, bounded, chronological, and transactiona
   assert.equal(historyBoundary([entries[0]]), entries[0].parentId);
 });
 
-test("tool batches are not split and corrupt parent chains fail visibly", () => {
+test("tool calls are not split from their results, and corrupt parent chains fail visibly", () => {
   const sm = core.SessionManager.inMemory(process.cwd());
   sm.appendMessage(
     assistant("", [

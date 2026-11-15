@@ -1,6 +1,6 @@
 // One comrade run: a fresh `pi --mode rpc` process given its task as a prompt command, its
-// event stream folded into progress updates and a final outcome. Messages sent to it while it
-// runs reach it before its next model request. Its conversation is saved in a session file, so
+// event stream folded into progress updates and a final outcome. Steers sent to it during the
+// run reach it before its next model request. Its conversation is saved in a session file, so
 // a later run with the same file continues it.
 import { spawn } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
@@ -18,8 +18,8 @@ import type { Face } from "./view.ts";
 import { emptyWork, Ledger, type Work } from "./work.ts";
 
 /**
- * Set in a comrade's environment to the parent's process id, so it does not offer comrade
- * itself and can stop when its parent is gone.
+ * Set in a comrade's environment to the host's process id, so it does not offer comrade
+ * itself and can stop when its host is gone.
  */
 export const NESTED = "PI_COMRADE";
 const STDERR_TAIL = 8 * 1024;
@@ -61,7 +61,7 @@ export interface Request {
   session: string;
   /** This run continues the conversation in `session`. */
   followUp?: boolean;
-  /** This run carries on after Pi exited while the comrade ran. */
+  /** This run resumes a run that Pi exited during. */
   resumed?: boolean;
   /** How its row names it: its title, and the settings it runs with that are not the caller's. */
   face?: Face;
@@ -125,7 +125,7 @@ export interface Progress {
   activity: Activity;
   /** The comrade's own Pi, once started. */
   pid?: number;
-  /** Its prompt is in its conversation: Pi has saved it. */
+  /** Its task is in its conversation: Pi has saved it. */
   asked?: boolean;
   /** The last complete line of its thinking or text. */
   said?: string;
@@ -153,14 +153,14 @@ export interface Outcome extends Progress {
   timedOut: boolean;
 }
 
-/** A message waiting for the comrade's Pi to start, and what to tell its sender. */
+/** A steer waiting for the comrade's Pi to start, and what to tell its sender. */
 interface Held {
   message: string;
   settle: (error?: Error) => void;
 }
 
 /**
- * Messages for a running comrade. Pi delivers each after the comrade's current tool calls,
+ * Steers for a running comrade. Pi delivers each after the comrade's current tool calls,
  * before its next model request, or starts a run with it once the comrade has settled. One sent
  * before Pi has started is held until it has. Open until the run ends.
  */
@@ -243,7 +243,7 @@ export function isConversationMessage(message: unknown): message is AgentMessage
   return role === "toolResult" && "toolCallId" in message && typeof message.toolCallId === "string";
 }
 
-/** How much of a call's result a row keeps: mirage shows at most this much of it opened. */
+/** How much of a call's result a row keeps: mirage shows at most this much of it expanded. */
 const RESULT_MAX = 32_000;
 
 /** A message as a row keeps it: images dropped, as rows draw none, and long results cut. */
@@ -265,13 +265,13 @@ export function lean(message: AgentMessage): AgentMessage {
 }
 
 /**
- * How a message sent while the comrade works reaches it. The comrade may be finishing its answer
- * when it arrives, and its last reply is what comes back, so it is asked for a complete one.
+ * How a steer reaches the comrade. The comrade may be finishing its answer when it arrives,
+ * and its last text is what comes back, so it is asked for a complete one.
  */
 const STEERING =
   "[A message from the agent that started you, sent while you worked. Take it into account, and end with your complete final answer, covering your task and this message.]\n\n";
 export const steering = (message: string) => `${STEERING}${message}`;
-/** A message sent while it worked, as its sender wrote it. */
+/** A steer, as its sender wrote it. */
 export const fromSteering = (text: string) =>
   text.startsWith(STEERING) ? text.slice(STEERING.length) : text;
 
@@ -557,7 +557,7 @@ export async function run(
         const message = isConversationMessage(event.message) ? event.message : undefined;
         // Its conversation in this run, for its row to show as mirage shows Pi's own.
         if (message) state.messages.push(lean(message));
-        // Pi saves each message as it ends: the comrade has its prompt.
+        // Pi saves each message as it ends: the comrade has its task.
         if (message?.role === "user" && !state.asked) {
           state.asked = true;
           return progress();
@@ -733,7 +733,7 @@ export async function run(
     };
 
     // Closing stdin asks Pi to shut down, which aborts any run, so only once the comrade has
-    // settled. From then on its outcome stands: the timeout and Esc no longer apply, and a Pi
+    // settled. From then on its ending stands: the timeout and Esc no longer apply, and a Pi
     // that does not exit in time is stopped.
     const end = () => {
       channel?.close();
@@ -795,7 +795,7 @@ export async function run(
       clearTimeout(deadline);
       clearTimeout(drain);
       clearTimeout(trailing);
-      // Calls still running were cut off. The final record has no current call.
+      // Calls still running were interrupted. The final record has no current call.
       ledger.close();
       state.work = ledger.snapshot(false);
       resolve(state);
@@ -827,7 +827,7 @@ export async function run(
     stderr.on("data", (chunk: string) => {
       state.stderr = (state.stderr + chunk).slice(-STDERR_TAIL);
     });
-    // The child may exit before reading its commands.
+    // The comrade's Pi may exit before reading its commands.
     stdin.on("error", () => {});
     // As a follow-up, so a run an extension started meanwhile takes it when it is done.
     void command({

@@ -1,7 +1,7 @@
 // Markdown as Amp draws it, and selection bounded to text. Code blocks lose their fence lines and
-// are indented. Wrapped lines, in Markdown and in plain text, keep their indent, and rows end where
-// their text ends. In fullscreen, Pi's own selection then stops at each row's text and starts at its
-// content, skipping margins and indents, a copy joins wrapped rows back into the lines they came
+// are indented. Wrapped lines, in Markdown and in plain text, keep their indent, and lines end where
+// their text ends. In fullscreen, Pi's own selection then stops at each line's text and starts at its
+// content, skipping margins and indents, a copy joins continuation lines back into the lines they came
 // from, and a triple-click selects a whole wrapped line.
 import { VERSION } from "@earendil-works/pi-coding-agent";
 import {
@@ -22,16 +22,16 @@ import {
   findMarker,
 } from "../shared/selection.ts";
 
-/** Rows a copy is reading, in order, while Pi's getActiveSelectionText runs. */
+/** Lines a copy is reading, in order, while Pi's getActiveSelectionText runs. */
 const READING = Symbol("prose.reading");
 const DEPTH = Symbol("prose.depth");
 /** Tokens whose text wraps as prose. Lists, quotes and tables wrap through them. */
 const WRAPPED = new Set(["paragraph", "heading", "text"]);
-/** Narrower than this, a continuation row does not hang under its line's indent. */
+/** Narrower than this, a continuation line does not hang under its line's indent. */
 const MIN_ROOM = 12;
 /** How far a triple-click follows a wrapped line. */
-const MAX_WRAPPED_ROWS = 500;
-/** A scroll view scrollbar's track and thumb, after padding at the end of a row. */
+const MAX_CONTINUATION_LINES = 500;
+/** A scroll view scrollbar's track and thumb, after padding at the end of a line. */
 const SCROLLBAR = /\s[│┃█]$/;
 
 interface Token {
@@ -75,8 +75,8 @@ const continuation = (line: string): Continuation => {
 const isImageLine = (line: string) => line.includes("\x1b_G") || line.includes("\x1b]1337;File=");
 
 /**
- * Wraps a line to `width` after `prefix`. The first row keeps the line's own indent and, when
- * `mark` is set, marks where its content starts. Later rows hang under that indent and mark how
+ * Wraps a line to `width` after `prefix`. The first line keeps its own indent and, when
+ * `mark` is set, marks where its content starts. Its continuation lines hang under that indent and mark how
  * they continue it. The prefix is layout, such as a code block's indent, so it is never copied.
  */
 export function wrapLine(line: string, width: number, prefix = "", mark = true): string[] {
@@ -161,7 +161,7 @@ function knownText(render: Method): boolean {
   );
 }
 
-/** Pi's selection still takes column bounds per row, and copies rows one per line. */
+/** Pi's selection still takes column bounds per line, and copies each line as one line of text. */
 function knownSelection(columns: Method, copy: Method, lineSelection: Method): boolean {
   const probe = Object.assign(Object.create(TuiAltScreen.prototype), {
     selectionAnchor: { row: 0, col: 0 },
@@ -212,7 +212,7 @@ function checkText(): boolean {
   );
 }
 
-/** Through the patched selection: a copy reads row by row, so it can join wrapped rows. */
+/** Through the patched selection: a copy reads line by line, so it can join continuation lines. */
 function checkSelection(): boolean {
   // A bare screen with only what a copy reads: the method is looked up as Pi's own code would.
   const probe: { getActiveSelectionText?(): unknown } = Object.assign(
@@ -315,7 +315,7 @@ function replacement(key: string, original: Method): Method {
               lines = lines.flatMap((line) => wrapLine(line, width, "", false));
           }
           if (depth) return lines;
-          // A whole rendered row, list bullets and quote borders included: mark where it starts.
+          // A whole line, list bullets and quote borders included: mark where it starts.
           return lines.map((line) =>
             !line || findMarker(line) ? line : `${CONTENT_START}${line}`,
           );
@@ -370,9 +370,9 @@ function replacement(key: string, original: Method): Method {
         maxColumn?: number,
       ) {
         const limit = maxColumn ?? visibleWidth(line);
-        // Every row ends at its last character, wherever its padding or background reaches.
+        // Every line ends at its last character, wherever its padding or background reaches.
         let content = stripTerminalSequences(sliceByColumn(line, 0, limit, true)).trimEnd();
-        // While highlighting, the row may end in the scroll view's scrollbar, after padding.
+        // While highlighting, the line may end in the scroll view's scrollbar, after padding.
         if (maxColumn !== undefined && SCROLLBAR.test(content) && visibleWidth(content) === limit)
           content = content.slice(0, -1).trimEnd();
         const end = Math.min(limit, visibleWidth(content));
@@ -395,13 +395,13 @@ function replacement(key: string, original: Method): Method {
         }
         if (!copied) return copied;
         const lines = copied.split("\n");
-        // Pi reads one row per line. If that ever changes, copy what Pi copied.
+        // Pi copies each line it reads as one line of text. If that ever changes, copy what Pi copied.
         if (lines.length !== reading.length) return copied;
         const joined: string[] = [];
         lines.forEach((line, index) => {
           const continues = reading[index];
           if (!continues || !joined.length) joined.push(line);
-          // A continuation row selected only in its indent adds nothing.
+          // A continuation line selected only in its indent adds nothing.
           else if (line) joined[joined.length - 1] += `${continues === "spaced" ? " " : ""}${line}`;
         });
         return joined.join("\n");
@@ -410,13 +410,13 @@ function replacement(key: string, original: Method): Method {
       return function (this: ScreenInternals, point: Point) {
         const range = original.call(this, point);
         if (typeof this.getSelectionSourceLine !== "function") return range;
-        // A triple-click selects the whole wrapped line, not just the row clicked.
+        // A triple-click selects the wrapped line with its continuation lines, not just the line clicked.
         const row = (at: number) => this.getSelectionSourceLine({ ...point, row: at });
         let first = point.row;
         let last = point.row;
-        while (first > 0 && point.row - first < MAX_WRAPPED_ROWS && continuation(row(first)))
+        while (first > 0 && point.row - first < MAX_CONTINUATION_LINES && continuation(row(first)))
           first--;
-        while (last - point.row < MAX_WRAPPED_ROWS && continuation(row(last + 1))) last++;
+        while (last - point.row < MAX_CONTINUATION_LINES && continuation(row(last + 1))) last++;
         if (first === point.row && last === point.row) return range;
         return {
           start: { ...point, row: first, col: 0 },

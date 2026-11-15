@@ -8,9 +8,9 @@ import type { Previous } from "./request.ts";
 
 /** Where comrade #id's conversation is saved: beside the caller's session, or in tmp without one. */
 export function sessionFile(ctx: ExtensionContext, id: number): string {
-  const parent = ctx.sessionManager.getSessionFile();
-  const dir = parent
-    ? join(dirname(parent), `${basename(parent, ".jsonl")}.comrades`)
+  const callerFile = ctx.sessionManager.getSessionFile();
+  const dir = callerFile
+    ? join(dirname(callerFile), `${basename(callerFile, ".jsonl")}.comrades`)
     : join(tmpdir(), "pi-comrades", ctx.sessionManager.getSessionId());
   return join(dir, `comrade-${id}.jsonl`);
 }
@@ -33,7 +33,7 @@ export function claim(file: string): boolean {
 /** The conversation file holds a run: Pi wrote to it. A claimed, empty one was never started. */
 export const saved = (file: string) => (statSync(file, { throwIfNoEntry: false })?.size ?? 0) > 0;
 
-/** What continuing comrade #id needs, from its latest record on this branch. */
+/** What continuing comrade #id needs, from its latest entry on this branch. */
 export function conversation(id: number, ctx: ExtensionContext): Previous & { session: string } {
   let seen = false;
   let found: Partial<Details> | undefined;

@@ -29,17 +29,17 @@ import {
   saveRun,
 } from "./runs.ts";
 
-/** How recently a background run must have been cut off for the session to carry it on. */
+/** How recently a background run must have been interrupted for the session to resume it. */
 const RESUME_WITHIN_MS = 24 * 60 * 60_000;
-/** What a resumed comrade is asked, after the note on what was cut off. */
-const CARRY_ON =
-  "Carry on with your task from where you stopped, and end with your final answer as before.";
+/** What a resumed comrade is asked, after the note on what was interrupted. */
+const RESUME_TASK =
+  "Resume your task from where you stopped, and end with your final answer as before.";
 
 /** A background run on this branch that never answered: from its start row, or its resume. */
 export interface Pending {
   /** Absent in rows saved by older versions. */
   run?: string;
-  /** The start row's tool call, which shows the run, and any that carries it on, while it goes. */
+  /** The start row's tool call, which shows the run, and any that resumes it, while it goes. */
   row?: string;
   task: string;
   /** Its row or message: the comrade's conversation and settings. */
@@ -91,9 +91,9 @@ export function createReconciler(pi: ExtensionAPI, background: Background, outbo
     const again = continuable ? ` Its conversation is saved: continue it with to: ${id}.` : "";
     // What its row says, in a line.
     const reason = why
-      ? `Not carried on: ${why}.${continuable ? ` Continue it with to: ${id}.` : ""}`
+      ? `Not resumed: ${why}.${continuable ? ` Continue it with to: ${id}.` : ""}`
       : continuable
-        ? `It could not carry on here. Continue it with to: ${id}.`
+        ? `It could not be resumed here. Continue it with to: ${id}.`
         : "Pi exited while it ran, so its answer will not arrive.";
     outbox.deliver(
       {
@@ -113,9 +113,9 @@ export function createReconciler(pi: ExtensionAPI, background: Background, outbo
         ...(pending.row && pending.row !== pending.run ? { row: pending.row } : {}),
       },
       why
-        ? `Pi exited or switched sessions while this comrade ran, and it was not carried on: ${why}.${again}`
+        ? `Pi exited or switched sessions while this comrade ran, and it was not resumed: ${why}.${again}`
         : continuable
-          ? `Pi exited or switched sessions while this comrade ran, and it could not carry on here.${again}`
+          ? `Pi exited or switched sessions while this comrade ran, and it could not be resumed here.${again}`
           : "Pi exited or switched sessions while this comrade ran, so its answer will not arrive.",
       false,
     );
@@ -123,7 +123,7 @@ export function createReconciler(pi: ExtensionAPI, background: Background, outbo
     if (session && run) quietly(() => dropRuns(session, new Set([run])));
   };
 
-  /** What a background run's row or message says it ran with, and what its record adds. */
+  /** What a background run's row or message says it ran with, and what its run record adds. */
   const requestOf = (
     details: Partial<Delivery>,
     record: RunRecord | undefined,
@@ -143,7 +143,7 @@ export function createReconciler(pi: ExtensionAPI, background: Background, outbo
       provider: requested.provider,
       model: requested.model,
       thinking: details.thinking || ctx.thinkingLevel || pi.getThinkingLevel(),
-      // The tools it was given when it started: carrying on is still that run.
+      // The tools it was given when it started: resuming it finishes that same run.
       tools: details.tools ?? [],
       files,
       ...(record?.output ? { output: record.output } : {}),
@@ -190,7 +190,7 @@ export function createReconciler(pi: ExtensionAPI, background: Background, outbo
       durationMs: Math.max(0, record.at - record.started),
       run: record.run,
       ...(pending.row && pending.row !== record.run ? { row: pending.row } : {}),
-      // What it did, from its conversation: from the run it carries on, if it carries one on.
+      // What it did, from its conversation: from the run it resumes, if it resumes one.
       started: pending.details.from ?? record.started,
       ...(done.ended ? { ended: done.ended } : {}),
     };
@@ -206,8 +206,8 @@ export function createReconciler(pi: ExtensionAPI, background: Background, outbo
   };
 
   /**
-   * Carries on a background run that Pi exited during, in its conversation, with what it ran
-   * with. One whose prompt never reached the comrade is sent it again. One cut off mid-run is
+   * Resumes a background run that Pi exited during, in its conversation, with what it ran
+   * with. One whose task never reached the comrade is sent it again. One interrupted mid-run is
    * told so, and which of its calls may or may not have taken effect. Returns why it could not.
    */
   const resume = (
@@ -224,14 +224,14 @@ export function createReconciler(pi: ExtensionAPI, background: Background, outbo
       files = saved.files;
     } else {
       const cut = session ? interruption(session) : undefined;
-      // With no record, only its conversation could say where it stopped.
+      // With no run record, only its conversation could say where it stopped.
       if (!saved && !cut) return "Comrade could not tell where it stopped";
-      task = `${interruptionNote(cut, "the Pi that started you exited")}\n\n${CARRY_ON}`;
+      task = `${interruptionNote(cut, "the Pi that started you exited")}\n\n${RESUME_TASK}`;
     }
     const request = requestOf(pending.details, saved, ctx, task, files);
     if (typeof request === "string") return request;
     const run = randomUUID();
-    // The run it carries on started first: its answer shows what both did.
+    // The run it resumes started first: its answer shows what both did.
     const from = pending.details.from ?? saved?.started ?? pending.details.started;
     const job = background.start(request, id, run, pending.row, pending.task);
     if (from !== undefined) job.from = from;
@@ -246,17 +246,17 @@ export function createReconciler(pi: ExtensionAPI, background: Background, outbo
         ...(pending.row ? { row: pending.row } : {}),
         ...(from !== undefined ? { from } : {}),
       },
-      `Pi exited while this comrade ran, so it carries on from where it stopped. Its answer will arrive as another [comrade #${id} …] message.`,
+      `Pi exited while this comrade ran, so it resumes from where it stopped. Its answer will arrive as another [comrade #${id} …] message.`,
       false,
     );
   };
 
   /**
    * A background run on this branch that never answered, at the session's start: delivered if it
-   * had answered, left alone if another Pi runs it, carried on if it was cut off in the last day,
+   * had answered, left alone if another Pi runs it, resumed if it was interrupted in the last day,
    * and reported otherwise.
    */
-  const recover = (
+  const reconcile = (
     id: number,
     pending: Pending,
     ctx: ExtensionContext,
@@ -290,19 +290,19 @@ export function createReconciler(pi: ExtensionAPI, background: Background, outbo
       const why = answerFrom(id, pending, saved, done, ctx);
       return why ? lost(id, pending, why) : undefined;
     }
-    // Cut off long ago, carrying it on could act on files changed since.
+    // Interrupted long ago, resuming it could act on files changed since.
     const cutAt = Math.max(saved?.at ?? 0, modified(session));
     if (Date.now() - cutAt > RESUME_WITHIN_MS)
       return lost(id, pending, `it stopped ${formatDuration(Date.now() - cutAt)} ago`);
     // At the limit, it waits for the session's next start.
     if (background.jobs.size >= MAX_BACKGROUND)
       return ctx.ui.notify(
-        `Comrade #${id} did not carry on: ${MAX_BACKGROUND} background comrades are running.`,
+        `Comrade #${id} was not resumed: ${MAX_BACKGROUND} background comrades are running.`,
         "warning",
       );
     const why = resume(id, pending, saved, ctx);
     if (why) lost(id, pending, why);
   };
 
-  return { recover };
+  return { reconcile };
 }

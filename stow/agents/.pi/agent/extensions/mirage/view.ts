@@ -33,10 +33,10 @@ import {
   type Expandable,
   isComplete,
   isFailed,
+  type ToolCallState,
   type ToolGroup,
   type ToolGroups,
   type ToolKind,
-  type ToolRow,
   toolCalls,
 } from "./model.ts";
 import { scriptOutput } from "./nested.ts";
@@ -77,12 +77,14 @@ const GROUP_VERBS: Record<
 };
 const NOUNS = { bash: "command", codemode: "script", tool: "tool" } as const;
 export type ToggleTarget = Expandable;
-type GroupState = Pick<ToolGroups, "epoch" | "expanded"> & { rows: ReadonlyMap<string, ToolRow> };
+type GroupState = Pick<ToolGroups, "epoch" | "expanded"> & {
+  rows: ReadonlyMap<string, ToolCallState>;
+};
 interface ViewActions {
   toggle(target: ToggleTarget): void;
   openFile(file: FileReference): void;
   outputPad(): number;
-  renderImages(row: ToolRow, width: number): string[];
+  renderImages(row: ToolCallState, width: number): string[];
   /** The working spinner's current frame while Pi is working, for calls still in progress. */
   spinner?(): string | undefined;
   /** Told each time a frame draws the row with its spinner. */
@@ -109,12 +111,12 @@ function oneLine(value: string): string {
   return clean(value).replace(/\s+/g, " ").trim();
 }
 
-function details(row: ToolRow): Record<string, unknown> | undefined {
+function details(row: ToolCallState): Record<string, unknown> | undefined {
   const value = row.result?.details;
   return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
 }
 
-function diff(row: ToolRow): string {
+function diff(row: ToolCallState): string {
   return text(details(row)?.diff);
 }
 
@@ -127,13 +129,13 @@ function json(value: unknown): string {
 }
 
 /** Shown in place of arguments a row cannot display: invalid, or not kept by Pi. */
-function argumentsNote(row: ToolRow): string {
+function argumentsNote(row: ToolCallState): string {
   if (row.invalidArguments) return "invalid arguments";
   if (row.preview) return oneLine(row.preview);
   return row.omittedBytes === undefined ? "" : `${row.omittedBytes} bytes of arguments`;
 }
 
-/** Marks where a row's content starts, after its indent, for prose's bounded selection. */
+/** Marks where a line's content starts, after its indent, for prose's bounded selection. */
 const markStart = (line: string) => {
   const lead = line.length - line.trimStart().length;
   return `${line.slice(0, lead)}${CONTENT_START}${line.slice(lead)}`;
@@ -153,7 +155,7 @@ const PLAIN: ShellPaint = {
 };
 
 /** The exit code of a failed command. */
-function failureCode(row: ToolRow): string | undefined {
+function failureCode(row: ToolCallState): string | undefined {
   const output = (row.result?.content ?? [])
     .map((part) => (part.type === "text" ? text(part.text) : ""))
     .join("\n");
@@ -164,7 +166,7 @@ function failureCode(row: ToolRow): string | undefined {
 const STREAM_BLOCK_LINES = 50;
 
 /** What a group's summary counts: a script's tool calls, or the script when it made none. */
-function leaves(rows: readonly ToolRow[]): ToolRow[] {
+function leaves(rows: readonly ToolCallState[]): ToolCallState[] {
   return rows.flatMap((row) => {
     if (row.kind !== "codemode") return [row];
     const calls = toolCalls(row);
@@ -198,11 +200,11 @@ export class ToolGroupView implements Component {
   >();
   /** The spinner frame this render paints, the same one its cache key records. */
   private frame = "";
-  readonly row: ToolRow;
+  readonly row: ToolCallState;
   private readonly model: GroupState;
   private readonly actions: ViewActions;
 
-  constructor(row: ToolRow, model: GroupState, actions: ViewActions) {
+  constructor(row: ToolCallState, model: GroupState, actions: ViewActions) {
     this.row = row;
     this.model = model;
     this.actions = actions;
@@ -253,8 +255,8 @@ export class ToolGroupView implements Component {
       const expanded = this.model.expanded(group);
       const commandsOnly = group.rows.every((row) => row.kind === "bash");
       // Like Amp: a group is red only when every call failed. Individual failures
-      // show on their own rows once the group is opened.
-      let state: ToolRow["status"] = "success";
+      // show on their own lines once the group is expanded.
+      let state: ToolCallState["status"] = "success";
       if (!group.rows.every(isComplete)) state = "pending";
       else if (group.rows.every(isFailed)) state = "error";
       const status = this.status(state, commandsOnly);
@@ -296,7 +298,7 @@ export class ToolGroupView implements Component {
     if (
       !this.render(width).length ||
       !this.row.group.rows.some(
-        (row) => row === anchor.key || row.calls?.includes(anchor.key as ToolRow),
+        (row) => row === anchor.key || row.calls?.includes(anchor.key as ToolCallState),
       )
     )
       return undefined;
@@ -324,7 +326,7 @@ export class ToolGroupView implements Component {
   }
 
   /** One call: its header, then its output or, for a script, its calls and output. */
-  private entry(row: ToolRow, indent: number, width: number): void {
+  private entry(row: ToolCallState, indent: number, width: number): void {
     if (row.kind === "bash" && text(row.args.command).trim())
       this.commandHeader(row, indent, width);
     else this.header(`${" ".repeat(indent)}${this.rowLabel(row)}`, row, width);
@@ -337,7 +339,7 @@ export class ToolGroupView implements Component {
     return this.theme.fg("dim", expanded ? "▾" : "▸");
   }
 
-  private status(status: ToolRow["status"], command = false): string {
+  private status(status: ToolCallState["status"], command = false): string {
     if (status === "error") return paint(this.theme, "red", command ? "$" : "✗");
     if (status === "success") return paint(this.theme, "green", command ? "$" : "✓");
     // In progress while Pi works: Pi's own working spinner, in its colour.
@@ -346,7 +348,7 @@ export class ToolGroupView implements Component {
     return this.theme.fg("muted", status === "cancelled" ? "✗" : "…");
   }
 
-  private rowLabel(row: ToolRow): string {
+  private rowLabel(row: ToolCallState): string {
     let label: string;
     if (row.kind === "bash") {
       const note = argumentsNote(row);
@@ -387,7 +389,7 @@ export class ToolGroupView implements Component {
   }
 
   /** `Read 2 files, ran 1 command`: counts per kind, in first-call order. */
-  private summary(rows: readonly ToolRow[], lower = false): string {
+  private summary(rows: readonly ToolCallState[], lower = false): string {
     const kinds = [...new Set(rows.flatMap((row) => (row.kind === "model" ? [] : [row.kind])))];
     return kinds
       .map((kind, index) => {
@@ -418,7 +420,7 @@ export class ToolGroupView implements Component {
    * Sums successful edits' diffs and writes' lines. Rows show coloured `+A −R`. Group
    * summaries, like Amp, show plain `(+A −R)` in grey brackets.
    */
-  private changeSummary(rows: readonly ToolRow[], group = false): string {
+  private changeSummary(rows: readonly ToolCallState[], group = false): string {
     let added = 0,
       removed = 0;
     for (const row of rows) {
@@ -441,7 +443,7 @@ export class ToolGroupView implements Component {
   }
 
   /** A command as Amp draws it: a line per step, then where it ran and how it failed. */
-  private commandHeader(row: ToolRow, indent: number, width: number): void {
+  private commandHeader(row: ToolCallState, indent: number, width: number): void {
     const shown = showCommand(clean(text(row.args.command)), this.shellPaint());
     const note = (value: string) => this.theme.italic(this.theme.fg("dim", value));
     const trailer: string[] = [];
@@ -488,7 +490,7 @@ export class ToolGroupView implements Component {
   }
 
   /** A script: its source behind its own toggle, the calls it made, then its output. */
-  private script(row: ToolRow, indent: number, width: number): void {
+  private script(row: ToolCallState, indent: number, width: number): void {
     const source = clean(text(row.args.code)).trimEnd();
     if (source && row.source) {
       const count = source.split("\n").length;
@@ -514,7 +516,7 @@ export class ToolGroupView implements Component {
     this.body(row, width, indent);
   }
 
-  private body(row: ToolRow, width: number, padding = 2): void {
+  private body(row: ToolCallState, width: number, padding = 2): void {
     if (width <= 0) return;
     const indent = Math.min(padding, Math.max(0, width - 1));
     const bodyWidth = Math.max(1, width - indent);
@@ -569,7 +571,7 @@ export class ToolGroupView implements Component {
       } else if (row.kind === "read") {
         output = this.code(row.id, output, row.file?.path);
       } else if (row.kind === "codemode" || row.kind === "tool") {
-        // Colouring nothing would still emit escape codes, and an empty row.
+        // Colouring nothing would still emit escape codes, and an empty line.
         if (output) output = this.theme.fg("toolOutput", output);
       }
       if (imageLines.length === 0) {
@@ -634,7 +636,7 @@ export class ToolGroupView implements Component {
     for (const line of lines) {
       this.targets.set(this.rawLines.length, target);
       // The indent is mirage's layout. The line's own leading space is content, such as code's.
-      // Text that prose wrapped already marks its rows, wrapped continuations included.
+      // Text that prose wrapped already marks its lines, continuation lines included.
       this.rawLines.push(`${" ".repeat(indent)}${findMarker(line) ? "" : CONTENT_START}${line}`);
     }
   }

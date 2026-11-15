@@ -8,6 +8,7 @@ import type { TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type {
+  EntryRenderer,
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionToolContext,
@@ -80,6 +81,7 @@ export function fixture(
   const waiting: (() => void)[] = [];
   const commands = new Map<string, Command>();
   const renderers = new Map<string, MessageRenderer<Delivery>>();
+  const entryRenderers = new Map<string, EntryRenderer>();
   const notices: string[] = [];
   const api: ExtensionAPI = {
     ...pi.api,
@@ -90,6 +92,18 @@ export function fixture(
     registerCommand: (name, options) => commands.set(name, options),
     registerMessageRenderer: ((type: string, renderer: MessageRenderer<Delivery>) =>
       renderers.set(type, renderer)) as ExtensionAPI["registerMessageRenderer"],
+    registerEntryRenderer: ((type: string, renderer: EntryRenderer) =>
+      entryRenderers.set(type, renderer)) as ExtensionAPI["registerEntryRenderer"],
+    // Saved in the session as Pi saves it: on the branch, never in the model's context.
+    appendEntry: (customType: string, data?: unknown) =>
+      void entries.push(
+        fake<SessionEntry>({
+          type: "custom",
+          id: `entry-${entries.length}`,
+          customType,
+          data,
+        } as never),
+      ),
     getAllTools: () =>
       [...toolNames, ...pi.tools.keys()].map((name) =>
         fake<ReturnType<ExtensionAPI["getAllTools"]>[number]>({ name }),
@@ -218,6 +232,7 @@ export function fixture(
     slash,
     notices,
     renderers,
+    entryRenderers,
     shutdown,
     comrades,
     settle,

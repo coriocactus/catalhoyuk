@@ -13,7 +13,7 @@ import { oneLine } from "./work.ts";
 
 export const THINKING = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type Thinking = (typeof THINKING)[number];
-/** Read-only built-ins: enough to find and read files, nothing that changes them. */
+/** Read-only native tools: enough to find and read files, nothing that changes them. */
 export const READ_ONLY = ["read", "grep", "find", "ls"];
 /** This extension's own tools, which comrades never get. */
 const OWN = ["comrade", "comrades"];

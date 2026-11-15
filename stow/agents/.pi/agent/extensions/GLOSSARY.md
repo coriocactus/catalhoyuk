@@ -206,6 +206,10 @@ The one-line account of a run that ends what the caller reads.
 **Start row**:
 The row of the call that started a background run, as distinct from the row of its delivery.
 
+**Listing**:
+The rows of the background runs in progress at one moment, each drawn as its start row: from `/comrades`, or a caller's `comrades` call.
+_Avoid_: status, snapshot
+
 **Title**:
 The few words by which a caller names a comrade's row.
 

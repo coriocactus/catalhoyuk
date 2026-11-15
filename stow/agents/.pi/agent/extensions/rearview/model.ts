@@ -2,7 +2,7 @@ import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 
 export const PAGE_SIZE = 50;
 export type EntryLookup = (id: string) => SessionEntry | undefined;
-export interface HistoryBatch {
+export interface PreparedPage {
   readonly entries: SessionEntry[];
   readonly from: string;
   readonly next: string | null;
@@ -76,7 +76,7 @@ export class HistoryCursor {
     this.visible = visible;
   }
 
-  prepare(size = PAGE_SIZE): HistoryBatch | undefined {
+  prepare(size = PAGE_SIZE): PreparedPage | undefined {
     if (!Number.isSafeInteger(size) || size < 1)
       throw new Error("History page size must be a positive integer.");
     if (!this.next) return undefined;
@@ -102,17 +102,17 @@ export class HistoryCursor {
           }
         }
       }
-      // Keep tool calls with their results, even when a batch crosses the nominal limit.
+      // Keep tool calls with their results, even when a page crosses the nominal limit.
       if (entries.length >= size && awaitingCalls.size === 0) break;
       if (visited.size > size + 4096)
-        throw new Error("Unbounded or malformed tool batch in session history.");
+        throw new Error("Unbounded or malformed tool calls and results in session history.");
     }
     return { entries: entries.reverse(), from: this.next, next: cursor, visited: [...visited] };
   }
 
-  commit(batch: HistoryBatch): void {
-    if (this.next !== batch.from) throw new Error("Stale history batch.");
-    for (const id of batch.visited) this.consumed.add(id);
-    this.next = batch.next;
+  commit(page: PreparedPage): void {
+    if (this.next !== page.from) throw new Error("Stale history page.");
+    for (const id of page.visited) this.consumed.add(id);
+    this.next = page.next;
   }
 }

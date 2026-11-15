@@ -23,7 +23,7 @@ type RenderEntries = (
 ) => void;
 
 // The ONLY private Pi boundary. Reuse native message/tool rendering against an
-// isolated receiver: no live pending tools, editor history, footer, or agent writes.
+// isolated receiver: no calls in progress, editor history, footer, or agent writes.
 export interface NativeHost {
   renderSessionEntries: RenderEntries;
   chatContainer: Container;
@@ -113,7 +113,7 @@ class HistoryPages extends Container {
     for (const page of this.children as Container[])
       for (const child of page.children) expand(child, value);
   }
-  /** Pi passes Output padding changes to each chat child, including this one. */
+  /** Pi passes Output padding changes to each child of the transcript, including this one. */
   setOutputPad(value: number): void {
     for (const page of this.children as Container[])
       for (const child of page.children) pad(child, value);
@@ -127,7 +127,7 @@ export class HistoryController {
   private readonly display?: (view: TranscriptView) => void;
   private padding = 0;
   private readonly filler: Component;
-  private readonly scrollHook: ReturnType<typeof attachTopPaging>;
+  private readonly topPaging: ReturnType<typeof attachTopPaging>;
   private cursor?: HistoryCursor;
   private boundaryKey?: string;
   private sessionId?: string;
@@ -161,7 +161,7 @@ export class HistoryController {
       render: () => (host.ui.mode === "fullscreen" ? Array(this.padding).fill("") : []),
       invalidate() {},
     };
-    this.scrollHook = attachTopPaging(host.transcriptScrollView, {
+    this.topPaging = attachTopPaging(host.transcriptScrollView, {
       active: () => !this.closed && host.ui.mode === "fullscreen",
       width: () => host.ui.terminal.columns,
       load: () => this.requestOlder(),
@@ -236,7 +236,7 @@ export class HistoryController {
       this.busy = false;
       this.failed = false;
       this.padding = 0;
-      this.scrollHook.reset();
+      this.topPaging.reset();
       const visible = new Set(entries.map((entry) => entry.id));
       const lookup = (id: string) => this.host.sessionManager.getEntry(id);
       const gap =
@@ -255,7 +255,7 @@ export class HistoryController {
       this.sessionId = sessionId;
     }
     this.firstDisplayed = (entries[0]?.type === "compaction" ? entries[1] : entries[0])?.id;
-    // Pi clears the chat on compaction, tree navigation, and display rebuilds.
+    // Pi clears the transcript on compaction, tree navigation, and display rebuilds.
     if (
       (this.cursor?.next || this.pages.children.length) &&
       !this.host.chatContainer.children.includes(this.pages)
@@ -309,8 +309,8 @@ export class HistoryController {
       }
       try {
         const cursor = this.cursor;
-        const batch = cursor?.prepare(this.size);
-        if (!batch || !cursor) {
+        const prepared = cursor?.prepare(this.size);
+        if (!prepared || !cursor) {
           this.busy = false;
           return;
         }
@@ -318,7 +318,7 @@ export class HistoryController {
         const width = scroll.getContentWidth(this.host.ui.terminal.columns);
         const anchor = captureViewportAnchor(
           () => this.components(),
-          // Header, resources, and filler are direct document children; chat rows are not.
+          // Header, resources, and filler are direct document children; transcript rows are not.
           (component) => !this.host.documentContainer.children.includes(component),
           scroll.scrollTop,
           width,
@@ -326,7 +326,7 @@ export class HistoryController {
         const change: TranscriptView = {
           sessionId: this.host.sessionManager.getSessionId(),
           cwd: this.host.sessionManager.getCwd(),
-          entries: batch.entries,
+          entries: prepared.entries,
           expanded: this.host.toolOutputExpanded,
           scope: this.scope,
           prepend: true,
@@ -334,13 +334,13 @@ export class HistoryController {
         let page: Container | undefined;
         try {
           this.display?.(change);
-          page = this.renderPage(batch.entries);
+          page = this.renderPage(prepared.entries);
           if (this.closed || generation !== this.generation || cursor !== this.cursor) {
             change.transaction?.rollback();
             this.pageEntries.delete(page);
             return;
           }
-          cursor.commit(batch);
+          cursor.commit(prepared);
           change.transaction?.commit();
           this.pages.children.unshift(page);
         } catch (error) {
@@ -356,7 +356,7 @@ export class HistoryController {
           0,
           Math.max(0, scroll.scrollTop + added) + scroll.viewportHeight - afterHeight,
         );
-        this.scrollHook.anchor(anchor ?? page);
+        this.topPaging.anchor(anchor ?? page);
         this.host.ui.requestRender();
       } catch (error) {
         this.busy = false;
@@ -390,8 +390,8 @@ export class HistoryController {
         }
       if (entry.message.role === "toolResult") results.add(entry.message.toolCallId);
     }
-    // Old compactions can retain a result but omit its call. Complete the archived
-    // call without moving/duplicating live components or executing anything.
+    // Old compactions can retain a result but omit its call. Complete the saved
+    // call without moving/duplicating drawn rows or executing anything.
     for (const entry of this.contextEntries) {
       if (
         entry.type === "message" &&
@@ -410,7 +410,7 @@ export class HistoryController {
     if (this.closed) return;
     this.closed = true;
     this.generation++;
-    this.scrollHook.dispose();
+    this.topPaging.dispose();
     this.host.chatContainer.removeChild(this.pages);
     this.host.documentContainer.removeChild(this.filler);
     this.pages.clear();

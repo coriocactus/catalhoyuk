@@ -2,9 +2,9 @@ import type { Component } from "@earendil-works/pi-tui";
 import { type AnchoredComponent, ROW_ANCHOR } from "../shared/anchors.ts";
 
 /**
- * Capture the first visible chat row before a prepend regroups tool rows, then
- * return how far it moved. Positions are chat-relative, so Pi's startup header
- * above the chat is never the anchor and its rewrapping is not counted.
+ * Capture the first visible transcript row before a prepend regroups calls, then
+ * return how far it moved. Positions are transcript-relative, so Pi's startup header
+ * above the transcript is never the anchor and its rewrapping is not counted.
  */
 export function captureViewportAnchor(
   components: () => readonly Component[],
@@ -45,8 +45,8 @@ export function captureViewportAnchor(
           }
           position += lines;
         }
-        // Pi rebuilt the chat (settings, compaction) and replaced the anchored
-        // component. Loaded pages are unchanged, so keep the last offset.
+        // Pi rebuilt the transcript (settings, compaction) and replaced the anchored
+        // row. Loaded pages are unchanged, so keep the last offset.
         return last;
       };
     }

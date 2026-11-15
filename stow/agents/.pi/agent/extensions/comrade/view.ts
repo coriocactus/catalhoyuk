@@ -1,5 +1,5 @@
-// How a comrade looks: its tool row, a background comrade's delivered message, and its line in
-// the widget above the editor. Rows are flat, as mirage draws its own. At rest a row is one
+// How a comrade looks: the row of its call, a background comrade's delivered message, and its line in
+// the widget above the editor. Rows are flat, as mirage draws its own. Collapsed, a row is one
 // line: glyph, `Comrade #N`, its title, then how it went. While it runs, two fixed lines follow:
 // what it is doing, and the last thing it said. Expanded, a row is its conversation: its task,
 // then what it said and did, its calls drawn by mirage where mirage is loaded, then its answer.
@@ -29,7 +29,7 @@ export interface Face {
 }
 
 /** Everything a row shows besides its answer. Stored in tool result and message details. */
-export interface Card extends Face {
+export interface RunDetails extends Face {
   model: string;
   thinking: string;
   tools: string[];
@@ -50,7 +50,7 @@ export interface Card extends Face {
   files?: number;
   /** The directory the comrade ran in, when not the caller's. */
   cwd?: string;
-  /** Why the comrade's last turn ended: anything but `stop` means the answer is cut off. */
+  /** Why the comrade's last turn ended: anything but `stop` means the answer is partial. */
   stopReason?: string;
   /** Stopped because it ran past its timeout. */
   timedOut?: boolean;
@@ -60,7 +60,7 @@ export interface Card extends Face {
   session?: string;
   /** This run continued an earlier conversation. */
   followUp?: boolean;
-  /** This run carried on after Pi exited while the comrade ran. */
+  /** This run resumed one that Pi exited during. */
   resumed?: boolean;
   /** When it started, and once it has ended, when: its conversation in between is what it did. */
   started?: number;
@@ -87,19 +87,19 @@ export type Phase =
   /** A background comrade's start row, while its run goes on or once it has ended. */
   | "background"
   | "lost"
-  /** Carrying on after Pi exited while it ran. */
+  /** Resumed after Pi exited while it ran. */
   | "resumed"
-  /** A message sent to a running comrade. */
+  /** A steer sent to a running comrade. */
   | "sent";
 
 /** How a background run ended, as its start row says once it has. */
-export type Outcome = "finished" | "failed" | "stopped" | "lost";
+export type Ending = "finished" | "failed" | "stopped" | "lost";
 
 export interface Look {
   phase: Phase;
   /** The task: its first line names a row saved before titles. */
   task: string;
-  /** Its title, when there is no card to carry it yet. */
+  /** Its title, when there are no run details to carry it yet. */
   title?: string;
   expanded: boolean;
   id?: number;
@@ -109,16 +109,21 @@ export interface Look {
   /** A background start row whose run goes on. */
   live?: boolean;
   /** A background start row whose run has ended. */
-  outcome?: Outcome;
-  /** A message sent to a running comrade. */
+  ending?: Ending;
+  /**
+   * A row in an older listing: how its run stood when that listing was made, with its cost and
+   * clock then, not how it stands now.
+   */
+  stood?: boolean;
+  /** A steer sent to a running comrade. */
   message?: string;
-  /** What a row with no card says: why it was refused, or a resumed comrade's note. */
+  /** What a row with no run details says: why it was refused, or a resumed comrade's note. */
   note?: string;
   /** The whole task, not just its first lines. */
-  taskOpen?: boolean;
+  taskExpanded?: boolean;
   /** All its work, not just its latest blocks. */
-  earlierOpen?: boolean;
-  /** Its work, in order, once known: its words, thinking, what it was told, and its calls. */
+  earlierExpanded?: boolean;
+  /** Its work, in order, once known: its words, thinking, the steers sent to it, and its calls. */
   blocks?: Block[];
   /** Whether Pi shows thinking now, so a row shows the comrade's. */
   thinking?: boolean;
@@ -127,20 +132,20 @@ export interface Look {
   /**
    * Brings the look up to date before each draw: Pi draws rows again without rendering them
    * afresh, for its thinking toggle and for every frame while a comrade works. It may change
-   * `spinner`, `durationMs`, `thinking` and `blocks`, and returns the card to draw when it has
-   * a newer one than the row was given.
+   * `spinner`, `durationMs`, `thinking` and `blocks`, and returns the run details to draw when it
+   * has newer ones than the row was given.
    */
-  // biome-ignore lint/suspicious/noConfusingVoidType: a refresh with no newer card returns nothing.
-  refresh?: () => Card | undefined | void;
+  // biome-ignore lint/suspicious/noConfusingVoidType: a refresh with no newer run details returns nothing.
+  refresh?: () => RunDetails | undefined | void;
 }
 
-/** One piece of a comrade's work, as its row shows it below its prompt. */
+/** One piece of a comrade's work, as its row shows it below its task. */
 export type Block =
   /** What it said. `source` is the message part it came from, by which it is drawn once. */
   | { kind: "text"; text: string; source?: object }
   /** What it thought, shown only where Pi shows thinking. */
   | { kind: "thinking"; text: string; source?: object }
-  /** A message sent to it while it ran. */
+  /** A steer sent to it. */
   | { kind: "message"; text: string }
   /**
    * Mirage's row for a group of its calls: how many, how many still run, and the last of them as
@@ -153,11 +158,11 @@ export type Block =
 /** A call as a row draws it, running or ended. */
 export type LiveRow = Omit<Row, "status"> & { status: Live };
 
-/** What clicking a row does: its header opens or closes it, its task line the whole task. */
+/** What clicking a row does: its header expands or collapses it, its task line the whole task. */
 export interface Toggles {
   row?: () => void;
   task?: () => void;
-  /** An open row's work before its latest blocks. */
+  /** An expanded row's work before its latest blocks. */
   earlier?: () => void;
 }
 
@@ -169,19 +174,19 @@ const TRUNCATED = /\n\n\[Answer truncated: [^\]]*\]$/;
 /** The run line that ends the text the calling model reads. The row shows the run itself. */
 const RUN = /\n\n\[comrade(?: #\d+)?: [^\n]*\]$/;
 /** The first line of an answer that is not final. The row's header says so instead. */
-const NOT_FINAL = /^\[Comrade(?:'s answer is cut off| timed out)[^\n]*\]\n\n/;
+const NOT_FINAL = /^\[Comrade(?:'s answer is (?:cut off|partial)| timed out)[^\n]*\]\n\n/;
 /** Lines of the task an expanded row shows before `… N more lines ▸`. */
 const TASK_LINES = 6;
-/** An open row shows at most this many blocks of its work, its latest, until asked for all. */
+/** An expanded row shows at most this many blocks of its work, its latest, until asked for all. */
 const BLOCKS_SHOWN = 24;
-/** A row that did not succeed says why in at most this many lines until opened. */
+/** A row that did not succeed says why in at most this many lines until expanded. */
 const REASON_LINES = 3;
 /** Below these widths a header drops the model chip, then the cost. */
 const CHIP_WIDTH = 80;
 const COST_WIDTH = 60;
 
-/** Cut off: the answer ended for a reason other than finishing. */
-export const cutOff = (card: Card | undefined) =>
+/** Partial: the answer ended for a reason other than finishing. */
+export const partialAnswer = (card: RunDetails | undefined) =>
   Boolean(card?.stopReason && card.stopReason !== "stop" && !card.timedOut);
 
 /** The task's first line, on one line, with the home directory as `~`. */
@@ -221,7 +226,7 @@ export function cut(line: string, width: number): string {
  * What a running comrade is doing, in a word or two: `waiting 48s`, `thinking`, `calling edit`,
  * `Reading ~/x`. A wait after the first turn says how long it has lasted.
  */
-export function activityText(card: Card): string {
+export function activityText(card: RunDetails): string {
   const activity = card.activity;
   if (!activity) return card.work?.current ?? "";
   switch (activity.state) {
@@ -247,7 +252,7 @@ export function activityText(card: Card): string {
  * `↑150 ↓~2.1k`: the finished messages' tokens plus the streaming message's. The output is
  * marked `~` while it is estimated from the streamed text. Each part shows once it is known.
  */
-export function tokensText(card: Card, running: boolean): string {
+export function tokensText(card: RunDetails, running: boolean): string {
   const { usage, streamed } = card;
   const input =
     usage.input + usage.cacheRead + usage.cacheWrite + (running ? (streamed?.input ?? 0) : 0);
@@ -265,7 +270,7 @@ export function tokensText(card: Card, running: boolean): string {
  * The run, for the calling model, which never sees the row:
  * `[comrade #3: model:level · 2 turns · 1 call · explored 1 file · ↑300 ↓20 · $0.02 · 1.2s · stop]`.
  */
-export function runLine(card: Card, durationMs: number, id?: number): string {
+export function runLine(card: RunDetails, durationMs: number, id?: number): string {
   const { usage } = card;
   const work = card.work?.tallies.length ? summary(card.work.tallies) : "";
   const parts = [
@@ -281,20 +286,20 @@ export function runLine(card: Card, durationMs: number, id?: number): string {
   return `[comrade${id === undefined ? "" : ` #${id}`}: ${parts.filter(Boolean).join(" · ")}]`;
 }
 
-/** Whether the row's comrade is still at work: its clock ticks and its live lines show. */
+/** Whether the row's comrade is still at work: its clock ticks and its progress lines show. */
 const working = (look: Look) => look.phase === "running" || Boolean(look.live);
 
 /** The glyph that leads a row. */
-function glyph(look: Look, card: Card | undefined, theme: Theme): string {
+function glyph(look: Look, card: RunDetails | undefined, theme: Theme): string {
   const spinning = (fallback: string) =>
     look.spinner ? theme.fg("accent", look.spinner) : theme.fg("muted", fallback);
   switch (look.phase) {
     case "running":
       return spinning("…");
     case "background":
-      return look.live ? spinning("…") : theme.fg("muted", "↗");
+      return look.live ? spinning("…") : theme.fg("muted", look.stood ? "·" : "↗");
     case "finished":
-      return cutOff(card) ? theme.fg("warning", "!") : paint(theme, "green", "✓");
+      return partialAnswer(card) ? theme.fg("warning", "!") : paint(theme, "green", "✓");
     case "failed":
       return paint(theme, "red", "✗");
     case "stopped":
@@ -308,14 +313,14 @@ function glyph(look: Look, card: Card | undefined, theme: Theme): string {
 }
 
 /** The word after the title that says how it went, if anything needs saying, styled. */
-function word(look: Look, card: Card | undefined, theme: Theme): string {
+function word(look: Look, card: RunDetails | undefined, theme: Theme): string {
   switch (look.phase) {
     case "failed":
       return paint(theme, "red", card?.timedOut ? "timed out" : "failed");
     case "finished":
-      return cutOff(card) ? theme.fg("warning", "cut off") : "";
+      return partialAnswer(card) ? theme.fg("warning", "partial") : "";
     case "background":
-      return theme.fg("muted", look.outcome ? `background · ${look.outcome}` : "background");
+      return theme.fg("muted", look.ending ? `background · ${look.ending}` : "background");
     case "running":
       return "";
     default:
@@ -324,7 +329,7 @@ function word(look: Look, card: Card | undefined, theme: Theme): string {
 }
 
 /** Whether expanding the row shows anything more. */
-function expandable(look: Look, card: Card | undefined, answer: string): boolean {
+function expandable(look: Look, card: RunDetails | undefined, answer: string): boolean {
   switch (look.phase) {
     case "resumed":
       return Boolean(look.note);
@@ -344,10 +349,10 @@ function expandable(look: Look, card: Card | undefined, answer: string): boolean
  */
 function header(
   look: Look,
-  card: Card | undefined,
+  card: RunDetails | undefined,
   theme: Theme,
   width: number,
-  opens: boolean,
+  expands: boolean,
 ): string {
   const name = theme.fg(
     "toolTitle",
@@ -369,7 +374,9 @@ function header(
   const ended = look.phase === "background" && !look.live;
   // A start row whose run goes on has its cost and clock, as a foreground row has.
   const costs =
-    (look.phase === "background" && !look.live) || look.phase === "sent" || look.phase === "resumed"
+    (look.phase === "background" && !look.live && !look.stood) ||
+    look.phase === "sent" ||
+    look.phase === "resumed"
       ? []
       : [
           card?.turns && width >= COST_WIDTH ? formatCost(card.usage.cost.total) : "",
@@ -382,14 +389,14 @@ function header(
   // Narrow, a start row says how its run went without the word background, before its name goes.
   const narrow = width < COST_WIDTH && look.phase === "background";
   const said = narrow
-    ? look.outcome
-      ? theme.fg("muted", look.outcome)
+    ? look.ending
+      ? theme.fg("muted", look.ending)
       : ""
     : word(look, card, theme);
   const parts = [said, ...costs.filter(Boolean).map((part) => theme.fg("dim", part))].filter(
     Boolean,
   );
-  const caret = opens ? theme.fg("dim", look.expanded ? "▾" : "▸") : "";
+  const caret = expands ? theme.fg("dim", look.expanded ? "▾" : "▸") : "";
   const trailer = [parts.join(theme.fg("dim", " · ")), caret].filter(Boolean).join(" ");
   const tail = trailer ? `  ${trailer}` : "";
   const line = cut(label, Math.max(0, width - visibleWidth(tail))) + tail;
@@ -481,7 +488,7 @@ const CARET = /\s*(?:\x1b\[[0-9;]*m)*[▸▾](?:\x1b\[[0-9;]*m)*\s*$/;
 const UNDERLINES = /\x1b\[(?:4|24)m/g;
 
 /** What it waits on: `thinking`, `waiting 48s`, a retry in the warning colour. */
-function status(card: Card, theme: Theme): string {
+function status(card: RunDetails, theme: Theme): string {
   const retrying = card.activity?.state === "retrying";
   return theme.fg(retrying ? "warning" : "dim", activityText(card) || "starting");
 }
@@ -494,7 +501,7 @@ function status(card: Card, theme: Theme): string {
  * said anything, its tokens so far. While it thinks or writes what shows below, the line above
  * names the last call it ran instead, rather than labelling the words.
  */
-function live(look: Look, card: Card, theme: Theme, width: number): string[] {
+function progressLines(look: Look, card: RunDetails, theme: Theme, width: number): string[] {
   const latest = look.blocks?.findLast((block) => block.kind === "rows" || block.kind === "call");
   const recent = card.work?.recent?.at(-1);
   const state = card.activity?.state;
@@ -542,7 +549,7 @@ export function fitted(said: string, width: number): string {
 }
 
 /** What a working comrade waits on when not a call, which shows itself: thinking, a retry. */
-function waiting(card: Card, theme: Theme): string {
+function waiting(card: RunDetails, theme: Theme): string {
   const state = card.activity?.state;
   if (!state || state === "running") return "";
   return theme.fg(state === "retrying" ? "warning" : "dim", activityText(card));
@@ -552,18 +559,18 @@ function waiting(card: Card, theme: Theme): string {
 const printable = (text: string) =>
   text.replace(/\r\n?/g, "\n").replace(/\t/g, "  ").replace(CONTROLS_BUT_LINES, "");
 
-/** Tasks already drawn, by width, openness and text. */
+/** Tasks already drawn, by width, whether expanded, and text. */
 const tasks = new Map<string, { lines: string[]; toggle?: number }>();
 
-/** The task behind a bar, its first lines unless opened whole, with a toggle when longer. */
+/** The task behind a bar, its first lines unless expanded whole, with a toggle when longer. */
 function taskBlock(
   task: string,
-  open: boolean,
+  expanded: boolean,
   width: number,
   theme: Theme,
 ): { lines: string[]; toggle?: number } {
   drawing(theme);
-  const key = `${width}\u0000${open}\u0000${task}`;
+  const key = `${width}\u0000${expanded}\u0000${task}`;
   const known = tasks.get(key);
   if (known) return known;
   const source = printable(task).trim().split("\n");
@@ -571,12 +578,14 @@ function taskBlock(
   const bar = theme.fg("muted", BAR);
   const wrapped =
     room < 8 ? source : source.flatMap((line) => (line ? wrapTextWithAnsi(line, room) : [""]));
-  const lines = (open ? wrapped : wrapped.slice(0, TASK_LINES)).map((line) => `  ${bar}${line}`);
+  const lines = (expanded ? wrapped : wrapped.slice(0, TASK_LINES)).map(
+    (line) => `  ${bar}${line}`,
+  );
   let block: { lines: string[]; toggle?: number } = { lines };
   if (wrapped.length > TASK_LINES) {
     const more = wrapped.length - TASK_LINES;
     lines.push(
-      `  ${theme.fg("dim", open ? "show fewer lines ▴" : `… ${more} more line${more === 1 ? "" : "s"} ▸`)}`,
+      `  ${theme.fg("dim", expanded ? "show fewer lines ▴" : `… ${more} more line${more === 1 ? "" : "s"} ▸`)}`,
     );
     block = { lines, toggle: lines.length - 1 };
   }
@@ -635,7 +644,7 @@ function answerLines(answer: string, width: number, theme: Theme): string[] {
 }
 
 /** Why an answer that ended early is not whole. */
-function cutOffReason(card: Card | undefined): string {
+function partialReason(card: RunDetails | undefined): string {
   return card?.stopReason === "length"
     ? "Reached its output token limit. The answer is partial."
     : `Its last turn ended with "${card?.stopReason}". The answer may be partial.`;
@@ -649,13 +658,13 @@ interface Zone {
 }
 
 /**
- * A comrade's row. It renders from its look and card, and draws again when they change. A click
+ * A comrade's row. It renders from its look and run details, and draws again when they change. A click
  * on mirage's rows inside it reaches them; on its task's toggle line, the whole task; on its
- * header, the row itself where it has its own toggle (a message), or else Pi's (a tool row).
+ * header, the row itself where it has its own toggle (a message), or else Pi's (a call's row).
  */
-export class CardView implements Component {
+export class RowView implements Component {
   private look: Look;
-  private card: Card | undefined;
+  private card: RunDetails | undefined;
   private answer: string;
   private theme: Theme;
   private pad: number;
@@ -671,13 +680,13 @@ export class CardView implements Component {
     durationMs?: number;
     second?: number;
     blocks?: Block[];
-    card?: Card;
+    card?: RunDetails;
     lines: string[];
   };
 
   constructor(
     look: Look,
-    card: Card | undefined,
+    card: RunDetails | undefined,
     answer: string,
     theme: Theme,
     pad: number,
@@ -694,7 +703,7 @@ export class CardView implements Component {
   /** Draws another state of the same row, so Pi's renderers can keep one component for it. */
   update(
     look: Look,
-    card: Card | undefined,
+    card: RunDetails | undefined,
     answer: string,
     theme: Theme,
     pad: number,
@@ -761,7 +770,7 @@ export class CardView implements Component {
 
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
     if (event.button !== "left") return undefined;
-    // Mirage's rows, two columns in, open their groups and files as Pi's own rows do.
+    // Mirage's rows, two columns in, expand their groups and open their files as Pi's own rows do.
     const zone = this.zones.find((item) => event.y >= item.start && event.y < item.end);
     const result = zone?.component.handleMouse?.({
       ...event,
@@ -773,7 +782,7 @@ export class CardView implements Component {
       return result;
     }
     if (event.type !== "click") return undefined;
-    // Anywhere else, a click opens or closes the row: Pi does it for a tool row, and the row
+    // Anywhere else, a click expands or collapses the row: Pi does it for a call's row, and the row
     // itself for its answer, which has no toggle of Pi's.
     const target = this.targets.get(event.y) ?? (this.targets.has(0) ? "row" : undefined);
     const toggle = target && this.toggles[target];
@@ -783,20 +792,20 @@ export class CardView implements Component {
     return { handled: true };
   }
 
-  private lines(width: number, card: Card | undefined): string[] {
+  private lines(width: number, card: RunDetails | undefined): string[] {
     const { look, answer, theme } = this;
-    // A call whose arguments still stream has nothing to open yet.
-    const opens = expandable(look, card, answer) && !(look.phase === "running" && !card);
-    const lines = [header(look, card, theme, width, opens)];
-    if (opens && this.toggles.row) this.targets.set(0, "row");
+    // A call whose arguments still stream has nothing to expand yet.
+    const expands = expandable(look, card, answer) && !(look.phase === "running" && !card);
+    const lines = [header(look, card, theme, width, expands)];
+    if (expands && this.toggles.row) this.targets.set(0, "row");
     const blank = () => {
       if (lines.at(-1) !== "") lines.push("");
     };
-    // The prompt: its first lines, the files attached to it, and a toggle for the rest.
-    const prompt = () => {
+    // The task: its first lines, the files attached to it, and a toggle for the rest.
+    const showTask = () => {
       if (!look.task.trim()) return;
       blank();
-      const block = taskBlock(look.task, Boolean(look.taskOpen), width, theme);
+      const block = taskBlock(look.task, Boolean(look.taskExpanded), width, theme);
       if (block.toggle !== undefined) this.targets.set(lines.length + block.toggle, "task");
       lines.push(...block.lines);
       if (card?.files)
@@ -804,12 +813,12 @@ export class CardView implements Component {
           `  ${theme.fg("dim", `${card.files} file${card.files === 1 ? "" : "s"} attached`)}`,
         );
     };
-    // Its work, in order: its words, its thinking where Pi shows it, what it was told, and its
+    // Its work, in order: its words, its thinking where Pi shows it, the steers sent to it, and its
     // calls, mirage's rows stacked as mirage stacks them.
     // Its work, its latest blocks unless all were asked for, with a toggle for the rest.
     const work = () => {
       const blocks = look.blocks ?? [];
-      const earlier = look.earlierOpen ? 0 : Math.max(0, blocks.length - BLOCKS_SHOWN);
+      const earlier = look.earlierExpanded ? 0 : Math.max(0, blocks.length - BLOCKS_SHOWN);
       if (blocks.length > BLOCKS_SHOWN && this.toggles.earlier) {
         blank();
         this.targets.set(lines.length, "earlier");
@@ -854,9 +863,9 @@ export class CardView implements Component {
       case "background": {
         const going = working(look) && card;
         if (going && look.phase === "running" && !look.expanded)
-          lines.push(...live(look, card, theme, Math.max(1, width - 2)));
+          lines.push(...progressLines(look, card, theme, Math.max(1, width - 2)));
         if (!look.expanded) break;
-        prompt();
+        showTask();
         work();
         // While it works, what it waits on, under what it has done: its calls show their own.
         const now = going ? waiting(card, theme) : "";
@@ -878,8 +887,8 @@ export class CardView implements Component {
             lines.push(`  ${theme.fg("muted", line)}`);
         break;
       default: {
-        // Ended: why it did not succeed, always, whole once expanded; then its prompt and work.
-        const why = (reason ?? (cutOff(card) ? cutOffReason(card) : ""))
+        // Ended: why it did not succeed, always, whole once expanded; then its task and work.
+        const why = (reason ?? (partialAnswer(card) ? partialReason(card) : ""))
           .split("\n")
           .filter((line) => line.trim());
         const tone = (text: string) =>
@@ -887,7 +896,7 @@ export class CardView implements Component {
             ? paint(theme, "red", text)
             : theme.fg(look.phase === "finished" ? "warning" : "muted", text);
         if (why.length && look.phase !== "stopped") {
-          // Closed, its first line, wrapped, in at most three lines; open, all of it.
+          // Collapsed, its first line, wrapped, in at most three lines; expanded, all of it.
           const wrap = (line: string) => wrapTextWithAnsi(printable(line), Math.max(8, width - 2));
           let shown = look.expanded ? why.flatMap(wrap) : wrap(why[0]);
           if (!look.expanded && shown.length > REASON_LINES)
@@ -898,7 +907,7 @@ export class CardView implements Component {
           for (const line of shown) lines.push(`  ${tone(line)}`);
         }
         if (!look.expanded) break;
-        prompt();
+        showTask();
         if (look.blocks?.length) work();
         else {
           // Rows saved before comrades showed their work, or a conversation since deleted: what
@@ -926,6 +935,101 @@ export class CardView implements Component {
       }
     }
     return lines;
+  }
+}
+
+/**
+ * An older listing of several runs, in one dim line: each run's number and what it was doing
+ * then, and their cost together. A click expands it to their rows, as they stood.
+ */
+export class ListingLine implements Component {
+  private readonly runs: (RunDetails & { id: number })[];
+  private readonly theme: Theme;
+  private readonly pad: number;
+  private readonly expanded: () => boolean;
+  private readonly toggle: () => void;
+
+  constructor(
+    runs: (RunDetails & { id: number })[],
+    theme: Theme,
+    pad: number,
+    expanded: () => boolean,
+    toggle: () => void,
+  ) {
+    this.runs = runs;
+    this.theme = theme;
+    this.pad = pad;
+    this.expanded = expanded;
+    this.toggle = toggle;
+  }
+
+  render(width: number): string[] {
+    const { theme, runs } = this;
+    const pad = Math.min(this.pad, Math.max(0, Math.floor((width - 1) / 2)));
+    const room = Math.max(1, width - pad * 2);
+    const doing = runs.map((run) => `#${run.id} ${activityText(run) || `turn ${run.turns + 1}`}`);
+    const cost = runs.reduce((sum, run) => sum + run.usage.cost.total, 0);
+    const caret = this.expanded() ? "▾" : "▸";
+    const tail = ` · ${formatCost(cost)}  ${caret}`;
+    const head = `· Comrades ${runs.map((run) => `#${run.id}`).join(", ")}  ${doing.join(" · ")}`;
+    const line = cut(head, Math.max(0, room - visibleWidth(tail))) + tail;
+    return [" ".repeat(pad) + theme.fg("dim", line)];
+  }
+
+  handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+    if (event.type !== "click" || event.button !== "left") return undefined;
+    this.toggle();
+    return { handled: true };
+  }
+
+  invalidate(): void {}
+}
+
+/** One of the rows a StackView draws, and whether it is expanded now. */
+export interface Stacked {
+  component: Component;
+  expanded: boolean;
+}
+
+/**
+ * Rows drawn one after another as one component, as a listing draws its comrades: a blank line
+ * between two of them when either is expanded, so a row's work never runs into the next header.
+ * A click reaches the row it lands on.
+ */
+export class StackView implements Component {
+  private readonly rows: () => Stacked[];
+  private layout: { start: number; end: number; component: Component }[] = [];
+
+  /** `rows`: asked on every draw, so each row can follow its run. */
+  constructor(rows: () => Stacked[]) {
+    this.rows = rows;
+  }
+
+  render(width: number): string[] {
+    const lines: string[] = [];
+    this.layout = [];
+    let previous = false;
+    for (const [index, { component, expanded }] of this.rows().entries()) {
+      if (index > 0 && (previous || expanded)) lines.push("");
+      const drawn = component.render(width);
+      this.layout.push({ start: lines.length, end: lines.length + drawn.length, component });
+      lines.push(...drawn);
+      previous = expanded;
+    }
+    return lines;
+  }
+
+  handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+    const row = this.layout.find((item) => event.y >= item.start && event.y < item.end);
+    return row?.component.handleMouse?.({
+      ...event,
+      y: event.y - row.start,
+      height: row.end - row.start,
+    });
+  }
+
+  invalidate(): void {
+    for (const { component } of this.layout) component.invalidate();
   }
 }
 

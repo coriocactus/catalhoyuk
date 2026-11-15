@@ -46,7 +46,7 @@ export function attachTopPaging(
     pending = undefined;
     return false;
   };
-  const wrappers: typeof originals = {
+  const replacements: typeof originals = {
     scrollBy(this: ScrollView, lines) {
       if (!Number.isFinite(lines) || Math.trunc(lines) === 0) return 0;
       const move = () => {
@@ -106,14 +106,14 @@ export function attachTopPaging(
   };
   const restore = () => {
     for (const key of keys) {
-      if (scroll[key] !== wrappers[key]) continue;
+      if (scroll[key] !== replacements[key]) continue;
       const descriptor = descriptors.get(key);
       if (descriptor) Object.defineProperty(scroll, key, descriptor);
       else Reflect.deleteProperty(scroll, key);
     }
   };
   try {
-    Object.assign(scroll, wrappers);
+    Object.assign(scroll, replacements);
   } catch (error) {
     closed = true;
     restore();

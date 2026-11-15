@@ -4,7 +4,7 @@ import { basename } from "node:path";
 import type { Invocation } from "./run.ts";
 import { alive } from "./runs.ts";
 
-/** How often a comrade checks that its parent is still running. */
+/** How often a comrade checks that its host is still running. */
 const ORPHAN_MS = 2000;
 
 /**
@@ -26,17 +26,17 @@ export function currentPi(
 }
 
 /**
- * A comrade stops when its parent Pi is gone, rather than run on unseen. Pi's shutdown stops
- * comrades itself; this covers a parent that crashed or was killed.
+ * A comrade stops when its host is gone, rather than run on unseen. Pi's shutdown stops
+ * comrades itself; this covers a host that crashed or was killed.
  */
-export function watchParent(
-  parent: number,
+export function watchHost(
+  host: number,
   every = ORPHAN_MS,
   stop: () => void = () => process.kill(process.pid, "SIGTERM"),
 ): () => void {
-  if (!Number.isInteger(parent) || parent <= 1) return () => {};
+  if (!Number.isInteger(host) || host <= 1) return () => {};
   const timer = setInterval(() => {
-    if (alive(parent)) return;
+    if (alive(host)) return;
     clearInterval(timer);
     stop();
   }, every);

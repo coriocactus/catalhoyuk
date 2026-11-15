@@ -1,4 +1,4 @@
-// A comrade's run as its conversation file shows it: cut off, with the calls that may or may not
+// A comrade's run as its conversation file shows it: interrupted, with the calls that may or may not
 // have taken effect, or finished, with its answer. A call still running when Pi stopped gets only
 // an error result, so a comrade that continues is told to check before repeating it.
 import { closeSync, openSync, readSync, statSync } from "node:fs";
@@ -8,11 +8,11 @@ import { formatDuration } from "../shared/format.ts";
 import { addUsage, emptyUsage, isConversationMessage } from "./run.ts";
 import { Ledger } from "./work.ts";
 
-/** How long ago a cut-off run must have stopped before the note warns that files may have changed. */
+/** How long ago an interrupted run must have stopped before the note warns that files may have changed. */
 const STALE_MS = 10 * 60_000;
 /**
  * How much of a conversation's end is read: enough for its last run's messages. Every read here
- * is synchronous, one of them as a row is first drawn open, so this bounds how long Pi waits.
+ * is synchronous, one of them as a row is first drawn expanded, so this bounds how long Pi waits.
  */
 const TAIL_BYTES = 4 * 1024 * 1024;
 /** How much of a long conversation's start is read for its header, which names its directory. */
@@ -105,14 +105,14 @@ function read(file: string): { messages: Message[]; cwd?: string; saved: number 
     entry = typeof entry.parentId === "string" ? byId.get(entry.parentId) : undefined;
   }
   // The conversation proper: Pi's system and extensions' custom messages aside.
-  const messages = branch.flatMap((item) =>
-    item.type === "message" &&
-    item.message &&
-    ["user", "assistant", "toolResult"].includes(item.message.role as string)
-      ? [item.message]
+  const messages = branch.flatMap((candidate) =>
+    candidate.type === "message" &&
+    candidate.message &&
+    ["user", "assistant", "toolResult"].includes(candidate.message.role as string)
+      ? [candidate.message]
       : [],
   );
-  const header = entries.find((item) => item.type === "session")?.cwd;
+  const header = entries.find((candidate) => candidate.type === "session")?.cwd;
   return {
     messages,
     cwd: typeof header === "string" ? header : undefined,
@@ -128,7 +128,7 @@ const replies = (messages: Message[], before = messages.length) =>
   messages.slice(0, before).findLastIndex((message) => message.role === "assistant");
 
 /**
- * The comrade's last run, if it was cut off: its task came with no reply yet, or its last reply
+ * The comrade's last run, if it was interrupted: its task came with no reply yet, or its last reply
  * asked for tools and no answer came after them, ended in an error (Pi was retrying, or gave
  * up), or was itself aborted. The calls named are those of the last reply that ran any, without
  * a result or with an error one, which is what Pi records for a call it aborts.
@@ -142,7 +142,7 @@ export function interruption(file: string): Interruption | undefined {
   let reply = messages[last];
   if (!reply) return undefined;
   // An aborted or failed reply's own calls never ran. Pi stops a run mid-call by aborting the
-  // calls, then the reply it was about to request, so the calls cut off are the reply's before.
+  // calls, then the reply it was about to request, so the calls interrupted are the reply's before.
   if (reply.stopReason === "aborted" || reply.stopReason === "error") {
     const before = replies(messages, last);
     if (
@@ -236,7 +236,7 @@ export function finished(file: string, since: number): Finished | undefined {
 }
 
 /**
- * What a comrade continuing after a cut-off run reads first: the calls that may or may not have
+ * What a comrade continuing after an interrupted run reads first: the calls that may or may not have
  * taken effect, and how long ago that was if long enough for files to have changed.
  */
 export function interruptionNote(
@@ -244,7 +244,9 @@ export function interruptionNote(
   reason?: string,
   now = Date.now(),
 ): string {
-  const parts = [`Your previous run was cut off before it finished${reason ? `: ${reason}` : ""}.`];
+  const parts = [
+    `Your previous run was interrupted before it finished${reason ? `: ${reason}` : ""}.`,
+  ];
   if (cut?.calls.length)
     parts.push(
       `These calls had not finished cleanly when it stopped, so each may or may not have taken effect: ${cut.calls
@@ -258,10 +260,10 @@ export function interruptionNote(
 }
 
 /**
- * The messages of the run that started at `since` and ended at `until`, from its first prompt on,
- * as its conversation saved them: for its row to show what it did, read when it is first opened.
+ * The messages of the run that started at `since` and ended at `until`, from its task on,
+ * as its conversation saved them: for its row to show what it did, read when it is first expanded.
  * Read from the conversation's last 4 MB, as every read here is: a run that ended before them is
- * not found, and its row shows the summary it saved instead.
+ * not found, and its row shows the run details it saved instead.
  */
 export function runMessages(
   file: string,
@@ -270,7 +272,7 @@ export function runMessages(
 ): AgentMessage[] | undefined {
   const messages = read(file)?.messages;
   if (!messages) return undefined;
-  // Its comrade's Pi runs on this machine's clock, and saves the prompt after the run started,
+  // Its comrade's Pi runs on this machine's clock, and saves the task after the run started,
   // and its last message before the run ended: no slack, which would reach into a neighbour.
   const first = messages.findIndex(
     (message) =>

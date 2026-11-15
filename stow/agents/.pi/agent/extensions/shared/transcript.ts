@@ -11,7 +11,7 @@ export interface TranscriptView {
   scope?: object;
   /** Already loaded historical entries in displayed order, before the live range. */
   history?: readonly SessionEntry[];
-  /** Stage a prepend before constructing native components; caller settles it. */
+  /** Stage a prepend before constructing native rows; caller settles it. */
   prepend?: boolean;
   transaction?: { commit(): void; rollback(): void };
 }

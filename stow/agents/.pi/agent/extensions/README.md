@@ -4,10 +4,10 @@ Seven local TypeScript extensions for the Pi terminal coding agent, installed at
 
 - [`rearview`](rearview/README.md) starts the fullscreen transcript with its most recent entries and adds older pages above them as you scroll to the top.
 - [`mirage`](mirage/README.md) draws Pi's `read`, `bash`, `edit`, `write`, and `codemode` calls as compact rows, and consecutive calls as one group with collapsible output, image previews, and its own colours. It only draws these tools: Pi still runs them.
-- [`inspector`](inspector/README.md) opens a tool row's filename in your editor, in the same terminal, when you click it, also while Pi works.
+- [`inspector`](inspector/README.md) opens a call's filename in your editor, in the same terminal, when you click it, also while Pi works.
 - [`interupt`](interupt/README.md) makes `Esc` stop a running response only on its second press within 1.5 seconds.
 - [`echo`](echo/README.md) expands an `@@name` token at the editor cursor into the Markdown snippet `~/.pi/agent/echo/name.md`.
-- [`comrade`](comrade/README.md) adds a tool that hands a self-contained task to a fresh Pi process and returns its answer. A comrade shows its progress while it works, keeps its conversation for follow-ups, takes messages while it runs, and can run in the background, where it carries on after Pi exits.
+- [`comrade`](comrade/README.md) adds a tool that hands a self-contained task to a fresh Pi process and returns its answer. A comrade shows its progress while it works, keeps its conversation for follow-ups, can be steered during a run, and can run in the background, where it is resumed if Pi exits while it runs.
 - [`prose`](prose/README.md) draws Markdown code blocks without fence lines and keeps wrapped lines indented. In fullscreen mode, a selection ends at each line's text and starts at its content, and a copy joins wrapped lines back together.
 - `shared` holds what the extensions have in common: the protocols they meet through (opening a file, read-only transcripts, nested rows, selection markers) and the helpers they would otherwise each copy (patching Pi's methods, the spinner, colours, formatting). Pi loads a separate copy of `shared` for each extension, so its modules keep no state of their own: what two extensions share lives under a global symbol or on the object they both reach.
 
@@ -75,7 +75,7 @@ Node runs the TypeScript tests directly, with its own type stripping and no buil
 - Tool errors, diffs, and images. Image checks read the Kitty graphics commands Pi sent, not pixels.
 - Clicks and `Ctrl+O`, the agent working while Vim owns the terminal, newer and replaced editor drafts, a failing editor, saving a file, and resizing the terminal.
 - Cleanup across `/new`, `/resume`, `/fork`, and `/reload`.
-- Paging: history disabled, fast scrolling between a page being added and the next layout pass, the end of history, archived filenames and images, and model context left unchanged.
+- Paging: history disabled, fast scrolling between a page being added and the next layout pass, the end of history, saved filenames and images, and model context left unchanged.
 - An adapter's fallback when Pi's internals have changed.
 - `echo` autocomplete and insertion without sending the message.
 - Idle CPU: with all seven extensions loaded, Pi uses at most 0.05 s of CPU in 10 s (`IDLE_CPU_SECONDS`, `IDLE_SECONDS`).

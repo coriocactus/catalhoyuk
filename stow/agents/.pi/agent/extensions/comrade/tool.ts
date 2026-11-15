@@ -1,5 +1,5 @@
 // The comrade tool as the calling model sees it: its parameters, what running it does, and how a
-// message reaches a comrade already at work. Its rows are rows.ts.
+// steer reaches a comrade already at work. Its rows are rows.ts.
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
@@ -49,7 +49,7 @@ const parameters = (models: string, tools: string) =>
       Type.Integer({
         minimum: 1,
         description:
-          "Continue comrade #N's conversation: task is your next message to it. It keeps its brief, " +
+          "Continue comrade #N's conversation: task is your next message to it. It keeps its earlier tasks, " +
           "files, model, thinking, tools, cwd, and what it read and answered. While #N runs, task " +
           "reaches it before its next model request instead, and nothing else may be given.",
       }),
@@ -140,10 +140,10 @@ export function registerComrade(deps: ToolDeps): void {
   };
 
   /**
-   * A message for comrade #id while it runs. Pi gives it to the comrade once its current tool
+   * A steer for comrade #id. Pi gives it to the comrade once its current tool
    * calls finish, before its next model request, and its answer comes as it would have.
    */
-  async function tell(
+  async function steer(
     id: number,
     params: { task: string } & Partial<Record<string, unknown>>,
     signal?: AbortSignal,
@@ -154,14 +154,14 @@ export function registerComrade(deps: ToolDeps): void {
     );
     if (given.length)
       throw new Error(
-        `Comrade #${id} is running, so a message to it can carry only task. Wait for its answer to change its ${given.join(", ")}.`,
+        `Comrade #${id} is running, so a steer to it can carry only task. Wait for its answer to change its ${given.join(", ")}.`,
       );
     const job = background.jobs.get(id);
     const channel = foreground.get(id)?.channel ?? job?.channel;
     const title = foreground.get(id)?.title ?? job?.request.face?.title;
     if (!channel)
       throw new Error(
-        `Comrade #${id} cannot take messages while it runs: it started before comrades could. Wait for its answer.`,
+        `Comrade #${id} cannot be steered: it started before comrades could be. Wait for its answer.`,
       );
     if (!channel.open)
       throw new Error(
@@ -207,8 +207,8 @@ export function registerComrade(deps: ToolDeps): void {
     description:
       "Run a task in a fresh pi process and return its final answer. The comrade sees nothing " +
       "of this conversation. Several calls in one message run in parallel. Every comrade is " +
-      "numbered #N and keeps its conversation: continue it with to: N, or while it runs, send it " +
-      "a message the same way. " +
+      "numbered #N and keeps its conversation: continue it with to: N, or while it runs, steer it " +
+      "the same way. " +
       `Answers over ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)} are truncated ` +
       "and saved in full to a file. Every result ends with a run line: #N, model, turns, calls, " +
       "tokens, cost, duration, and why it stopped.",
@@ -220,7 +220,7 @@ export function registerComrade(deps: ToolDeps): void {
       "Leave background off unless you have other work to do before you need the answer; foreground calls in one message already run in parallel. A background answer arrives later as a [comrade #N …] message: never guess it. When your other work is done, end your reply, and your turn waits for it.",
       'comrade is read-only by default. Add "edit" and "write" when it must change files, or "bash" to run commands.',
       "When a comrade needs more than a few files, pass them in files with tools: []. When its answer feeds a file or a build, set output and ask for the exact text, with no fences or commentary.",
-      "A result whose first line starts [Comrade's answer is cut off or [Comrade timed out is not a finished answer.",
+      "A result whose first line starts [Comrade's answer is partial, [Comrade's answer is cut off or [Comrade timed out is not a finished answer.",
     ],
     parameters: parameters(models, tools),
     // Flat, as mirage draws its rows: no box behind it.
@@ -231,7 +231,7 @@ export function registerComrade(deps: ToolDeps): void {
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const to = params.to;
       if (to !== undefined && (foreground.has(to) || background.jobs.has(to)))
-        return tell(to, params, signal);
+        return steer(to, params, signal);
       const previous = to === undefined ? undefined : conversation(to, ctx);
       // A new comrade is named by its caller; one continued keeps its name unless given another.
       const title = cleanTitle(params.title) ?? previous?.title;
@@ -243,12 +243,12 @@ export function registerComrade(deps: ToolDeps): void {
           throw new Error(
             `Comrade #${to} is running in another Pi (process ${busy.owner}). Wait for its answer there, or start a new comrade.`,
           );
-        // Runs of it cut off and never carried on end here: this run continues its conversation.
+        // Runs of it interrupted and never resumed end here: this run continues its conversation.
         const stale = runs.filter((saved) => saved.phase !== "done");
         if (stale.length)
           quietly(() => dropRuns(previous.session, new Set(stale.map((saved) => saved.run))));
       }
-      // A comrade whose last run was cut off first reads which calls may or may not have run.
+      // A comrade whose last run was interrupted first reads which calls may or may not have run.
       const cut = previous ? interruption(previous.session) : undefined;
       if (cut) prepared.task = `${interruptionNote(cut)}\n\n${prepared.task}`;
       // Print and JSON modes exit when the agent settles, before a later message could arrive.
@@ -271,7 +271,7 @@ export function registerComrade(deps: ToolDeps): void {
           content: [
             {
               type: "text",
-              text: `Comrade #${job.id} started in the background. Keep working. Its answer will arrive as a [comrade #${job.id} …] message${ctx.mode === "tui" ? ", and if you finish first, your turn waits for it" : ""}. Check on it or stop it with the comrades tool.`,
+              text: `Comrade #${job.id} started in the background. Keep working. Its answer will arrive as a [comrade #${job.id} …] message${ctx.mode === "tui" ? ", and if you finish first, your turn waits for it" : ""}, so there is no need to check on it. Stop it with the comrades tool if you no longer need it.`,
             },
           ],
           details: {
@@ -285,8 +285,8 @@ export function registerComrade(deps: ToolDeps): void {
       }
 
       const began = Date.now();
-      // Its record says this Pi runs it, so no other Pi continues it meanwhile. Its result is in
-      // the session once the call returns, so the record goes then.
+      // Its run record says this Pi runs it, so no other Pi continues it meanwhile. Its result is
+      // in the session once the call returns, so the run record goes then.
       quietly(() => saveRun(request.session, launched(request, toolCallId, false, began)));
       const watch = follow(request.session, toolCallId);
       const update = (progress: Progress) => {

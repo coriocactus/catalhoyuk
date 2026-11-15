@@ -1,10 +1,10 @@
 # Inspector
 
-Inspector opens the filename of a tool row in your editor, in the same terminal, when you click it. Pi keeps working while the editor is open.
+Inspector opens the filename of a call in your editor, in the same terminal, when you click it. Pi keeps working while the editor is open.
 
 ## Usage
 
-Click an underlined filename in a tool row. The editor opens that file in the same terminal. Leave the editor (in Vim, `:q`, or `:wq` to save) to return to Pi with the **latest** draft of your prompt, including changes made to it while the editor was open, and also when the editor fails.
+Click an underlined filename in a call's row. The editor opens that file in the same terminal. Leave the editor (in Vim, `:q`, or `:wq` to save) to return to Pi with the **latest** draft of your prompt, including changes made to it while the editor was open, and also when the editor fails.
 
 Pi keeps working while the editor owns the terminal, so avoid saving a file that Pi is also modifying.
 

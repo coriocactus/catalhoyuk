@@ -12,7 +12,7 @@ import {
 import { formatDuration } from "../shared/format.ts";
 import type { Delivery } from "./details.ts";
 import type { Outcome, Request } from "./run.ts";
-import { type Card, cutOff, runLine, taskLine } from "./view.ts";
+import { partialAnswer, type RunDetails, runLine, taskLine } from "./view.ts";
 
 /** Lines of an answer written to output that the calling model still reads. */
 const WRITTEN_HEAD = 20;
@@ -93,7 +93,7 @@ export interface Reply {
 export function respond(
   request: Request,
   outcome: Outcome,
-  details: Card,
+  details: RunDetails,
   durationMs: number,
   id: number,
 ): Reply {
@@ -108,8 +108,8 @@ export function respond(
   if (failed !== undefined) return { text: failed + run, isError: true };
   const state = outcome.timedOut
     ? `[Comrade timed out after ${limitText} and was stopped. Its last text follows. It is not a final answer.]`
-    : cutOff(details)
-      ? `[Comrade's answer is cut off: its last turn ended with stopReason "${outcome.stopReason}"${outcome.stopReason === "length" ? ", the model's output token limit" : ""}. It is not a final answer.]`
+    : partialAnswer(details)
+      ? `[Comrade's answer is partial: its last turn ended with stopReason "${outcome.stopReason}"${outcome.stopReason === "length" ? ", the model's output token limit" : ""}. It is not a final answer.]`
       : "";
   let body: string;
   let file: string | undefined;
@@ -128,6 +128,6 @@ export function respond(
   return { text: [state, body].filter(Boolean).join("\n\n") + run, isError, file };
 }
 
-/** Message text: one header line, then the body. The renderer shows the body under its own card. */
+/** Message text: one header line, then the body. The renderer shows the body under its own header. */
 export const message = (id: number, status: Delivery["status"], task: string, body: string) =>
   `[comrade #${id} ${status}] ${taskLine(task).slice(0, 200)}\n\n${body}`;
