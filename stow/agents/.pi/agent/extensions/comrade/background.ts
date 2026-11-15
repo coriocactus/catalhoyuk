@@ -16,7 +16,7 @@ import {
 import { dropRuns, follow, launched, quietly, saveRun, updateRun } from "./runs.ts";
 import type { Session } from "./session.ts";
 import type { Transcripts } from "./transcripts.ts";
-import { activityText, type Running, taskLine } from "./view.ts";
+import { activityText, nowDoing, type Running, Steady, taskLine } from "./view.ts";
 import { summary as workSummary } from "./work.ts";
 
 /** Background comrades running at once, to bound cost. */
@@ -115,6 +115,14 @@ export function createBackground(deps: BackgroundDeps) {
     return lines.join("\n");
   };
 
+  /** What each job's widget line says it is doing, held steady as its row's line is. */
+  const steady = new WeakMap<Job, Steady>();
+  const doing = (job: Job) => {
+    const line = steady.get(job) ?? new Steady();
+    steady.set(job, line);
+    return line.show(...nowDoing(live(job.request, job.progress, job.started)));
+  };
+
   /** The widget's lines for the jobs at work, in comrade order. */
   const working = (): Running[] =>
     [...jobs.values()]
@@ -122,7 +130,7 @@ export function createBackground(deps: BackgroundDeps) {
       .map((job) => ({
         id: job.id,
         title: job.request.face?.title ?? taskLine(job.task),
-        doing: activityText(live(job.request, job.progress, job.started)) || "starting",
+        doing: doing(job),
         cost: job.progress.usage.cost.total,
         elapsedMs: Date.now() - job.started,
       }));

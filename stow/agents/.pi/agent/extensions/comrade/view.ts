@@ -249,19 +249,15 @@ export function activityText(card: RunDetails): string {
 }
 
 /**
- * `↑150 ↓~2.1k`: the finished messages' tokens plus the streaming message's. The output is
- * marked `~` while it is estimated from the streamed text. Each part shows once it is known.
+ * `↑150 ↓2.1k`: the finished messages' tokens plus the streaming message's, as the provider has
+ * counted them. Each part shows once it is known.
  */
 export function tokensText(card: RunDetails, running: boolean): string {
   const { usage, streamed } = card;
   const input =
     usage.input + usage.cacheRead + usage.cacheWrite + (running ? (streamed?.input ?? 0) : 0);
   const output = usage.output + (running ? (streamed?.output ?? 0) : 0);
-  const estimated = running && Boolean(streamed?.output) && !streamed?.exact;
-  return [
-    input ? `↑${formatTokens(input)}` : "",
-    output ? `↓${estimated ? "~" : ""}${formatTokens(output)}` : "",
-  ]
+  return [input ? `↑${formatTokens(input)}` : "", output ? `↓${formatTokens(output)}` : ""]
     .filter(Boolean)
     .join(" ");
 }
@@ -487,21 +483,96 @@ const CARET = /\s*(?:\x1b\[[0-9;]*m)*[▸▾](?:\x1b\[[0-9;]*m)*\s*$/;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: SGR sequences start with ESC.
 const UNDERLINES = /\x1b\[(?:4|24)m/g;
 
+/**
+ * How long a state or a call must last before a running row names it. Between quick calls a
+ * comrade waits, calls and runs many times a second: until one of these lasts, the row says what
+ * its calls have come to, which only counts up.
+ */
+export const SETTLE_MS = 2000;
+
+/**
+ * How long what a running row shows stays before it may change, so a state that lasted just long
+ * enough to show does not flash by when it ends.
+ */
+export const STEADY_MS = 1000;
+
+/**
+ * What the comrade is doing has lasted long enough to name. A retry is named at once, and so is
+ * what a run from an older version, which reported no activity, is doing.
+ */
+export function lasting(card: RunDetails): boolean {
+  const activity = card.activity;
+  if (!activity) return true;
+  if (activity.state === "retrying" || activity.state === "starting") return true;
+  return Date.now() - activity.since >= SETTLE_MS;
+}
+
+/**
+ * What a running comrade is doing, for the widget, with its kind for a Steady line: what it does
+ * or waits on once that has lasted, and until then what its calls have come to.
+ */
+export function nowDoing(card: RunDetails): [kind: string, text: string] {
+  const done = card.work?.tallies.length ? summary(card.work.tallies) : "";
+  if (done && !lasting(card)) return ["done", done];
+  return [card.activity?.state ?? "", activityText(card) || "starting"];
+}
+
+/**
+ * A line that changes what it shows at most once every STEADY_MS. Its kind says what the line
+ * shows, a wait or a call: another kind waits until the last has shown that long, and is dropped
+ * if a third replaces it first. The same kind updates in place, as a clock ticks or a spinner
+ * turns. While another waits, `redraw` draws the kind shown from what is known now, so a call held
+ * on its line still turns its spinner, or says it has ended; a kind it cannot draw stays as drawn.
+ */
+export class Steady {
+  private kind?: string;
+  private line = "";
+  private since = 0;
+
+  show(kind: string, line: string, redraw?: (kind: string) => string | undefined): string {
+    const now = Date.now();
+    if (kind !== this.kind) {
+      if (this.kind !== undefined && now - this.since < STEADY_MS) {
+        this.line = redraw?.(this.kind) ?? this.line;
+        return this.line;
+      }
+      this.kind = kind;
+      this.since = now;
+    }
+    this.line = line;
+    return line;
+  }
+}
+
 /** What it waits on: `thinking`, `waiting 48s`, a retry in the warning colour. */
 function status(card: RunDetails, theme: Theme): string {
   const retrying = card.activity?.state === "retrying";
   return theme.fg(retrying ? "warning" : "dim", activityText(card) || "starting");
 }
 
+/** What its calls have come to, as an ended row sums them up: `✓ Read 3 files, ran 1 command`. */
+function doneLine(work: Work, theme: Theme): string {
+  const failed = work.tallies.every((tally) => tally.failed === tally.calls);
+  return `${paint(theme, failed ? "red" : "green", "✓")} ${summaryText(work, theme)}`;
+}
+
 /**
  * What a running row says under its header, in two lines that change in place. First, what it
- * is doing: the call it runs, or mirage's line for its group when several run at once; else
- * what it waits on; else the last call it ran. Then the last complete thing it said, its
- * thinking only where Pi shows thinking, dimmer once a later turn has begun; or until it has
- * said anything, its tokens so far. While it thinks or writes what shows below, the line above
- * names the last call it ran instead, rather than labelling the words.
+ * is doing, once that has lasted SETTLE_MS: the call it runs, or mirage's line for its group when
+ * several run at once; else what it waits on. Until then, what its calls have come to, or before
+ * any, what it waits on. Then the last complete thing it said, its thinking only where Pi shows
+ * thinking, dimmer once a later turn has begun; or until it has said anything, its tokens so
+ * far. While it thinks or writes what shows below, the line above sums up its calls instead,
+ * rather than labelling the words. The first line is held steady, so it changes at most once a
+ * second.
  */
-function progressLines(look: Look, card: RunDetails, theme: Theme, width: number): string[] {
+function progressLines(
+  look: Look,
+  card: RunDetails,
+  theme: Theme,
+  width: number,
+  steady: Steady,
+): string[] {
   const latest = look.blocks?.findLast((block) => block.kind === "rows" || block.kind === "call");
   const recent = card.work?.recent?.at(-1);
   const state = card.activity?.state;
@@ -509,26 +580,44 @@ function progressLines(look: Look, card: RunDetails, theme: Theme, width: number
   const said = thought ? card.said : card.spoke;
   const before = thought ? card.saidBefore : card.spokeBefore;
   const shownBelow = Boolean(said) && !before && (state === "thinking" || state === "writing");
-  const ran = (): string | undefined => {
+  const done = card.work?.tallies.length ? card.work : undefined;
+  const named = !done || lasting(card);
+  // Each with its kind: one call, mirage's line for a group, its calls summed up, or the state it
+  // waits in.
+  const group = (rows: Extract<Block, { kind: "rows" }>): [string, string] => [
+    "group",
+    quiet(rows.component.render(width)[0] ?? ""),
+  ];
+  const call = (row: LiveRow): [string, string] => ["call", callLine(row, theme, look.spinner)];
+  const sum = (work: Work): [string, string] => ["done", doneLine(work, theme)];
+  const waits = (): [string, string] => [state ?? "starting", status(card, theme)];
+  const ran = (): [string, string] | undefined => {
     if (latest?.kind === "rows")
-      return latest.calls > 1 || !latest.last
-        ? quiet(latest.component.render(width)[0] ?? "")
-        : callLine(latest.last, theme, look.spinner);
-    if (latest?.kind === "call") return callLine(latest.row, theme, look.spinner);
-    return recent ? callLine(recent, theme, look.spinner) : undefined;
+      return latest.calls > 1 || !latest.last ? group(latest) : call(latest.last);
+    if (latest?.kind === "call") return call(latest.row);
+    return recent ? call(recent) : undefined;
   };
-  let doing: string;
-  if (recent?.status === "running")
-    doing =
-      latest?.kind === "rows" && latest.running > 1
-        ? quiet(latest.component.render(width)[0] ?? "")
-        : callLine(recent, theme, look.spinner);
-  else if (state && state !== "running" && !shownBelow) doing = status(card, theme);
-  else doing = ran() ?? status(card, theme);
+  let doing: [string, string];
+  if (named && recent?.status === "running")
+    doing = latest?.kind === "rows" && latest.running > 1 ? group(latest) : call(recent);
+  else if (named && state && state !== "running" && !shownBelow) doing = waits();
+  // A run from an older version, which reported no activity, names the last call it ran.
+  else doing = (done && card.activity ? sum(done) : ran()) ?? waits();
+  // What is held on the line, as it is now: a call in progress, or ended; its calls summed up.
+  const redraw = (kind: string) => {
+    if (kind === "done") return done && sum(done)[1];
+    if (kind === "group") return latest?.kind === "rows" ? group(latest)[1] : undefined;
+    if (kind !== "call") return undefined;
+    if (recent?.status === "running") return call(recent)[1];
+    const row =
+      (latest?.kind === "rows" ? latest.last : latest?.kind === "call" ? latest.row : undefined) ??
+      recent;
+    return row ? call(row)[1] : undefined;
+  };
   const saying = said
     ? theme.fg(before ? "dim" : "muted", theme.italic(fitted(said, width)))
     : theme.fg("dim", tokensText(card, true));
-  return [doing, saying].map((line) => (line ? `  ${line}` : ""));
+  return [steady.show(...doing, redraw), saying].map((line) => (line ? `  ${line}` : ""));
 }
 
 /**
@@ -672,6 +761,9 @@ export class RowView implements Component {
   private targets = new Map<number, keyof Toggles>();
   private zones: Zone[] = [];
   private indent = 0;
+  /** While it works, what it is doing, collapsed and expanded, each held steady. */
+  private doing = new Steady();
+  private now = new Steady();
   /** The lines last drawn, and everything a later frame could have changed since. */
   private cache?: {
     width: number;
@@ -863,12 +955,19 @@ export class RowView implements Component {
       case "background": {
         const going = working(look) && card;
         if (going && look.phase === "running" && !look.expanded)
-          lines.push(...progressLines(look, card, theme, Math.max(1, width - 2)));
+          lines.push(...progressLines(look, card, theme, Math.max(1, width - 2), this.doing));
         if (!look.expanded) break;
         showTask();
         work();
-        // While it works, what it waits on, under what it has done: its calls show their own.
-        const now = going ? waiting(card, theme) : "";
+        // While it works, what it waits on once that has lasted, under what it has done: its calls
+        // show their own.
+        const named = going && lasting(card);
+        const now = going
+          ? this.now.show(
+              named ? (card.activity?.state ?? "") : "",
+              named ? waiting(card, theme) : "",
+            )
+          : "";
         if (now) {
           blank();
           lines.push(`  ${now}`);
@@ -915,9 +1014,8 @@ export class RowView implements Component {
           const done = card?.work;
           if (done && card.calls > 0 && done.tallies.length) {
             blank();
-            const failed = done.tallies.every((tally) => tally.failed === tally.calls);
             lines.push(
-              `  ${failed ? paint(theme, "red", "✓") : paint(theme, "green", "✓")} ${summaryText(done, theme)}`,
+              `  ${doneLine(done, theme)}`,
               ...done.rows.map((row) => `  ${rowLine(row, theme)}`),
             );
             if (done.omitted) lines.push(`    ${theme.fg("muted", `… ${done.omitted} more`)}`);

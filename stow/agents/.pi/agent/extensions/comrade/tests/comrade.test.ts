@@ -282,7 +282,7 @@ test("one line at rest, three while running, and its work behind Ctrl+O or a cli
   const result = await call(args, undefined, () => {
     const update = updates.at(-1);
     if (update && details(update).work?.current === "Editing /tmp/a.ts" && !running.length)
-      running = [result_(update, true), result_(update, true, true)];
+      running = [result_(lasted(update), true), result_(lasted(update), true, true)];
   });
   // Running: the call it runs, and with nothing said in this turn, its tokens so far.
   assert.equal(
@@ -1361,18 +1361,30 @@ const progressOf = (tool: Tool, update: Result) =>
     .join(" | ")
     .replace(/\b\d+s\b/g, "Ns");
 
+/**
+ * An update as drawn once what it shows the comrade doing has lasted long enough to be named: its
+ * state began ten seconds before.
+ */
+const lasted = (update: Result): Result => {
+  const { activity } = details(update);
+  if (!activity) return update;
+  const since = activity.since - 10_000;
+  return { ...update, details: { ...details(update), activity: { ...activity, since } } };
+};
+
 test("the progress line says what the comrade is doing, from its event stream", async (t) => {
   const { tool, call, updates } = fixture(t, "stream");
   // Drawn as each update arrives, as Pi draws it.
   const lines: string[] = [];
   const result = await call({ task: "x" }, undefined, () => {
     const update = updates.at(-1);
-    if (update) lines.push(progressOf(tool, update).replace(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/g, "⠋"));
+    if (update) lines.push(progressOf(tool, lasted(update)).replace(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/g, "⠋"));
   });
   assert.equal(answer(result), "Done.");
   const shown = lines.filter((line, index) => line !== lines[index - 1]);
-  // Two lines under the header: the call it runs, or what it waits on, or the last call it ran;
-  // then the last complete thing it said, or until it has said anything, its tokens so far.
+  // Two lines under the header: once it has lasted, the call it runs or what it waits on, else
+  // what its calls came to; then the last complete thing it said, or until it has said anything,
+  // its tokens so far.
   assert.deepEqual(shown, [
     "starting | ",
     "waiting | ",
@@ -1384,23 +1396,22 @@ test("the progress line says what the comrade is doing, from its event stream", 
     "waiting | ",
     // Like Anthropic, the provider counted the input at the start, and no output yet.
     "thinking | ↑1.0k",
-    // Streamed text is reported at most every 250ms, so the deltas arrive as one update, and
-    // their tokens are estimated, marked `~`. Its thinking has no complete sentence to show.
-    "thinking | ↑1.0k ↓~2.0k",
-    "calling read | ↑1.0k ↓~2.0k",
-    "calling read | ↑1.0k ↓~2.1k",
-    // The turn's message has ended, asking for the call: its usage is exact now.
+    // Nothing is estimated: its output shows once the provider counts it, here as the message
+    // ends. Its thinking has no complete sentence to show.
+    "calling read | ↑1.0k",
+    // The turn's message has ended, asking for the call: its usage is counted now.
     "calling read | ↑150 ↓10",
     "⠋ Reading /tmp/a.ts | ↑150 ↓10",
-    "✓ Read /tmp/a.ts | ↑150 ↓10",
+    // Between states, what its calls came to.
+    "✓ Explored 1 file | ↑150 ↓10",
     // A wait after the first turn says how long it has lasted.
     "waiting Ns | ↑150 ↓10",
     "writing | ↑150 ↓10",
     // Like Google, the provider counts as it goes: once its count has moved, it is shown.
-    "writing | ↑250 ↓~11",
+    "writing | ↑250 ↓10",
     "writing | ↑250 ↓14",
-    // Its reply, once whole, is what it said last; above it, the last call it ran.
-    "✓ Read /tmp/a.ts | Done.",
+    // Its reply, once whole, is what it said last; above it, what its calls came to.
+    "✓ Explored 1 file | Done.",
   ]);
   assert.equal(details(result).activity, undefined, "a finished row keeps no activity");
 });
@@ -1411,7 +1422,8 @@ test("a running comrade's clock ticks in whole seconds beside its cost", async (
   const result = await call({ task: "x" });
   const running = {
     ...result,
-    details: { ...details(result), started: 0, activity: { state: "waiting", since: 0 } },
+    // Its wait began ten seconds before it is drawn.
+    details: { ...details(result), started: 0, activity: { state: "waiting", since: -10_000 } },
   };
   const draw = () =>
     render(
@@ -1430,9 +1442,9 @@ test("a running comrade's clock ticks in whole seconds beside its cost", async (
         }),
       ),
     );
-  assert.equal(draw(), "⠋ Comrade #1  x  $0.02 · 0s ▸\n  waiting 0s\n  ↑300 ↓20");
+  assert.equal(draw(), "⠋ Comrade #1  x  $0.02 · 0s ▸\n  waiting 10s\n  ↑300 ↓20");
   t.mock.timers.tick(12_500);
-  assert.match(draw(), / {2}\$0\.02 · 12s ▸\n {2}waiting 12s\n/);
+  assert.match(draw(), / {2}\$0\.02 · 12s ▸\n {2}waiting 22s\n/);
   t.mock.timers.tick(62_500);
   assert.match(draw(), / {2}\$0\.02 · 1m 15s ▸\n/);
 });
@@ -2635,16 +2647,89 @@ test("a running row says the call it runs and the last complete thing its comrad
     render(new view.RowView(look, retrying, "", theme, 0)),
     /\n {2}retrying · 1\/3 · 529\n {2}parseList/,
   );
-  // While the words it is writing show below, the line above names the last call, not "writing".
+  // While the words it is writing show below, the line above sums up its calls, not "writing".
   const writing = {
     ...ended,
     saidBefore: false,
     activity: { state: "writing" as const, since: 0, turn: 5 },
   };
-  assert.match(
-    render(new view.RowView(look, writing, "", theme, 0)),
-    /\n {2}\$ npm test {2}exit code 1\n/,
-  );
+  assert.match(render(new view.RowView(look, writing, "", theme, 0)), /\n {2}✓ Explored 5 files\n/);
+});
+
+test("a running row names only what lasts, and changes at most once a second", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 100_000 });
+  const theme = themes.theme;
+  type State = { state: "waiting" | "calling" | "running"; detail?: string; since?: number };
+  const card = ({ since = Date.now(), ...activity }: State) => {
+    const running = activity.state === "running";
+    return {
+      title: "Review",
+      model: "anthropic/claude-opus-5-5",
+      thinking: "xhigh",
+      tools: ["read"],
+      turns: 2,
+      calls: 1,
+      usage: { input: 1000, output: 100, cacheRead: 0, cacheWrite: 0, cost: { total: 0.12 } },
+      activity: { ...activity, since },
+      work: {
+        tallies: [{ kind: "read" as const, calls: 1, failed: 0, files: 1, added: 0, removed: 0 }],
+        rows: [],
+        omitted: 0,
+        recent: [
+          {
+            kind: "read" as const,
+            status: running ? ("running" as const) : ("success" as const),
+            label: running ? "Reading /src/a.ts" : "Read /src/a.ts",
+          },
+        ],
+      },
+    };
+  };
+  const look = { phase: "running" as const, task: "x", id: 3, durationMs: 0 };
+  const closed = { ...look, expanded: false };
+  const opened = { ...look, expanded: true };
+  const row = new view.RowView(closed, card({ state: "waiting" }), "", theme, 0);
+  const open = new view.RowView(opened, card({ state: "waiting" }), "", theme, 0);
+  // The line under the header, collapsed, and the last line, expanded, at a spinner's frame.
+  const doing = (state: State, spinner = "⠋") => {
+    const next = card(state);
+    const shut = row.update({ ...closed, spinner }, next, "", theme, 0).render(120);
+    const whole = open.update({ ...opened, spinner }, next, "", theme, 0).render(120);
+    return [shut[1], whole.at(-1) ?? ""].map(tui.stripTerminalSequences);
+  };
+  const calls = ["  ✓ Explored 1 file", "  │ x"];
+  // Until what it does has lasted two seconds, what its calls came to, and nothing expanded.
+  let since = Date.now();
+  assert.deepEqual(doing({ state: "waiting", since }), calls);
+  t.mock.timers.tick(2000);
+  assert.deepEqual(doing({ state: "waiting", since }), ["  waiting 2s", "  waiting 2s"]);
+  t.mock.timers.tick(3000);
+  assert.deepEqual(doing({ state: "waiting", since }), ["  waiting 5s", "  waiting 5s"]);
+  // Quick calls and the waits between them leave it there.
+  assert.deepEqual(doing({ state: "calling", detail: "read" }), calls);
+  t.mock.timers.tick(50);
+  assert.deepEqual(doing({ state: "running" }), calls);
+  t.mock.timers.tick(50);
+  assert.deepEqual(doing({ state: "waiting" }), calls);
+  // A call that lasts is named, and drawn as it is now while held: its spinner turns, and once it
+  // has ended, it says so.
+  since = Date.now();
+  t.mock.timers.tick(2000);
+  assert.deepEqual(doing({ state: "running", since }, "⠙"), ["  ⠙ Reading /src/a.ts", "  │ x"]);
+  t.mock.timers.tick(50);
+  assert.equal(doing({ state: "running", since }, "⠹")[0], "  ⠹ Reading /src/a.ts");
+  t.mock.timers.tick(50);
+  assert.equal(doing({ state: "waiting" }, "⠸")[0], "  ✓ Read /src/a.ts");
+  t.mock.timers.tick(1000);
+  assert.deepEqual(doing({ state: "waiting", since: Date.now() - 1100 }), calls);
+  // A state that ends just after it shows stays a second, rather than flash by.
+  t.mock.timers.tick(1000);
+  since = Date.now() - 2000;
+  assert.deepEqual(doing({ state: "waiting", since }), ["  waiting 2s", "  waiting 2s"]);
+  t.mock.timers.tick(50);
+  assert.deepEqual(doing({ state: "calling", detail: "read" }), ["  waiting 2s", "  waiting 2s"]);
+  t.mock.timers.tick(1000);
+  assert.deepEqual(doing({ state: "calling", detail: "read" }), calls);
 });
 
 test("a running row shows the newest of what it said when not all of it fits", () => {

@@ -31,8 +31,6 @@ const KILL_MS = 5000;
 const DRAIN_MS = 1000;
 /** How often streamed text may update progress. State changes update it at once. */
 const STREAM_MS = 250;
-/** Characters per token, to estimate streamed tokens before the provider counts them. */
-const CHARS_PER_TOKEN = 4;
 /** How the records start that the reader has no use for. */
 const SKIPPED = ['{"type":"agent_end"', '{"type":"turn_end"'];
 
@@ -95,17 +93,15 @@ export interface Activity {
 export const starting = (): Activity => ({ state: "starting", since: Date.now() });
 
 /**
- * The message now streaming: its tokens so far. Providers that count as they go (Google)
- * give exact numbers; the rest report only when the message ends, so until then the output
- * is estimated from the streamed characters.
+ * The message now streaming: its tokens so far, as the provider counts them. Providers that
+ * count as they go (Google) report its output along the way; the rest only when it ends, so
+ * until then its output is 0. Nothing is estimated.
  */
 export interface Streamed {
   /** Input tokens the provider has reported for this message, with cache reads and writes. */
   input: number;
-  /** Output tokens so far. */
+  /** Output tokens the provider has counted so far. */
   output: number;
-  /** `output` is the provider's count, not an estimate. */
-  exact: boolean;
 }
 
 export interface Progress {
@@ -475,31 +471,21 @@ export async function run(
     trailing = setTimeout(progress, wait);
     trailing.unref();
   };
-  // The streaming message: its characters so far, and the provider's output count, which is
-  // trusted once it has moved (Anthropic reports a token or two at the start, then nothing
-  // until the end; Google counts along).
-  let chars = 0;
+  // The streaming message's output count, which is trusted once it has moved (Anthropic
+  // reports a token or two at the start, then nothing until the end; Google counts along).
   let counted = 0;
-  let counting = false;
   const began = () => {
-    chars = 0;
     counted = 0;
-    counting = false;
-    state.streamed = { input: 0, output: 0, exact: false };
+    state.streamed = { input: 0, output: 0 };
   };
   /** Folds in the provider's cumulative usage for the streaming message. */
   const count = (usage: Usage | undefined) => {
     if (!usage || !state.streamed) return;
     state.streamed.input = (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
     if (usage.output > counted) {
-      if (counted > 0) counting = true;
+      if (counted > 0) state.streamed.output = usage.output;
       counted = usage.output;
     }
-  };
-  const tally = () => {
-    if (!state.streamed) return;
-    state.streamed.output = counting ? counted : Math.ceil(chars / CHARS_PER_TOKEN);
-    state.streamed.exact = counting;
   };
   /**
    * Enters a state, reporting it at once. Staying in it only adds to the streamed text, unless
@@ -507,8 +493,6 @@ export async function run(
    */
   const enter = (next: Activity["state"], detail?: string, delta = "", fresh = false) => {
     const label = detail || undefined;
-    chars += delta.length;
-    tally();
     if (fresh || next !== state.activity.state || label !== state.activity.detail) {
       state.activity = { state: next, since: Date.now(), ...(label ? { detail: label } : {}) };
       return progress();
