@@ -13,6 +13,7 @@ To change the page size, change `PAGE_SIZE` in `model.ts` and run `/reload`. A p
 - Loaded pages stay in the transcript through compaction and through new output.
 - `/reload`, `/resume`, and navigating the session tree reset the transcript to its most recent entries. Run `/reload` after changing the TUI mode.
 - Model context, the active branch, session files, prompt history, and unsent drafts are unchanged, and tools are **never run again**.
+- A transcript paged in full draws the same rows as Pi's own, down to the blank line above each prompt. Pi adds that line only below rows already drawn, so Rearview builds each page as if the history above it were there.
 - With [`mirage`](../mirage/README.md), a group that a page boundary split becomes one group again when the older page loads. The anchor, the line at the top of the viewport, stays in place: if it was the first line of the split group, the whole group's header takes its place. Filename clicks, image previews, and expanding and collapsing keep working.
 - Rearview builds **older rows** only when asked for them; it does not clip rows that were already built. Pi itself still reads the whole session file into memory, so this is not paging from disk or a memory cap, and rows that have been shown are kept.
 

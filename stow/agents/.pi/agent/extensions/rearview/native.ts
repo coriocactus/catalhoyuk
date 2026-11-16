@@ -12,7 +12,14 @@ import { HISTORY_PAGE, type HistoryPage, type HistoryRenderState } from "../shar
 import { installPatch } from "../shared/patch.ts";
 import type { TranscriptView } from "../shared/transcript.ts";
 import { captureViewportAnchor } from "./anchors.ts";
-import { HistoryCursor, historyBoundary, historyGap, PAGE_SIZE, recentEntries } from "./model.ts";
+import {
+  drawnAbove,
+  HistoryCursor,
+  historyBoundary,
+  historyGap,
+  PAGE_SIZE,
+  recentEntries,
+} from "./model.ts";
 import { attachTopPaging } from "./scroll.ts";
 
 type Renderers = NonNullable<ConstructorParameters<typeof ToolExecutionComponent>[4]>;
@@ -73,6 +80,26 @@ function renderersForPage(
   };
 }
 
+/**
+ * Pi puts a blank line above a user message only when the transcript already has rows. Rearview
+ * builds a page, and the entries drawn first, in an empty container, though history Pi draws may
+ * sit above them: a row that draws nothing stands for it while Pi builds.
+ */
+function belowHistory(container: Container, drawn: boolean, build: () => void): void {
+  if (!drawn || container.children.length > 0) {
+    build();
+    return;
+  }
+
+  const standIn: Component = { render: () => [], invalidate() {} };
+  container.addChild(standIn);
+  try {
+    build();
+  } finally {
+    container.removeChild(standIn);
+  }
+}
+
 export function renderHistoryPage(
   host: NativeHost,
   entries: SessionEntry[],
@@ -85,7 +112,11 @@ export function renderHistoryPage(
   receiver.pendingTools = new Map();
   receiver.getRegisteredToolDefinition = (name) =>
     renderersForPage(host.getRegisteredToolDefinition(name), page);
-  render.call(receiver, entries); // No populateHistory/updateFooter flags.
+  const lookup = (id: string) => host.sessionManager.getEntry(id);
+  // No populateHistory/updateFooter flags.
+  belowHistory(receiver.chatContainer, drawnAbove(entries[0], lookup), () =>
+    render.call(receiver, entries),
+  );
   return receiver.chatContainer;
 }
 
@@ -506,7 +537,11 @@ export function installHistoryAdapter(
             ),
           );
         }
-        original.call(this, selected, options); // Native errors must still propagate.
+        // Native errors must still propagate.
+        const lookup = (id: string) => this.sessionManager.getEntry(id);
+        belowHistory(this.chatContainer, Boolean(current) && drawnAbove(selected[0], lookup), () =>
+          original.call(this, selected, options),
+        );
         try {
           current?.controller.refresh(visible);
         } catch (error) {

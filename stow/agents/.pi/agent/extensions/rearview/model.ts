@@ -42,6 +42,26 @@ export function recentEntries(
   return [...(checkpoint ? [checkpoint] : []), ...messages.slice(start)];
 }
 
+/**
+ * Whether Pi draws an entry above this one on its branch. The walk stops at the first entry that
+ * draws, usually the parent. Settings, labels and the system prompt at a session's start draw
+ * nothing.
+ */
+export function drawnAbove(entry: SessionEntry | undefined, lookup: EntryLookup): boolean {
+  const seen = new Set<string>();
+  let cursor = entry?.parentId ?? null;
+  while (cursor && !seen.has(cursor)) {
+    seen.add(cursor);
+    const above = lookup(cursor);
+    if (!above) return false;
+    if (above.type === "message" ? above.message.role !== "system" : DRAWN.has(above.type))
+      return true;
+    cursor = above.parentId;
+  }
+  return false;
+}
+const DRAWN = new Set<SessionEntry["type"]>(["compaction", "branch_summary", "custom_message"]);
+
 /** Entries newly evicted from an already displayed range, on the same ancestry. */
 export function historyGap(
   newBoundary: string | null,

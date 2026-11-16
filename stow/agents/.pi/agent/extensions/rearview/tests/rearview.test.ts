@@ -500,3 +500,41 @@ test("uncompacted sessions start bounded without clipping prompt history or grow
     adapter.dispose();
   }
 });
+
+test("a transcript paged in full draws Pi's own lines, with every blank line above a prompt", async () => {
+  const sm = core.SessionManager.inMemory(process.cwd());
+  // A session starts with settings and the system prompt, which draw nothing.
+  sm.appendModelChange("openai", "fixture");
+  sm.appendThinkingLevelChange("high");
+  sm.appendMessage({ role: "system", content: "SYSTEM", timestamp: 1 });
+  for (let i = 0; i < 6; i++) {
+    sm.appendMessage({ role: "user", content: `PROMPT_${i}`, timestamp: 1 });
+    sm.appendMessage(assistant(`REPLY_${i}`));
+    // A system prompt that changed between turns sits between a reply and the next prompt.
+    if (i % 2)
+      sm.appendMessage({ role: "system", content: "", sections: { rules: "RULES" }, timestamp: 1 });
+  }
+  const native = transcript(0);
+  native.host.sessionManager = sm;
+  native.host.renderSessionEntries(sm.buildContextEntries());
+  // Every page size puts a page boundary somewhere else, including right above a prompt.
+  for (let size = 1; size <= 6; size++) {
+    const f = transcript(0),
+      adapter = installHistoryAdapter((error) => {
+        throw error;
+      }, size);
+    f.host.sessionManager = sm;
+    try {
+      f.host.renderSessionEntries(sm.buildContextEntries());
+      // One trip to the top per page, though a page of settings draws nothing.
+      for (const _ of sm.getEntries()) {
+        f.layout();
+        f.scroll.scrollToStart();
+        await tick();
+      }
+      assert.equal(text(f.chat), text(native.chat), `page size ${size}`);
+    } finally {
+      adapter.dispose();
+    }
+  }
+});
