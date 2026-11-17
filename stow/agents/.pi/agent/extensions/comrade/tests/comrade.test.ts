@@ -1139,6 +1139,52 @@ test("a run's work is built as its messages arrive, never again from the start",
   assert(cut?.kind === "call" && cut.row.status === "cancelled");
 });
 
+test("rows drawn after their session ended, as on a resume, never ask Pi's stale runtime", async () => {
+  const { createTranscripts } = await load<typeof import("../transcripts.ts")>(
+    "../transcripts.ts",
+    import.meta.url,
+  );
+  // Pi marks the runtime stale right after session_shutdown: every call through it throws.
+  let stale = false;
+  const asked: string[] = [];
+  const guard = (name: string) => {
+    asked.push(name);
+    if (stale) throw new Error("This extension ctx is stale after session replacement or reload.");
+  };
+  const pi = fakePi();
+  const api = {
+    ...pi.api,
+    events: {
+      ...pi.events,
+      emit: (channel: string, data: unknown) => {
+        guard("emit");
+        pi.events.emit(channel, data);
+      },
+    },
+    getSettings: () => {
+      guard("getSettings");
+      return pi.api.getSettings();
+    },
+  } as typeof pi.api;
+  const transcripts = createTranscripts(api);
+  transcripts.started();
+  assert.equal(transcripts.thinkingShown(), true);
+  transcripts.ended();
+  stale = true;
+  asked.length = 0;
+  // The old session's rows are still on screen, and Pi draws them once more before the new
+  // session's replace them.
+  assert.equal(transcripts.thinkingShown(), true);
+  assert.deepEqual(
+    transcripts.blocksFor("run", () => undefined, "/tmp", themes.theme, false),
+    [],
+  );
+  assert(!asked.includes("emit"), "mirage is not asked through a runtime that has ended");
+  // A runtime gone stale without an end first is survived too.
+  const unended = createTranscripts(api);
+  assert.equal(unended.thinkingShown(), true);
+});
+
 test("a turn ends while background comrades run, and an answer after it starts a new one", async (t) => {
   const { call, pi, ctx, sent, working, comrades } = fixture(t, "hang");
   await call({ task: "slow", background: true });

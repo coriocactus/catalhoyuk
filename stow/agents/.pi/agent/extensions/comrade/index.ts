@@ -60,6 +60,7 @@ export function register(pi: ExtensionAPI, invocation: Invocation | (() => Invoc
   ]);
   // Rows still at work spin: see shared/spinner.ts. A row that stopped is redrawn once more, at
   // rest, and the timer stops when none is left.
+  let outputPad = 1;
   const rows = createRows({
     session,
     background,
@@ -68,7 +69,14 @@ export function register(pi: ExtensionAPI, invocation: Invocation | (() => Invoc
     transcripts,
     spinner: new Spinner<string>(),
     requestRender: () => widget.requestRender(),
-    outputPad: () => (pi.getSettings().outputPad === 0 ? 0 : 1),
+    outputPad: () => {
+      try {
+        outputPad = pi.getSettings().outputPad === 0 ? 0 : 1;
+      } catch {
+        // The session ended and Pi marked its runtime stale: rows still on screen keep the last.
+      }
+      return outputPad;
+    },
   });
   const reconciler = createReconciler(pi, background, outbox);
 

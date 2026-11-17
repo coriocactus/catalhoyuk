@@ -78,7 +78,11 @@ export function createTranscripts(pi: ExtensionAPI) {
   const rowsService = () => {
     if (mirage === undefined) {
       const request: NestedRowsRequest = {};
-      pi.events.emit(NESTED_ROWS_EVENT, request);
+      try {
+        pi.events.emit(NESTED_ROWS_EVENT, request);
+      } catch {
+        // Pi's runtime has gone stale, as after a resume or /reload: nothing answers.
+      }
       mirage = request.rows ?? null;
     }
     return mirage ?? undefined;
@@ -293,10 +297,14 @@ export function createTranscripts(pi: ExtensionAPI) {
       mirage = undefined;
       setting = undefined;
     },
-    /** The session ended. Mirage's rows belong to its runtime: a reloaded one draws them afresh. */
+    /**
+     * The session ended. Mirage's rows belong to its runtime: a reloaded one draws them afresh.
+     * Pi then marks this runtime stale, and asking through it throws, yet rows on screen are drawn
+     * again until the next session replaces them: they draw without mirage.
+     */
     ended() {
       shown.clear();
-      mirage = undefined;
+      mirage = null;
     },
   };
 }
