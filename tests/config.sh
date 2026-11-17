@@ -374,6 +374,52 @@ jj_check_only() {
     jj_no_temps
 }
 
+jj_range() {
+    new_jj
+    local name
+    for name in first second third; do
+        printf '%s\n' "$name" > "$name.py"
+        jj --no-pager commit -m "feat: $name" >> "$output" 2>&1
+        jj --no-pager bookmark create "$name" -r @- >> "$output" 2>&1
+    done
+    local expected stop=third
+    case "$1" in
+        branch)
+            jj --no-pager prek -b third > "$output" 2>&1
+            expected='signed signed signed' ;;
+        revset)
+            jj --no-pager prek -r 'second::third' > "$output" 2>&1
+            expected='unsigned signed signed' ;;
+        failure)
+            jj --no-pager describe -r second -m '' >> "$output" 2>&1
+            if jj --no-pager prek -b third > "$output" 2>&1; then fail 'range continued past a failure'; fi
+            grep -F 'jj prek: Stopped at' "$output" >/dev/null || fail 'failure did not name the stopping change'
+            expected='signed unsigned unsigned' stop=second ;;
+        usage)
+            if jj --no-pager prek -b third --verbose > "$output" 2>&1; then fail 'range accepted other options'; fi
+            grep -F 'Usage: jj prek -r REVSET | -b REV' "$output" >/dev/null || fail 'bad range usage was not explained'
+            absent "$CALLS.stages"
+            expected='unsigned unsigned unsigned' ;;
+        empty)
+            if jj --no-pager prek -r 'none()' > "$output" 2>&1; then fail 'empty range was accepted'; fi
+            grep -F 'No revisions in none()' "$output" >/dev/null || fail 'empty range was not reported'
+            absent "$CALLS.stages"
+            expected='unsigned unsigned unsigned' ;;
+    esac
+    local actual=()
+    for name in first second third; do
+        if jj --no-pager log --no-graph -r "$name" -T description | grep -q '^Signed-off-by: fixture commit-msg$'; then
+            actual+=(signed)
+        else
+            actual+=(unsigned)
+        fi
+    done
+    [ "${actual[*]}" = "$expected" ] || fail "wrong changes signed off: ${actual[*]}"
+    [ "$(jj --no-pager log --no-graph -r @- -T change_id)" = "$(jj --no-pager log --no-graph -r "$stop" -T change_id)" ] || fail "range did not stop on $stop"
+    [ "$(jj --no-pager log --no-graph -r @ -T empty)" = true ] || fail 'range left changes in @'
+    jj_no_temps
+}
+
 jj_real_prek() {
     new_jj
     rm "$case_dir/bin/prek"
@@ -592,6 +638,7 @@ run_test 'jj prek reports failing pre-commit fixes and preserves the exit code' 
 run_test 'jj prek reports failing commit-msg fixes and preserves the exit code' jj_fixes commit-msg 43
 run_test 'jj prek propagates message-hook failure without rewriting @-' jj_message_failure
 for option in ruff --verbose --dry-run; do run_test "jj prek $option is check-only" jj_check_only "$option"; done
+for mode in branch revset failure usage empty; do run_test "jj prek range: $mode" jj_range "$mode"; done
 for state in changed deleted empty unchanged-message; do run_test "jj prek with real prek: $state" jj_real_prek "$state"; done
 for mode in brew default-xdg no-zsh failed-brew no-path standard-prefix startup; do
     run_test "tmux loads its settings and Homebrew Zsh: $mode" tmux_config "$mode"

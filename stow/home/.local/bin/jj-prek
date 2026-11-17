@@ -1,9 +1,27 @@
 #!/usr/bin/env bash
-# No arguments: check @- and apply its commit-msg hooks. Arguments: checks only.
+# No arguments: check @- and apply its commit-msg hooks.
+# -r REVSET: do that for each change in REVSET, oldest first; stop at the first failure.
+# -b REV: likewise for REV's branch, trunk()..REV.
+# Other arguments: checks only.
 set -euo pipefail
 cd -- "${JJ_WORKSPACE_ROOT:-$(jj --no-pager root)}"
 
 die() { printf 'jj prek: %s\n' "$*" >&2; exit 1; }
+
+if [ "${1:-}" = -r ] || [ "${1:-}" = -b ]; then
+    [ "$#" -eq 2 ] || die 'Usage: jj prek -r REVSET | -b REV (full runs only; no other options).'
+    revset=$2
+    [ "$1" = -r ] || revset="trunk()..($2)"
+    # Change IDs survive the rewrites that commit-msg hooks cause in each change and its descendants.
+    changes=$(jj --no-pager --color=never log -r "$revset" --reversed --no-graph -T 'change_id ++ "\n"')
+    [ -n "$changes" ] || die "No revisions in $revset."
+    for change in $changes; do
+        printf '\033[36m==> %s\033[0m\n' "${change:0:12}"
+        jj --no-pager new "$change" && "$0" || die "Stopped at ${change:0:12}."
+    done
+    exit 0
+fi
+
 clean_working_copy_id() {
     jj --no-pager --color=never log --no-graph -r @ -T \
         'if(empty && parents.len() == 1 && !conflict, commit_id)'
