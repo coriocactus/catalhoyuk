@@ -14,6 +14,8 @@ Interupt makes `Esc` stop a running response only on its second press. The first
 
 Interupt guards the prompt editor's input: the first `Esc` that matches `app.interrupt` arms the stop, and every other key reaches the editor. It guards the editor that another extension set through `ctx.ui.setEditorComponent`, if one did, and otherwise Pi's `CustomEditor` with the working indicator in its top border, as Pi's own editor has it (`embedWorkingStatus`). A response starting or ending, and a session starting or shutting down, disarm the stop. Interupt runs in the interactive terminal only and uses no private Pi API.
 
+Pi keeps the `Up`/`Down` prompt history in the editor and does not copy it to an editor that replaces its own. It fills the guarded editor's history itself only after startup, so after `/reload`, `/new`, `/resume` or a fork, Interupt fills it the way Pi does: with the text of each user message on the session's current branch. Commands such as `/reload` and `!` shell commands entered before then are not restored, since the session does not record them as prompts.
+
 An extension that sets its editor after Interupt replaces the guard unless it wraps the editor it finds, as Interupt does.
 
 Apply changes with `/reload`.

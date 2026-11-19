@@ -2,6 +2,7 @@ import {
   CustomEditor,
   type ExtensionAPI,
   type ExtensionContext,
+  sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent";
 import { type EditorComponent, matchesKey } from "@earendil-works/pi-tui";
 
@@ -10,6 +11,26 @@ type EditorFactory = NonNullable<ReturnType<ExtensionContext["ui"]["getEditorCom
 /** How long a first Escape stays armed. */
 const ARMED_MS = 1500;
 
+/**
+ * The session's prompts, oldest first, as Pi adds them to the editor's history when it draws
+ * the session: the text of each user message on the current branch.
+ */
+function prompts(ctx: ExtensionContext): string[] {
+  const texts: string[] = [];
+  for (const entry of ctx.sessionManager.buildContextEntries()) {
+    for (const message of sessionEntryToContextMessages(entry)) {
+      if (message.role !== "user") continue;
+      const { content } = message;
+      const text =
+        typeof content === "string"
+          ? content
+          : content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
+      if (text) texts.push(text);
+    }
+  }
+  return texts;
+}
+
 export default function (pi: ExtensionAPI) {
   let reset = () => {};
   // The guarded editor this extension set, and the editor it guards, so that a second session
@@ -17,7 +38,7 @@ export default function (pi: ExtensionAPI) {
   let guarded: EditorFactory | undefined;
   let inner: EditorFactory | undefined;
 
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", (event, ctx) => {
     reset();
     if (ctx.mode !== "tui") return;
 
@@ -34,10 +55,15 @@ export default function (pi: ExtensionAPI) {
     const current = ctx.ui.getEditorComponent();
     const previous = current === guarded ? inner : current;
     inner = previous;
+    // Pi keeps the prompt history in the editor and does not hand it to an editor that replaces
+    // its own. Only after a startup's session_start does Pi fill the history of the editor set
+    // here; after a reload, new session, resume or fork, fill it the way Pi does.
+    const history = event.reason === "startup" ? [] : prompts(ctx);
     guarded = (tui, theme, keybindings) => {
       const editor: EditorComponent =
         previous?.(tui, theme, keybindings) ??
         new CustomEditor(tui, theme, keybindings, { embedWorkingStatus: true });
+      for (const text of history) editor.addToHistory?.(text);
       const handle = editor.handleInput.bind(editor);
       const completing = () =>
         "isShowingAutocomplete" in editor &&

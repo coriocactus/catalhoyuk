@@ -701,6 +701,16 @@ try {
   );
   terminal.send(":q\r");
   await terminal.waitFor((s) => s.includes("BACKGROUND_FINISHED"), "return after reload");
+  // The editor Interupt guards after a reload keeps the session's prompt history.
+  const prompts = (s: string) => s.split("Run the fixture").length - 1;
+  const promptsShown = prompts(terminal.screen);
+  terminal.send("\x1b[A");
+  await terminal.waitFor(
+    (s) => prompts(s) === promptsShown + 1,
+    "Up recalls a prompt after reload",
+  );
+  terminal.send("\x1b[B");
+  await terminal.waitFor((s) => prompts(s) === promptsShown, "Down returns to the empty draft");
   await delay(500);
   // Idle, Pi and the extensions run nothing: no timer, no redraw. `ps` counts CPU time in
   // hundredths of a second, so the budget is five of them in ten seconds: half a percent.

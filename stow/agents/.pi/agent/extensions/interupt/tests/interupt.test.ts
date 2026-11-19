@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { type TestContext, test } from "node:test";
-import type { CustomEditor, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { UserMessage } from "@earendil-works/pi-ai";
+import type {
+  CustomEditor,
+  ExtensionContext,
+  SessionStartEvent,
+} from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import { type Fake, fake, fakePi } from "../../test/fake-pi.ts";
 import { core, load, piModule, themes, tui } from "../../test/pi.ts";
@@ -26,15 +31,24 @@ function fixture(
     mode = "tui",
     bindings = {},
     previous = undefined,
+    reason = "startup",
+    prompts = [],
   }: {
     mode?: ExtensionContext["mode"];
     bindings?: ConstructorParameters<Keybindings["KeybindingsManager"]>[0];
     /** The editor another extension set before this one. */
     previous?: EditorFactory;
+    /** Why the first session start happened. */
+    reason?: SessionStartEvent["reason"];
+    /** The session's user messages, oldest first. */
+    prompts?: UserMessage["content"][];
   } = {},
 ) {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const pi = fakePi();
+  const sessionManager = core.SessionManager.inMemory(process.cwd());
+  for (const content of prompts)
+    sessionManager.appendMessage({ role: "user", content, timestamp: 1 });
   let editor: CustomEditor | undefined,
     current = previous,
     renders = 0,
@@ -52,6 +66,7 @@ function fixture(
   const ctx = fake<ExtensionContext>({
     mode,
     isIdle: () => idle,
+    sessionManager,
     ui: {
       setStatus() {
         assert.fail("The hint must not add a footer row");
@@ -77,8 +92,8 @@ function fixture(
       },
     },
   });
-  const emit = (name: string) => pi.emit(name, {}, ctx);
-  emit("session_start");
+  const emit = (name: string, event: object = {}) => pi.emit(name, event, ctx);
+  emit("session_start", { reason });
   t.after(() => emit("session_shutdown"));
   return {
     emit,
@@ -234,6 +249,49 @@ test("an editor another extension set is kept, and guarded in its place", (t) =>
   f.editor.handleInput("\x1b");
   f.editor.handleInput("\x1b");
   assert.equal(f.escapes, 2);
+});
+
+for (const reason of ["reload", "new", "resume", "fork"] as const) {
+  test(`after a ${reason}, Up browses the session's prompts`, (t) => {
+    const f = fixture(t, {
+      reason,
+      prompts: [
+        "first",
+        [
+          { type: "text", text: "look at " },
+          { type: "image", data: "", mimeType: "image/png" },
+          { type: "text", text: "this" },
+        ],
+        [{ type: "image", data: "", mimeType: "image/png" }],
+      ],
+    });
+    f.editor.handleInput("\x1b[A");
+    assert.equal(f.editor.getText(), "look at this", "an image-only prompt has no entry");
+    f.editor.handleInput("\x1b[A");
+    assert.equal(f.editor.getText(), "first");
+    f.editor.handleInput("\x1b[A");
+    assert.equal(f.editor.getText(), "first", "nothing older");
+    f.editor.handleInput("\x1b[B");
+    assert.equal(f.editor.getText(), "look at this");
+  });
+}
+
+test("on startup the prompt history is left for Pi to fill", (t) => {
+  const f = fixture(t, { prompts: ["first"] });
+  f.editor.handleInput("\x1b[A");
+  assert.equal(f.editor.getText(), "");
+});
+
+test("an editor another extension set gets the prompt history too", (t) => {
+  class Other extends core.CustomEditor {}
+  const f = fixture(t, {
+    reason: "reload",
+    prompts: ["first"],
+    previous: (host, theme, keybindings) => new Other(host, theme, keybindings),
+  });
+  assert(f.editor instanceof Other);
+  f.editor.handleInput("\x1b[A");
+  assert.equal(f.editor.getText(), "first");
 });
 
 test("remapped interrupts are untouched; plain Escape does not arm", (t) => {

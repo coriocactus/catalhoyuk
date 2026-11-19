@@ -1,5 +1,9 @@
 {
   "$schema": "https://pi.dev/schemas/keybindings.schema.json",
   "tui.select.up": ["up", "ctrl+p"],
-  "tui.select.down": ["down", "ctrl+n"]
+  "tui.select.down": ["down", "ctrl+n"],
+  "tui.editor.historyPrevious": "ctrl+p",
+  "tui.editor.historyNext": "ctrl+n",
+  "app.model.cycleForward": "ctrl+s",
+  "app.model.cycleBackward": "ctrl+shift+s"
 }
