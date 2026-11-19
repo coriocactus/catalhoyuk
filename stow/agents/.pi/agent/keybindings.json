@@ -4,6 +4,6 @@
   "tui.select.down": ["down", "ctrl+n"],
   "tui.editor.historyPrevious": "ctrl+p",
   "tui.editor.historyNext": "ctrl+n",
-  "app.model.cycleForward": "ctrl+s",
-  "app.model.cycleBackward": "ctrl+shift+s"
+  "app.model.cycleForward": "ctrl+q",
+  "app.model.cycleBackward": []
 }
