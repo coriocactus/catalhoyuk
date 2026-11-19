@@ -104,15 +104,16 @@ augroup END
 "     ░████ ░██    ░██  ░███████  ░██   ░██   ░██  ░███████
 
 syntax on
-" Fall back to slate where ~/.vim/colors/darkside.vim was not installed.
-try
-  colorscheme darkside
-catch /^Vim\%((\a\+)\)\=:E185:/
-  colorscheme slate
-  highlight Normal ctermbg=NONE
-  highlight ColorColumn ctermbg=238
-  highlight ModeMsg ctermfg=3 ctermbg=NONE cterm=bold guifg=#f2d42c guibg=NONE gui=bold
-endtry
+" slate on the terminal's own background (Ghostty's Darkside, #222324) instead
+" of its #262626. An autocmd, so it survives Goyo reloading the colorscheme.
+augroup slate_overrides
+  autocmd!
+  autocmd ColorScheme slate highlight Normal ctermbg=NONE guibg=NONE
+        \ | highlight SignColumn ctermbg=NONE guibg=NONE
+        \ | highlight ColorColumn ctermbg=236 guibg=#303030
+        \ | highlight ModeMsg ctermfg=220 ctermbg=NONE cterm=bold guifg=#ffd700 guibg=NONE gui=bold
+augroup END
+colorscheme slate
 
 " =================================================================================================
 "                                  ░██
@@ -226,7 +227,7 @@ let g:undotree_SetFocusWhenToggle = 1
 let g:indentLine_fileTypeExclude = ['json', 'markdown', 'tex', 'text']
 
 " Writing mode: Goyo centres a 99-column page; \0 toggles Limelight, which dims
-" other paragraphs (off by default).
+" other paragraphs, and \c toggles British spell check (both off by default).
 " Goyo opens its own tab, so window-local options set here vanish on leave.
 let g:goyo_width = 99
 let g:limelight_conceal_ctermfg = 240
@@ -350,13 +351,14 @@ function! s:CompactRow(line) abort
 endfunction
 
 function! s:GoyoEnter() abort
-  setlocal wrap linebreak spell spelllang=en_us
+  setlocal wrap linebreak nospell spelllang=en_gb
   if s:has_pencil && index(['markdown', 'text'], &filetype) >= 0
     call pencil#init({'wrap': 'soft'})
   endif
   call s:GoyoStatus()
   call s:GoyoStatusColor()
   nnoremap <leader>0 <cmd>Limelight!!<CR>
+  nnoremap <leader>c <cmd>setlocal spell! spell?<CR>
   cnoremap <expr> <CR> <SID>GoyoCenterCR()
   let s:goyo_quit = ''
   augroup goyo_session
@@ -373,6 +375,7 @@ endfunction
 function! s:GoyoLeave() abort
   Limelight!
   silent! nunmap <leader>0
+  silent! nunmap <leader>c
   silent! cunmap <CR>
   if get(b:, 'pencil_wrap_mode', 0)
     call pencil#init({'wrap': 'off'})
