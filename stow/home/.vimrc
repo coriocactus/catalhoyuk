@@ -63,6 +63,8 @@ set colorcolumn=80
 set laststatus=0
 set cursorline
 set scrolloff=0
+" draw multi-step mappings (e.g. <C-d>zz) once at the end, not after every step
+set lazyredraw
 
 " use newer/faster regex engine automatically
 set regexpengine=0  
@@ -81,10 +83,15 @@ augroup netrw_startup
   autocmd VimEnter * if argc() == 0 | Explore | endif
 augroup END
 
+" views persist manual folds only; restore_cursor below handles the cursor
+set viewoptions=folds
+
 augroup remember_folds
   autocmd!
   autocmd BufWinLeave * if &buftype == '' && !empty(expand('%')) | mkview | endif
-  autocmd BufWinEnter * if &buftype == '' && !empty(expand('%')) | silent! loadview | endif
+  " loadview moves the cursor while reopening folds, so put it back afterwards
+  autocmd BufWinEnter * if &buftype == '' && !empty(expand('%'))
+        \ | let s:pos = getcurpos() | silent! loadview | call setpos('.', s:pos) | endif
 augroup END
 
 " =================================================================================================
@@ -139,6 +146,18 @@ function! s:TmuxTitle(name) abort
     call system('tmux rename-window -- ' . shellescape(a:name))
   endif
 endfunction
+
+" :help restore-cursor. Must come after `syntax on`, so the filetype is
+" already known when this runs (needed for the commit/rebase checks).
+augroup restore_cursor
+  autocmd!
+  autocmd BufReadPost *
+        \ let s:line = line("'\"")
+        \ | if s:line >= 1 && s:line <= line('$') && &filetype !~# 'commit'
+        \      && index(['xxd', 'gitrebase'], &filetype) == -1 && !&diff
+        \ |   execute "normal! g`\""
+        \ | endif
+augroup END
 
 augroup tmux_title
   autocmd!
@@ -595,22 +614,53 @@ vnoremap K :m '<-2<CR>gv=gv
 nnoremap J mzJ`z
 nnoremap n nzzzv
 nnoremap N Nzzzv
+" keep the cursor mid-window when paging. M, not zz, after <C-f>/<C-b>: they leave the
+" cursor on the edge row, so zz would pull the view back and halve the jump. M is a
+" jump motion, hence keepjumps. Near the end of the file, stop with the last line on
+" the bottom row instead of scrolling into the empty space past it.
+function! s:PageEnd() abort
+  if line('w$') == line('$')
+    let l:pos = getcurpos()
+    keepjumps normal! Gzb
+    call setpos('.', l:pos)
+  endif
+endfunction
+nnoremap <C-d> <C-d>zz<Cmd>call <SID>PageEnd()<CR>
+nnoremap <C-u> <C-u>zz
+nnoremap <C-f> <C-f><Cmd>call <SID>PageEnd()<CR><Cmd>keepjumps normal! M<CR>
+nnoremap <C-b> <C-b><Cmd>keepjumps normal! M<CR>
 
 vnoremap < <gv
 vnoremap > >gv
 
-vnoremap <leader>d "+d
-nnoremap <leader>d "+d
-" Over SSH, or in a Vim built without a clipboard, yank through the terminal (OSC 52).
+" vim-oscyank only yanks: delete as usual, then send the deleted text through OSC 52.
+function! s:OSCDelete(type = '') abort
+  if a:type ==# ''
+    let &operatorfunc = function('s:OSCDelete')
+    return 'g@'
+  endif
+  let l:selection = &selection
+  set selection=inclusive
+  let l:select = {'char': '`[v`]', 'line': "'[V']", 'block': "`[\<C-v>`]"}
+  silent execute 'keepjumps normal! ' .. l:select[a:type] .. 'd'
+  let &selection = l:selection
+  call OSCYankRegister('"')
+endfunction
+
+" Over SSH, or in a Vim built without a clipboard, yank and delete through the terminal (OSC 52).
 " SSH_CONNECTION rather than SSH_TTY: tmux refreshes it for new panes on every attach.
 " has('clipboard_working') is no use here: it stays 0 until after the vimrc has loaded.
 " <Plug> needs a recursive map in older Vims.
 if !empty($SSH_CONNECTION) || !has('clipboard')
   vmap <leader>y <Plug>OSCYankVisual
   nmap <leader>y <Plug>OSCYankOperator
+  vnoremap <leader>d d<Cmd>call OSCYankRegister('"')<CR>
+  nnoremap <expr> <leader>d <SID>OSCDelete()
 else
   vnoremap <leader>y "+y
   nnoremap <leader>y "+y
+  vnoremap <leader>d "+d
+  nnoremap <leader>d "+d
 endif
 vnoremap <leader>p "+p
 nnoremap <leader>p "+p
