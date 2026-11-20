@@ -20,9 +20,7 @@
     "anthropic/claude-fable-5-2",
     "anthropic/claude-opus-5-5",
     "anthropic/claude-sonnet-5-5",
-    "anthropic/claude-haiku-5-5",
-    "openrouter/google/gemini-4-carbon",
-    "openrouter/google/gemini-4-neon"
+    "anthropic/claude-haiku-5-5"
   ],
   "warnings": {
     "anthropicExtraUsage": false
@@ -31,16 +29,16 @@
     "+codemode"
   ],
   "packages": [
+    "npm:pi-better",
     "npm:pi-web-access",
     "npm:@gotgenes/pi-anthropic-auth",
-    "npm:@narumitw/pi-btw",
-    "npm:pi-better"
+    "npm:@narumitw/pi-btw"
   ],
   "deviceId": "a5f18aeb-ec49-4c13-8bbb-1e9112604e5d",
   "extensionChangelogVersions": {
+    "{\"source\":\"npm:pi-better\",\"scope\":\"user\"}": "0.2.0",
     "{\"source\":\"npm:pi-web-access\",\"scope\":\"user\"}": "0.48.0",
     "{\"source\":\"npm:@gotgenes/pi-anthropic-auth\",\"scope\":\"user\"}": "3.6.0",
-    "{\"source\":\"npm:@narumitw/pi-btw\",\"scope\":\"user\"}": "0.63.8",
-    "{\"source\":\"npm:pi-better\",\"scope\":\"user\"}": "0.2.0"
+    "{\"source\":\"npm:@narumitw/pi-btw\",\"scope\":\"user\"}": "0.63.8"
   }
 }
