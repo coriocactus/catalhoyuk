@@ -140,7 +140,7 @@ class HistoryPages extends Container {
     super();
     this.host = host;
   }
-  override render(width: number): string[] {
+  override render(width: number): readonly string[] {
     return this.host.ui.mode === "fullscreen" ? super.render(width) : [];
   }
   setExpanded(value: boolean): void {

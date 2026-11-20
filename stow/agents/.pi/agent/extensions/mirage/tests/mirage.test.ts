@@ -1445,6 +1445,26 @@ test("a spinner frame redraws a live group without building its output again", a
   assert.notEqual(view.bodies.get("kept-read")?.component, body);
 });
 
+test("an image read by a model that takes no images says so once expanded", async () => {
+  const f = await fixture();
+  const read = component("read", "blind-read", { path: "picture.png" }, f.tool("read"), f.dir);
+  read.updateResult({
+    content: [
+      { type: "text", text: "Read image file [image/png]" },
+      { type: "image", data: PIXEL_PNG, mimeType: "image/png" },
+    ],
+    details: { imageUnsupportedByModel: "text-only" },
+    isError: false,
+  });
+  assert.equal(plain(read), "\n✓ Viewed picture.png ▸");
+  f.expand(true);
+  read.setExpanded(true);
+  assert.match(
+    plain(read),
+    /\n {2}\[text-only does not support images; it saw a placeholder instead\]/,
+  );
+});
+
 test("a result Pi reports again keeps the output built for it", async () => {
   const f = await fixture();
   const read = component("read", "again-read", { path: "a.ts" }, f.tool("read"), f.dir);

@@ -29,7 +29,7 @@ export function ownImageRendering<T extends object>(definition: T): T {
   return { ...definition, [OWNER]: true };
 }
 
-export function renderNativeImages(state: object, width: number): string[] {
+export function renderNativeImages(state: object, width: number): readonly string[] {
   return (state as ImageState)[SLOT]?.render(width) ?? [];
 }
 

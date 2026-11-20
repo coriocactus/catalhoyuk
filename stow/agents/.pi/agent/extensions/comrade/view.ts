@@ -684,10 +684,13 @@ function taskBlock(
 }
 
 /** Markdown already drawn, by width and text: a running row is drawn afresh many times a second. */
-const drawn = new Map<string, string[]>();
+const drawn = new Map<string, readonly string[]>();
 const DRAWN_MAX = 200;
 /** A conversation's blocks already drawn, by the message part each came from, however many. */
-const drawnParts = new WeakMap<object, { width: number; colours: object; lines: string[] }>();
+const drawnParts = new WeakMap<
+  object,
+  { width: number; colours: object; lines: readonly string[] }
+>();
 /**
  * The colours what is drawn was drawn in: others draw everything afresh. Pi hands every row the
  * same theme object whatever the theme, but each theme has colours of its own.
@@ -701,7 +704,7 @@ const drawing = (theme: Theme) => {
 };
 
 /** Text as Markdown, two columns in, at most once per width. */
-function markdown(text: string, width: number, theme: Theme, source?: object): string[] {
+function markdown(text: string, width: number, theme: Theme, source?: object): readonly string[] {
   drawing(theme);
   const part = source && drawnParts.get(source);
   if (part?.width === width && part.colours === theme.colors) return part.lines;
@@ -719,7 +722,12 @@ function markdown(text: string, width: number, theme: Theme, source?: object): s
 }
 
 /** Thinking, dim and italic, wrapped two columns in, at most once per width. */
-function thinkingLines(text: string, width: number, theme: Theme, source?: object): string[] {
+function thinkingLines(
+  text: string,
+  width: number,
+  theme: Theme,
+  source?: object,
+): readonly string[] {
   const part = source && drawnParts.get(source);
   if (part?.width === width && part.colours === theme.colors) return part.lines;
   const lines = wrapTextWithAnsi(printable(text).trim(), Math.max(8, width - 2)).map(
@@ -730,7 +738,7 @@ function thinkingLines(text: string, width: number, theme: Theme, source?: objec
 }
 
 /** The answer, as Markdown, without the run line and markers the model reads. */
-function answerLines(answer: string, width: number, theme: Theme): string[] {
+function answerLines(answer: string, width: number, theme: Theme): readonly string[] {
   const body = answer.replace(RUN, "").replace(TRUNCATED, "").replace(NOT_FINAL, "").trim();
   return body ? markdown(body, width, theme) : [];
 }

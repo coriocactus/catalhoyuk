@@ -31,7 +31,7 @@ const reply = (
   ...assistant("", calls),
   stopReason,
 });
-const lineOf = (lines: string[], needle: string) =>
+const lineOf = (lines: readonly string[], needle: string) =>
   lines.findIndex((line) => tui.stripTerminalSequences(line).includes(needle));
 
 test("the calls of an aborted or failed turn fail with the error Pi shows for them", () => {

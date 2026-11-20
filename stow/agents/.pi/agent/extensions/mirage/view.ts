@@ -176,7 +176,7 @@ interface ViewActions {
   toggle(target: ToggleTarget): void;
   openFile(file: FileReference): void;
   outputPad(): number;
-  renderImages(row: ToolCallState, width: number): string[];
+  renderImages(row: ToolCallState, width: number): readonly string[];
   /** The working spinner's current frame while Pi is working, for calls still in progress. */
   spinner?(): string | undefined;
   /** Told each time a frame draws the row with its spinner. */
@@ -866,6 +866,10 @@ export class ToolGroupView implements Component {
         output = unkept;
       } else if (row.kind === "read") {
         output = this.code(row.id, output, row.file?.path);
+        // Pi keeps this out of the result's text, so only its renderer, which this replaces, shows it.
+        const blind = oneLine(text(details(row)?.imageUnsupportedByModel));
+        if (blind)
+          output += `\n${this.theme.fg("warning", `[${blind} does not support images; it saw a placeholder instead]`)}`;
       } else if (row.kind === "tool") {
         output = this.toolOutput(row.id, output);
       } else if (

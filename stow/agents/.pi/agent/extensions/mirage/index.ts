@@ -77,7 +77,7 @@ export default function (pi: ExtensionAPI) {
     claims(name) ? (name as ToolName) : MCP_TOOL.test(name) || plain.get(name) ? "tool" : undefined;
   const groups = new ToolGroups(kinds);
   let historyGroups = new WeakMap<HistoryPage, ToolGroups>();
-  const images = new WeakMap<ToolCallState, (width: number) => string[]>();
+  const images = new WeakMap<ToolCallState, (width: number) => readonly string[]>();
   // Pi redraws a script's calls only when it redraws the script's row, so keep each script
   // row's redraw callback.
   const redraws = new WeakMap<ToolCallState, () => void>();

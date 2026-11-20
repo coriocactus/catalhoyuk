@@ -176,7 +176,7 @@ const plainTheme = new Proxy({} as MarkdownTheme, {
   get: (_, key) =>
     key === "highlightCode" || key === "codeBlockIndent" ? undefined : (text: string) => text,
 });
-const trimmedLines = (lines: string[]) =>
+const trimmedLines = (lines: readonly string[]) =>
   lines.map((line) => stripTerminalSequences(line).trimEnd());
 
 /** Pi still draws a code block as `` ```lang ``, the indented code, then `` ``` ``. */
@@ -364,9 +364,9 @@ function replacement(key: string, original: Method): Method {
       };
     }
     case "markdown.render": {
-      const trimmed = new WeakMap<string[], string[]>();
+      const trimmed = new WeakMap<readonly string[], readonly string[]>();
       return function (this: MarkdownInternals, width: number) {
-        const lines: string[] = original.call(this, width);
+        const lines: readonly string[] = original.call(this, width);
         // A background must still reach the edge, as user messages need.
         if (this.defaultTextStyle?.bgColor) return lines;
         let result = trimmed.get(lines);

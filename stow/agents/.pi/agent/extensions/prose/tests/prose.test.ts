@@ -40,7 +40,8 @@ const render = (
   style?: { bgColor: (text: string) => string },
   with_ = theme,
 ) => new tui.Markdown(text, 0, 0, with_, style).render(width);
-const plain = (lines: string[]) => lines.map((line) => tui.stripTerminalSequences(line).trimEnd());
+const plain = (lines: readonly string[]) =>
+  lines.map((line) => tui.stripTerminalSequences(line).trimEnd());
 
 type Screen = {
   getLineSelection(point: { row: number; col: number }): {
@@ -57,7 +58,7 @@ type Screen = {
   getActiveSelectionText(): string | undefined;
 };
 /** Pi's own selection over these rendered rows, from the first row's start to `focus`. */
-const copy = (lines: string[], focus = { row: lines.length - 1, col: 200 }) =>
+const copy = (lines: readonly string[], focus = { row: lines.length - 1, col: 200 }) =>
   (
     Object.assign(Object.create(tui.TuiAltScreen.prototype), {
       selectionAnchor: { row: 0, col: 0 },
