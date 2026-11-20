@@ -72,12 +72,31 @@ export const follow = (session: string, run: string) => {
 /** `comrade-3.jsonl` keeps its runs in `comrade-3.runs.json`. */
 export const runsFile = (session: string) => `${session.replace(/\.jsonl$/, "")}.runs.json`;
 
+const PHASES: readonly unknown[] = ["starting", "asked", "done"];
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+const optional = (value: unknown, type: "string" | "number") =>
+  value === undefined || typeof value === type;
+
+/** Whether a run record has every field that is read from it, each of the type it is read as. */
 const isRunRecord = (value: unknown): value is RunRecord =>
-  typeof value === "object" &&
-  value !== null &&
-  typeof (value as RunRecord).run === "string" &&
-  typeof (value as RunRecord).owner === "number" &&
-  typeof (value as RunRecord).task === "string";
+  isObject(value) &&
+  typeof value.run === "string" &&
+  typeof value.background === "boolean" &&
+  typeof value.owner === "number" &&
+  optional(value.child, "number") &&
+  typeof value.started === "number" &&
+  typeof value.at === "number" &&
+  PHASES.includes(value.phase) &&
+  typeof value.task === "string" &&
+  Array.isArray(value.files) &&
+  value.files.every((file) => typeof file === "string") &&
+  optional(value.output, "string") &&
+  optional(value.timeoutMs, "number") &&
+  (value.answer === undefined ||
+    (isObject(value.answer) &&
+      isObject(value.answer.delivery) &&
+      typeof value.answer.body === "string"));
 
 /** The comrade's runs. A missing or damaged file holds none, and a damaged run record is skipped. */
 export function readRuns<D>(session: string): RunRecord<D>[] {
@@ -143,6 +162,16 @@ export const elsewhere = (record: RunRecord) =>
   record.owner !== process.pid &&
   alive(record.owner) &&
   (record.child === undefined || alive(record.child));
+
+/**
+ * Whether its comrade's Pi still runs though no live Pi hosts it: its host has exited, or it is
+ * this Pi, which no longer follows it. Such a comrade is shutting down, as one does once it
+ * notices its host is gone, or one that a session left did not stop in time.
+ */
+export const outlived = (record: RunRecord) =>
+  record.phase !== "done" &&
+  (record.owner === process.pid || !alive(record.owner)) &&
+  alive(record.child);
 
 /** When the conversation was last written, or never. */
 export function modified(file: string): number {

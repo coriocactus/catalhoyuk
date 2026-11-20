@@ -3,7 +3,8 @@
 // few KB however many calls the comrade makes; what the comrade said and every call it made
 // are in its own conversation. Wording follows mirage's group summaries, and counts and paths
 // are worded by the same functions (shared/format.ts).
-import { resolve } from "node:path";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import { diffCounts, exitCode, homePath, writtenLines } from "../shared/format.ts";
 
 export type Kind = "read" | "search" | "command" | "edit" | "write" | "script" | "tool";
@@ -90,6 +91,9 @@ const clip = (value: string, length: number) =>
 export const oneLine = (value: string) => value.replace(CONTROLS, " ").replace(/\s+/g, " ").trim();
 const firstLine = (value: string) => oneLine(value.split("\n").find((line) => line.trim()) ?? "");
 const text = (value: unknown) => (typeof value === "string" ? value : "");
+/** A path as Pi's tools take it: from the working directory, with `~` as the home directory. */
+const absolute = (path: string, cwd: string) =>
+  resolve(cwd, path === "~" || path.startsWith("~/") ? join(homedir(), path.slice(1)) : path);
 
 const plural = (count: number, noun: string) =>
   `${count} ${noun}${count === 1 ? "" : noun.endsWith("h") ? "es" : "s"}`;
@@ -141,7 +145,7 @@ function callOf(tool: string, args: unknown, cwd: string): Call {
   const record = typeof args === "object" && args !== null ? (args as Record<string, unknown>) : {};
   const kind = KINDS[tool] ?? "tool";
   const rawPath = text(record.path).replace(/^@/, "");
-  const path = rawPath ? clip(resolve(cwd, rawPath), 300) : undefined;
+  const path = rawPath ? clip(absolute(rawPath, cwd), 300) : undefined;
   let detail: string;
   // A command's first line, marked when more follow: joined, its lines could read as one.
   if (kind === "command") {

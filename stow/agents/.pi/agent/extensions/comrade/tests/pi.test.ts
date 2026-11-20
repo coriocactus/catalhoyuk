@@ -185,6 +185,32 @@ test("a comrade runs in the installed Pi: task, tools, files, session, messages 
   assert.equal(after.users, 2);
   assert.equal(after.first, steering("One more thing").split("\n")[0]);
 
+  // A message sent before the comrade's Pi has started is held, then sent once Pi has answered
+  // the task: Pi loses a prompt that reaches it, idle, before it has answered the one before.
+  const held = new Channel();
+  const taken = held.steer("Before you start");
+  const early = join(root, "comrades", "comrade-5.jsonl");
+  const sixth = await run(
+    invocation,
+    { ...base, task: "held", session: early },
+    undefined,
+    () => {},
+    held,
+  );
+  await taken;
+  assert.equal(sixth.exitCode, 0, sixth.stderr);
+  const asked = readFileSync(early, "utf8")
+    .split("\n")
+    .flatMap((line) => {
+      const entry = line ? JSON.parse(line) : undefined;
+      if (entry?.type !== "message" || entry.message.role !== "user") return [];
+      const content: string | { type: string; text?: string }[] = entry.message.content;
+      return [
+        typeof content === "string" ? content : content.map((part) => part.text ?? "").join(""),
+      ];
+    });
+  assert.deepEqual(asked, ["held", steering("Before you start")], "its conversation holds both");
+
   // Stopped mid-command, as when the Pi that started it exits: its conversation names the call
   // that may or may not have taken effect.
   const controller = new AbortController();

@@ -31,6 +31,8 @@ interface Built {
   running: boolean;
   thinking: boolean;
   theme: Theme;
+  /** The theme's colours: Pi hands every row the same theme object whatever the theme. */
+  colours: object;
   cwd: string;
   /** The messages read so far. */
   read: number;
@@ -239,7 +241,7 @@ export function createTranscripts(pi: ExtensionAPI) {
       !built ||
       built.running !== running ||
       built.thinking !== thinking ||
-      built.theme !== theme ||
+      built.colours !== theme.colors ||
       built.cwd !== cwd ||
       built.read > known.messages.length
     )
@@ -247,6 +249,7 @@ export function createTranscripts(pi: ExtensionAPI) {
         running,
         thinking,
         theme,
+        colours: theme.colors,
         cwd,
         read: 0,
         blocks: [],

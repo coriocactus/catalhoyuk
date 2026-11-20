@@ -33,6 +33,9 @@ const MIN_ROOM = 12;
 const MAX_CONTINUATION_LINES = 500;
 /** A scroll view scrollbar's track and thumb, after padding at the end of a line. */
 const SCROLLBAR = /\s[│┃█]$/;
+/** An escape sequence as pi-tui reads one: CSI to its final letter, OSC and APC to their end. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: escape sequences start with ESC.
+const ESCAPE = /\x1b(?:\[[^mGKHJ]*[mGKHJ]|[\]_](?:[^\x07\x1b]|\x1b(?!\\))*(?:\x07|\x1b\\))/y;
 
 interface Token {
   type: string;
@@ -75,6 +78,29 @@ const continuation = (line: string): Continuation => {
 const isImageLine = (line: string) => line.includes("\x1b_G") || line.includes("\x1b]1337;File=");
 
 /**
+ * Splits a line where its indent of `length` characters ends, skipping escape sequences. The rest
+ * of the line keeps every code to its end, and starts with the codes before it, so that its wrap
+ * keeps their styles. Markers and other APC sequences mark a place, not a style: only the head
+ * keeps them.
+ */
+function splitIndent(line: string, length: number): { head: string; body: string } {
+  let codes = "";
+  let at = 0;
+  for (let seen = 0; seen < length && at < line.length; ) {
+    ESCAPE.lastIndex = at;
+    const code = ESCAPE.exec(line)?.[0];
+    if (!code) {
+      at++;
+      seen++;
+      continue;
+    }
+    if (!code.startsWith("\x1b_")) codes += code;
+    at += code.length;
+  }
+  return { head: line.slice(0, at), body: `${codes}${line.slice(at)}` };
+}
+
+/**
  * Wraps a line to `width` after `prefix`. The first line keeps its own indent and, when
  * `mark` is set, marks where its content starts. Its continuation lines hang under that indent and mark how
  * they continue it. The prefix is layout, such as a code block's indent, so it is never copied.
@@ -82,8 +108,11 @@ const isImageLine = (line: string) => line.includes("\x1b_G") || line.includes("
 export function wrapLine(line: string, width: number, prefix = "", mark = true): string[] {
   // A line break inside a line, such as Markdown's soft and hard breaks or CRLF output, starts
   // a new line, never a continuation. Most lines have none, and most fit: neither is split.
+  // pi-tui splits as Pi's own wrap would, starting each part with the styles still open.
   if (line.includes("\n") || line.includes("\r"))
-    return line.split(/\r\n|\r|\n/).flatMap((part) => wrapLine(part, width, prefix, mark));
+    return wrapTextWithAnsi(line, Number.MAX_SAFE_INTEGER).flatMap((part) =>
+      wrapLine(part, width, prefix, mark),
+    );
   const start = mark ? CONTENT_START : "";
   const prefixWidth = prefix ? visibleWidth(prefix) : 0;
   if (!line || isImageLine(line) || prefixWidth + visibleWidth(line) <= width)
@@ -106,19 +135,27 @@ export function wrapLine(line: string, width: number, prefix = "", mark = true):
     head = indent;
     body = line.slice(indent.length);
   } else if (own) {
-    head = sliceByColumn(line, 0, own, true);
-    body = sliceByColumn(line, own, visibleWidth(line) - own, true);
+    // Codes in or before the indent: cut where its characters end, so that no code is lost.
+    ({ head, body } = splitIndent(line, indent.length));
   }
   const source = stripTerminalSequences(body);
   let at = 0;
+  // Whether the wrap dropped a space since the last piece with text.
+  let spaced = false;
   return wrapTextWithAnsi(body, room).map((piece, index) => {
-    // Find the piece in the line to learn what the wrap dropped before it.
-    let spaced = false;
-    while (at < source.length && /\s/.test(source[at] ?? "")) {
+    // Find the piece in the line to learn what the wrap dropped before it. The first piece keeps
+    // the line's leading whitespace, where the line wraps whole. A later one can start with a
+    // space too, which pi-tui keeps when it drops a no-break space before it.
+    const text = stripTerminalSequences(piece);
+    while (
+      index &&
+      at < source.length &&
+      /\s/.test(source[at] ?? "") &&
+      !source.startsWith(text, at)
+    ) {
       at++;
       spaced = true;
     }
-    const text = stripTerminalSequences(piece);
     if (source.startsWith(text, at)) at += text.length;
     else {
       // Pi changed the piece, for example dropping spaces inside it: find it further on.
@@ -126,8 +163,10 @@ export function wrapLine(line: string, width: number, prefix = "", mark = true):
       spaced ||= found < 0 || /\s/.test(source.slice(at, found));
       if (found >= 0) at = found + text.length;
     }
-    if (!index) return `${prefix}${start}${head}${piece}`;
     const continues = spaced ? CONTINUES_SPACED : CONTINUES_JOINED;
+    // A piece of codes alone, which pi-tui can leave before a long word, passes the space on.
+    if (text) spaced = false;
+    if (!index) return `${prefix}${start}${head}${piece}`;
     return `${prefix}${" ".repeat(hang)}${continues}${piece}`;
   });
 }

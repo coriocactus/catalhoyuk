@@ -62,9 +62,38 @@ function isUsage(usage: unknown): boolean {
   );
 }
 
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+/** Whether each of these parts is absent, or of the type a row reads it as. */
+const optional = (saved: Record<string, unknown>, type: string, keys: readonly string[]) =>
+  keys.every((key) => saved[key] === undefined || typeof saved[key] === type);
+
+/** A call as a row names it, by its label. */
+const isCallRow = (row: unknown) => isObject(row) && typeof row.label === "string";
+
+/** Whether saved work has the tallies a row sums up and the calls it names. */
+function isWork(work: unknown): boolean {
+  return (
+    isObject(work) &&
+    Array.isArray(work.tallies) &&
+    work.tallies.every(isObject) &&
+    Array.isArray(work.rows) &&
+    work.rows.every(isCallRow) &&
+    (work.recent === undefined || (Array.isArray(work.recent) && work.recent.every(isCallRow))) &&
+    optional(work, "number", ["omitted"]) &&
+    optional(work, "string", ["current"])
+  );
+}
+
+/** The parts of run details a row reads as text, and as numbers, when they are there. */
+const TEXTS = ["title", "chip", "cwd", "reason", "answer", "task", "stopReason", "session"];
+const NUMBERS = ["id", "files", "started", "ended"];
+
 /**
  * Whether saved details have everything a row shows of a run, each part of the type the row
- * reads it as. A row draws a run only from details that pass.
+ * reads it as. A row draws a run only from details that pass: a row that throws as Pi draws it
+ * takes Pi down.
  */
 export function hasRunDetails(saved: unknown): saved is Saved & RunDetails {
   if (typeof saved !== "object" || saved === null) return false;
@@ -78,6 +107,7 @@ export function hasRunDetails(saved: unknown): saved is Saved & RunDetails {
   )
     return false;
   const { model, thinking, tools, turns, calls, usage } = saved;
+  const work = "work" in saved ? saved.work : undefined;
   return (
     typeof model === "string" &&
     typeof thinking === "string" &&
@@ -85,7 +115,10 @@ export function hasRunDetails(saved: unknown): saved is Saved & RunDetails {
     tools.every((tool) => typeof tool === "string") &&
     typeof turns === "number" &&
     typeof calls === "number" &&
-    isUsage(usage)
+    isUsage(usage) &&
+    optional(saved, "string", TEXTS) &&
+    optional(saved, "number", NUMBERS) &&
+    (work === undefined || isWork(work))
   );
 }
 
@@ -173,6 +206,28 @@ export interface Delivery extends Details {
   run?: string;
   /** A resumed run: the start row that shows it while it goes. */
   row?: string;
+}
+
+const STATUSES = new Set<string>([
+  "finished",
+  "failed",
+  "stopped",
+  "lost",
+  "resumed",
+] satisfies Delivery["status"][]);
+
+/** Whether a delivery's saved details have everything its row reads, each of the right type. */
+export function isDelivery(saved: unknown): saved is Delivery {
+  return (
+    hasRunDetails(saved) &&
+    typeof saved.id === "number" &&
+    typeof saved.task === "string" &&
+    typeof saved.status === "string" &&
+    STATUSES.has(saved.status) &&
+    isObject(saved) &&
+    optional(saved, "number", ["durationMs"]) &&
+    optional(saved, "string", ["run", "row"])
+  );
 }
 
 /** Prefers what the comrade reports using over the name it was given. */

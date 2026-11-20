@@ -99,7 +99,9 @@ test("a script joins its run; its calls count in the summary and expand with liv
   assert(!open.includes("Script completed"), "Pi's header is dropped");
   assert(!open.includes("NESTED_READ_BODY") && !open.includes("tools.read"));
   const failed = before.view.render(160).map(unmark)[lineOf(before.view, "npm test")];
-  assert(failed.startsWith(`    ${paint(themes.theme, "red", "$")} npm test`));
+  assert(
+    failed.startsWith(`    ${paint(themes.theme, "red", "$")} ${themes.theme.bold("npm")} test`),
+  );
 
   before.view.handleMouse(mouse(0, lineOf(before.view, "JavaScript")));
   assert.match(plain(before.view), /^ {6}const files = await tools\.read/m);

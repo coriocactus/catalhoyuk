@@ -12,6 +12,11 @@ export interface Session {
    */
   entries?: () => SessionEntry[];
   branch?: () => SessionEntry[];
+  /**
+   * Whether Pi works now. A call's row spins only then: one drawn from a saved session, which
+   * never got its result, looks as if its arguments still stream.
+   */
+  working?: () => boolean;
   /** Whether Pi runs in the terminal: only there are a widget and an Esc to see. */
   terminal: boolean;
   /** The directory comrades run in unless told otherwise. */

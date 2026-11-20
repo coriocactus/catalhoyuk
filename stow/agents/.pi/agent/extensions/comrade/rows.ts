@@ -16,6 +16,7 @@ import {
   backgroundStart,
   type Delivery,
   hasRunDetails,
+  isDelivery,
   isStop,
   LISTING,
   type Listed,
@@ -182,12 +183,14 @@ export function createRows(deps: RowsDeps) {
     if (state.resulted)
       return context.lastComponent instanceof Container ? context.lastComponent : new Container();
     // The task is still arriving or the call running: spin until a result takes the header
-    // over. A call left without a result, in a session opened again, is still.
-    const atWork = !context.argsComplete || context.executionStarted;
+    // over. Pi draws a call left without a result, in a session opened again, as if its task
+    // were still arriving, and never tells it otherwise: only while Pi works is a call at work.
+    const working = () => session.working?.() === true;
+    const atWork = (!context.argsComplete || context.executionStarted) && working();
     if (atWork)
       spinner.add(context.toolCallId, {
         redraw: context.invalidate,
-        spinning: () => !state.resulted,
+        spinning: () => !state.resulted && working(),
         settle: true,
       });
     const to = args.to;
@@ -371,7 +374,8 @@ export function createRows(deps: RowsDeps) {
   /** The row of a delivered answer, or of the note that a run was resumed or lost. */
   const renderMessage: MessageRenderer<Delivery> = (entry, { expanded, outputPad }, theme) => {
     const content = typeof entry.content === "string" ? entry.content : "";
-    const details = entry.details;
+    // Pi draws what a session file holds, which may be damaged: then the message is all there is.
+    const details = isDelivery(entry.details) ? entry.details : undefined;
     const body = details ? content.slice(content.indexOf("\n\n") + 2) : content;
     const phase: Phase = details?.status ?? "finished";
     const look: Look = {
@@ -450,7 +454,9 @@ export function createRows(deps: RowsDeps) {
     const spin = `${key}\0${id}`;
     const shown = state.rows.get(id) ?? { expanded: state.expanded };
     state.rows.set(id, shown);
-    const ours = (job: Job | undefined): job is Job => job !== undefined && job.run === run;
+    // A resumed run has a run of its own, but keeps its start row.
+    const ours = (job: Job | undefined): job is Job =>
+      job !== undefined && (job.run === run || (row !== undefined && job.toolCallId === row));
     // The whole task, as the call that started the run gave it: looked up when first expanded.
     let task: string | undefined;
     const fullTask = () => {
@@ -494,8 +500,8 @@ export function createRows(deps: RowsDeps) {
       const follow = transcripts.keepCurrent(
         look,
         () =>
-          job && run && look.expanded
-            ? transcripts.blocksFor(run, () => job.progress.messages, cwd, theme, true)
+          job?.run && look.expanded
+            ? transcripts.blocksFor(job.run, () => job.progress.messages, cwd, theme, true)
             : undefined,
         job !== undefined,
       );
@@ -577,6 +583,7 @@ export function createRows(deps: RowsDeps) {
         : rows;
     const line = new ListingLine(
       listed.map((item) => item.details),
+      at ?? 0,
       theme,
       pad,
       () => state.line === true,

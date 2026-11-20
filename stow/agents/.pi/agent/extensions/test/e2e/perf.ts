@@ -16,7 +16,7 @@ import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { HeadlessTerminal } from "../headless-terminal.ts";
-import { cli, version } from "../pi-package.ts";
+import { cli, quietNode, version } from "../pi-package.ts";
 import type { Probe } from "./perf-probe.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -114,6 +114,7 @@ async function measure(name: "alone" | "extended", attempt: number): Promise<Map
   const terminal = await HeadlessTerminal.start(
     process.execPath,
     [
+      ...quietNode,
       cli,
       "--offline",
       "--session",

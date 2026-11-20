@@ -48,6 +48,12 @@ if (typeof bin !== "string") throw new Error("Pi's package does not declare its 
 export const version = manifest.version;
 export const pkg = directory;
 export const cli = join(pkg, bin);
+/**
+ * Node's flags for the Pi the terminal and budget suites start. V8's memory reducer frees memory
+ * with a few full collections some seconds after a process goes quiet. That is V8's, not a timer,
+ * and on some Node releases (24, not 26) it lands in the idle windows, which look for timers.
+ */
+export const quietNode = ["--no-memory-reducer"];
 /** Resolve Pi's own dependencies (pi-tui, typebox, jiti) from its installation. */
 export const piRequire = createRequire(join(pkg, "package.json"));
 

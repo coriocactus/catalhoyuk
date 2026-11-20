@@ -1,5 +1,5 @@
 // Where a comrade's conversation is kept, and what a later run needs to continue it.
-import { mkdirSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -20,7 +20,8 @@ export function sessionFile(ctx: ExtensionContext, id: number): string {
  * it) takes the number. Pi starts a session in an empty file as it would in a missing one.
  */
 export function claim(file: string): boolean {
-  mkdirSync(dirname(file), { recursive: true });
+  // The user's alone: without a saved session, conversations go under a path anyone can guess.
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   try {
     writeFileSync(file, "", { flag: "wx" });
     return true;
@@ -32,6 +33,42 @@ export function claim(file: string): boolean {
 
 /** The conversation file holds a run: Pi wrote to it. A claimed, empty one was never started. */
 export const saved = (file: string) => (statSync(file, { throwIfNoEntry: false })?.size ?? 0) > 0;
+
+/** How much of a conversation's start is read for its header, which Pi writes first. */
+const HEADER_BYTES = 64 * 1024;
+
+/**
+ * The directory a conversation runs in, as its file's session header names it. Pi takes the
+ * directory from there, whatever directory it was started in.
+ */
+export function conversationCwd(file: string): string | undefined {
+  let fd: number | undefined;
+  try {
+    fd = openSync(file, "r");
+    const buffer = Buffer.alloc(HEADER_BYTES);
+    const head = buffer.subarray(0, readSync(fd, buffer, 0, HEADER_BYTES, 0)).toString("utf8");
+    // As Pi reads it: blank and malformed lines are passed over, and the first entry is the header.
+    for (const line of head.split("\n")) {
+      let entry: unknown;
+      try {
+        entry = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const header = (typeof entry === "object" && entry !== null ? entry : {}) as {
+        type?: unknown;
+        id?: unknown;
+        cwd?: unknown;
+      };
+      if (header.type !== "session" || typeof header.id !== "string") return undefined;
+      return typeof header.cwd === "string" && header.cwd ? header.cwd : undefined;
+    }
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
 
 /** What continuing comrade #id needs, from its latest entry on this branch. */
 export function conversation(id: number, ctx: ExtensionContext): Previous & { session: string } {
@@ -55,6 +92,7 @@ export function conversation(id: number, ctx: ExtensionContext): Previous & { se
       `Comrade #${id} cannot continue: its conversation was never saved, or was deleted (${session}). Start a new comrade.`,
     );
   return {
+    id,
     session,
     ...(found?.title ? { title: found.title } : {}),
     provider: requested.provider,
@@ -62,7 +100,8 @@ export function conversation(id: number, ctx: ExtensionContext): Previous & { se
     // Missing settings fall back to the caller's, as for a new comrade.
     thinking: found?.thinking || undefined,
     tools: found?.tools,
-    cwd: found?.cwd,
+    // Its row keeps the directory only when it was not the caller's: the header always names it.
+    cwd: conversationCwd(session) ?? found?.cwd,
   };
 }
 

@@ -26,15 +26,31 @@ export function currentPi(
 }
 
 /**
+ * The host this Pi is a comrade of, as the PI_COMRADE it inherited names it, or none. Pi's bash
+ * tool passes its environment on, so anything long-lived a comrade starts, such as a tmux server,
+ * passes the variable to every Pi started from it later: it names a host only while that host is
+ * running.
+ */
+export function hostOf(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const host = Number(value);
+  return alive(host) ? host : undefined;
+}
+
+/**
  * A comrade stops when its host is gone, rather than run on unseen. Pi's shutdown stops
- * comrades itself; this covers a host that crashed or was killed.
+ * comrades itself; this covers a host that crashed or was killed. Only a Pi that the host
+ * started itself watches, as it starts a comrade: a Pi started from something a comrade left
+ * running does not stop with that host, and a comrade started through a wrapper still ends with
+ * its standard input, a pipe from its host.
  */
 export function watchHost(
   host: number,
   every = ORPHAN_MS,
   stop: () => void = () => process.kill(process.pid, "SIGTERM"),
+  startedBy = process.ppid,
 ): () => void {
-  if (!Number.isInteger(host) || host <= 1) return () => {};
+  if (!Number.isInteger(host) || host <= 1 || host !== startedBy) return () => {};
   const timer = setInterval(() => {
     if (alive(host)) return;
     clearInterval(timer);

@@ -19,6 +19,7 @@ import {
   prepare,
   THINKING,
   type Thinking,
+  TIMEOUT_MAX,
   toolsDescription,
 } from "./request.ts";
 import { interruption, interruptionNote } from "./resume.ts";
@@ -80,12 +81,14 @@ const parameters = (models: string, tools: string) =>
     cwd: Type.Optional(
       Type.String({
         description:
-          "Directory the comrade runs in. Default: the working directory, or the comrade's with to.",
+          "Directory the comrade runs in. Default: the working directory. With to, the comrade's own, " +
+          "which cannot change.",
       }),
     ),
     timeout: Type.Optional(
       Type.Integer({
         minimum: 1,
+        maximum: TIMEOUT_MAX,
         description:
           "Seconds before the comrade is stopped, for a hard stop only: leave it unset for " +
           "open-ended work, which can take hours. The result then says so and gives any text it " +
@@ -220,7 +223,7 @@ export function registerComrade(deps: ToolDeps): void {
       "Leave background off unless you have other work to do before you need the answer; foreground calls in one message already run in parallel. A background answer arrives later as a [comrade #N …] message: never guess it. When your other work is done, end your reply: the answer starts a new turn when it arrives.",
       'comrade is read-only by default. Add "edit" and "write" when it must change files, or "bash" to run commands.',
       "When a comrade needs more than a few files, pass them in files with tools: []. When its answer feeds a file or a build, set output and ask for the exact text, with no fences or commentary.",
-      "A result whose first line starts [Comrade's answer is partial, [Comrade's answer is cut off or [Comrade timed out is not a finished answer.",
+      "A result whose first line starts [Comrade's answer is partial or [Comrade timed out is not a finished answer.",
     ],
     parameters: parameters(models, tools),
     // Flat, as mirage draws its rows: no box behind it.

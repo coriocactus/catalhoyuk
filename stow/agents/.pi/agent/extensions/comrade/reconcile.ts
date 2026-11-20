@@ -6,7 +6,7 @@ import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-wor
 import { formatDuration } from "../shared/format.ts";
 import { respond } from "./answer.ts";
 import { type Background, MAX_BACKGROUND } from "./background.ts";
-import { saved } from "./conversation.ts";
+import { conversationCwd, saved } from "./conversation.ts";
 import {
   backgroundStart,
   type Delivery,
@@ -23,6 +23,7 @@ import {
   dropRuns,
   elsewhere,
   modified,
+  outlived,
   quietly,
   type RunRecord,
   readRuns,
@@ -31,6 +32,12 @@ import {
 
 /** How recently a background run must have been interrupted for the session to resume it. */
 const RESUME_WITHIN_MS = 24 * 60 * 60_000;
+/**
+ * How often a run whose comrade's Pi outlived its host is checked again, and how many times:
+ * past a comrade's two seconds to notice, and the time it may take to shut down.
+ */
+const OUTLIVED_MS = 1000;
+const OUTLIVED_CHECKS = 15;
 /** What a resumed comrade is asked, after the note on what was interrupted. */
 const RESUME_TASK =
   "Resume your task from where you stopped, and end with your final answer as before.";
@@ -85,6 +92,13 @@ export function pendingRuns(branch: SessionEntry[]): Map<number, Pending> {
 }
 
 export function createReconciler(pi: ExtensionAPI, background: Background, outbox: Outbox) {
+  /** The runs checked again later, by comrade. Their session's end ends the wait. */
+  const waits = new Map<number, ReturnType<typeof setTimeout>>();
+  pi.on("session_shutdown", () => {
+    for (const wait of waits.values()) clearTimeout(wait);
+    waits.clear();
+  });
+
   const lost = (id: number, pending: Pending, why?: string) => {
     const session = pending.details.session;
     const continuable = Boolean(session && pending.details.requested && saved(session));
@@ -130,14 +144,22 @@ export function createReconciler(pi: ExtensionAPI, background: Background, outbo
     ctx: ExtensionContext,
     task: string,
     files: string[],
+    running = true,
   ): Request | string => {
     const { session, requested } = details;
     if (!session || !requested) return "it ran before comrades kept their conversations";
-    const cwd = details.cwd ?? ctx.cwd;
-    if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory())
-      return `its directory ${cwd} is gone`;
-    const gone = files.find((file) => !statSync(file, { throwIfNoEntry: false })?.isFile());
-    if (gone) return `its attached file ${gone} is gone`;
+    // Pi runs a saved conversation in the directory its file names, whatever directory it starts
+    // in, so trust is decided for that one. Its row keeps a directory only when not the caller's.
+    const named = (saved(session) ? conversationCwd(session) : undefined) ?? details.cwd ?? ctx.cwd;
+    // The caller's own directory keeps the caller's name for it, so the row says nothing of it.
+    const cwd = within(named, ctx.cwd) && within(ctx.cwd, named) ? ctx.cwd : named;
+    // Only a run that runs again needs them: an answer is delivered without either.
+    if (running) {
+      if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory())
+        return `its directory ${cwd} is gone`;
+      const gone = files.find((file) => !statSync(file, { throwIfNoEntry: false })?.isFile());
+      if (gone) return `its attached file ${gone} is gone`;
+    }
     return {
       task,
       provider: requested.provider,
@@ -166,7 +188,7 @@ export function createReconciler(pi: ExtensionAPI, background: Background, outbo
     done: Finished,
     ctx: ExtensionContext,
   ): string | undefined => {
-    const request = requestOf(pending.details, record, ctx, record.task, record.files);
+    const request = requestOf(pending.details, record, ctx, record.task, record.files, false);
     if (typeof request === "string") return request;
     const outcome: Outcome = {
       ...emptyProgress(),
@@ -187,7 +209,8 @@ export function createReconciler(pi: ExtensionAPI, background: Background, outbo
       exitCode: 0,
       id,
       task: pending.task,
-      durationMs: Math.max(0, record.at - record.started),
+      // Until its last message, or with none known, until its run record last changed.
+      durationMs: Math.max(0, (done.ended ?? record.at) - record.started),
       run: record.run,
       ...(pending.row && pending.row !== record.run ? { row: pending.row } : {}),
       // What it did, from its conversation: from the run it resumes, if it resumes one.
@@ -252,9 +275,53 @@ export function createReconciler(pi: ExtensionAPI, background: Background, outbo
   };
 
   /**
+   * Reconciles a run again a little later, while the comrade's Pi of an interrupted run is still
+   * shutting down. That process is never signalled: its id may have been reused since. One still
+   * running after the last check is left, with a notice, for the session's next start.
+   */
+  const later = (
+    id: number,
+    pending: Pending,
+    ctx: ExtensionContext,
+    delivered: ReturnType<typeof deliveries>,
+    outliving: RunRecord,
+    checks: number,
+  ) => {
+    if (checks >= OUTLIVED_CHECKS)
+      return ctx.ui.notify(
+        `Comrade #${id} was not resumed: the Pi of its interrupted run (process ${outliving.child}) is still running. Continue it with to: ${id}.`,
+        "warning",
+      );
+    const session = pending.details.session;
+    clearTimeout(waits.get(id));
+    const wait = setTimeout(() => {
+      waits.delete(id);
+      // The comrade moved on meanwhile, continued here or resumed by another Pi: not ours now.
+      const now = session
+        ? readRuns(session).find((item) => item.run === outliving.run)
+        : undefined;
+      if (now?.at !== outliving.at) return;
+      try {
+        reconcile(id, pending, ctx, delivered, true, checks + 1);
+      } catch (error) {
+        try {
+          ctx.ui.notify(
+            `comrade #${id}: ${error instanceof Error ? error.message : error}`,
+            "error",
+          );
+        } catch {
+          // A context gone stale: the session's next start reconciles it.
+        }
+      }
+    }, OUTLIVED_MS);
+    wait.unref();
+    waits.set(id, wait);
+  };
+
+  /**
    * A background run on this branch that never answered, at the session's start: delivered if it
    * had answered, left alone if another Pi runs it, resumed if it was interrupted in the last day,
-   * and reported otherwise.
+   * and reported otherwise. `checks`: how often it has waited for a comrade that outlived its host.
    */
   const reconcile = (
     id: number,
@@ -262,21 +329,24 @@ export function createReconciler(pi: ExtensionAPI, background: Background, outbo
     ctx: ExtensionContext,
     delivered: ReturnType<typeof deliveries>,
     detached: boolean,
+    checks = 0,
   ) => {
     if (background.jobs.has(id)) return;
     const session = pending.details.session;
     const run = pending.run;
-    const saved =
-      session && run ? readRuns<Delivery>(session).find((item) => item.run === run) : undefined;
+    const records = session ? readRuns<Delivery>(session) : [];
+    const saved = run ? records.find((item) => item.run === run) : undefined;
     // Answered, but the session never held the answer: it is saved.
     if (session && saved?.answer) return outbox.resend(session, saved, false);
     // Answered on another branch: the same answer, here too.
     const there = run ? delivered.get(run) : undefined;
     if (there) return outbox.redeliver(there);
-    // Another Pi runs it now, and its answer goes to that Pi's session.
-    if (saved && elsewhere(saved))
+    // Another Pi runs it now, or a run that resumed it, as a fork's Pi does under a run of its
+    // own, and its answer goes to that Pi's session.
+    const busy = records.find(elsewhere);
+    if (busy)
       return ctx.ui.notify(
-        `Comrade #${id} is still running in another Pi (process ${saved.owner}).`,
+        `Comrade #${id} is still running in another Pi (process ${busy.owner}).`,
         "info",
       );
     // Print and JSON modes end with the turn: it is left for a session that can wait for it.
@@ -294,6 +364,10 @@ export function createReconciler(pi: ExtensionAPI, background: Background, outbo
     const cutAt = Math.max(saved?.at ?? 0, modified(session));
     if (Date.now() - cutAt > RESUME_WITHIN_MS)
       return lost(id, pending, `it stopped ${formatDuration(Date.now() - cutAt)} ago`);
+    // The comrade's Pi of an interrupted run may still be shutting down, and resumed now, two Pis
+    // would work in one conversation.
+    const outliving = records.find(outlived);
+    if (outliving) return later(id, pending, ctx, delivered, outliving, checks);
     // At the limit, it waits for the session's next start.
     if (background.jobs.size >= MAX_BACKGROUND)
       return ctx.ui.notify(

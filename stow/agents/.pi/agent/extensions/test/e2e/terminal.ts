@@ -9,7 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { colours } from "../../shared/colours.ts";
 import { HeadlessTerminal } from "../headless-terminal.ts";
-import { cli, version } from "../pi-package.ts";
+import { cli, quietNode, version } from "../pi-package.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const extensions = resolve(here, "../..");
@@ -218,6 +218,7 @@ export default function (pi) {
 `,
 );
 const args = [
+  ...quietNode,
   cli,
   "--offline",
   "--session",

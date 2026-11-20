@@ -1,8 +1,9 @@
 // Stands in for `pi --mode rpc`: `node stand-in.ts SCENARIO ...pi-args`, commands on stdin, one
 // JSON record per line, as Pi's RPC mode reads them. The first prompt runs the scenario; a later
 // one is answered with what reached it. Closing stdin ends it, as it shuts Pi down. Like Pi, it
-// saves each message to its session file as the message ends, and SIGTERM aborts the calls
-// running and the reply it would request next.
+// saves each message to its session file as the message ends, SIGTERM aborts the calls running
+// and the reply it would request next, and a prompt that arrives while it is idle and still
+// preparing the one before is acknowledged and lost.
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -105,6 +106,9 @@ let active = false;
 let first = "";
 /** `late`: a message has arrived, and its answer waits until the run has settled. */
 let arrived = false;
+/** Prompts read and not yet answered: Pi prepares each before it answers. */
+let preparing = 0;
+const PREPARE_MS = 10;
 
 /** The text of a user message. */
 const said_ = (content: unknown) =>
@@ -426,7 +430,26 @@ async function scenario(name: string, prompt: Prompt, history: string[]) {
       start("1", "read", { path: "/tmp/forever.md" });
       return new Promise(() => {});
     case "slowexit":
+    case "dirtyexit":
       said("All done.");
+      return settled();
+    case "escapes":
+      // A retry's error and a tool's name with escape codes in them, from another process.
+      write({
+        type: "auto_retry_start",
+        attempt: 1,
+        maxAttempts: 3,
+        errorMessage: "bad\x1b[2Jgateway\r",
+      });
+      write({
+        type: "message_update",
+        assistantMessageEvent: {
+          type: "toolcall_start",
+          contentIndex: 0,
+          toolName: "re\x1b]0;x\x07ad",
+        },
+      });
+      said("Done.");
       return settled();
     case "unstarted":
       // The run fails before it starts: Pi reports no agent_start, only the failure.
@@ -459,6 +482,12 @@ async function handle(command: Record<string, unknown>) {
       const prompt = command as unknown as Prompt & { streamingBehavior?: string };
       const respond = (disposition: string) =>
         write({ id, type: "response", command: "prompt", success: true, data: { disposition } });
+      // As in Pi, one that arrives with no run going while another is prepared sees no run
+      // either: both are acknowledged as started, and only the first runs.
+      if (preparing && !active) return respond("started");
+      preparing++;
+      await sleep(PREPARE_MS);
+      preparing--;
       if (first === "late" && prompts > 0 && !arrived) {
         // Answered once the run it reached has settled: then it starts a run of its own.
         arrived = true;
@@ -482,6 +511,25 @@ async function handle(command: Record<string, unknown>) {
           success: false,
           error: "No API key found for anthropic",
         });
+      if (name === "burst") {
+        // The response and the whole run in one write, which reaches the host as one chunk.
+        const message = { role: "user", content: [{ type: "text", text: prompt.message }] };
+        const records = [
+          {
+            id,
+            type: "response",
+            command: "prompt",
+            success: true,
+            data: { disposition: "started" },
+          },
+          { type: "agent_start" },
+          { type: "message_end", message: { ...message, timestamp: 0 } },
+          assistant([{ type: "text", text: "Done at once." }]),
+          { type: "agent_settled", aborted: false },
+        ];
+        process.stdout.write(records.map((record) => `${JSON.stringify(record)}\n`).join(""));
+        return;
+      }
       respond(name === "handled" ? "handled" : "started");
       if (name === "handled") return;
       active = true;
@@ -513,8 +561,12 @@ process.stdin.on("data", (chunk: string) => {
     void handle(JSON.parse(line));
   }
 });
-// Closing stdin shuts Pi down: at once, or for `slowexit`, after a while.
+// Closing stdin shuts Pi down: at once, for `slowexit` after a while, and for `dirtyexit` with
+// a failure, as when an extension's shutdown throws.
 process.stdin.on("end", () => {
   if (first === "slowexit") setTimeout(() => process.exit(), 1500);
-  else process.exit();
+  else if (first === "dirtyexit") {
+    process.stderr.write("Error: an extension failed as Pi shut down\n");
+    process.exit(1);
+  } else process.exit();
 });

@@ -224,16 +224,16 @@ export function cut(line: string, width: number): string {
 
 /**
  * What a running comrade is doing, in a word or two: `waiting 48s`, `thinking`, `calling edit`,
- * `Reading ~/x`. A wait after the first turn says how long it has lasted.
+ * `Reading ~/x`. A wait after the first turn says how long it had lasted by `now`.
  */
-export function activityText(card: RunDetails): string {
+export function activityText(card: RunDetails, now = Date.now()): string {
   const activity = card.activity;
   if (!activity) return card.work?.current ?? "";
   switch (activity.state) {
     case "starting":
       return "starting";
     case "waiting":
-      return card.turns ? `waiting ${formatElapsed(Date.now() - activity.since)}` : "waiting";
+      return card.turns ? `waiting ${formatElapsed(now - activity.since)}` : "waiting";
     case "thinking":
     case "writing":
       return activity.state;
@@ -687,12 +687,15 @@ function taskBlock(
 const drawn = new Map<string, string[]>();
 const DRAWN_MAX = 200;
 /** A conversation's blocks already drawn, by the message part each came from, however many. */
-const drawnParts = new WeakMap<object, { width: number; theme: Theme; lines: string[] }>();
-/** The theme what is drawn was drawn in: another one draws everything afresh. */
-let drawnIn: Theme | undefined;
+const drawnParts = new WeakMap<object, { width: number; colours: object; lines: string[] }>();
+/**
+ * The colours what is drawn was drawn in: others draw everything afresh. Pi hands every row the
+ * same theme object whatever the theme, but each theme has colours of its own.
+ */
+let drawnIn: object | undefined;
 const drawing = (theme: Theme) => {
-  if (theme === drawnIn) return;
-  drawnIn = theme;
+  if (theme.colors === drawnIn) return;
+  drawnIn = theme.colors;
   drawn.clear();
   tasks.clear();
 };
@@ -701,12 +704,12 @@ const drawing = (theme: Theme) => {
 function markdown(text: string, width: number, theme: Theme, source?: object): string[] {
   drawing(theme);
   const part = source && drawnParts.get(source);
-  if (part?.width === width && part.theme === theme) return part.lines;
+  if (part?.width === width && part.colours === theme.colors) return part.lines;
   const key = `${width}\u0000${text}`;
   let lines = source ? undefined : drawn.get(key);
   if (!lines) {
     lines = new Markdown(printable(text), 2, 0, getMarkdownTheme()).render(width);
-    if (source) drawnParts.set(source, { width, theme, lines });
+    if (source) drawnParts.set(source, { width, colours: theme.colors, lines });
     else {
       if (drawn.size >= DRAWN_MAX) drawn.delete(drawn.keys().next().value as string);
       drawn.set(key, lines);
@@ -718,11 +721,11 @@ function markdown(text: string, width: number, theme: Theme, source?: object): s
 /** Thinking, dim and italic, wrapped two columns in, at most once per width. */
 function thinkingLines(text: string, width: number, theme: Theme, source?: object): string[] {
   const part = source && drawnParts.get(source);
-  if (part?.width === width && part.theme === theme) return part.lines;
+  if (part?.width === width && part.colours === theme.colors) return part.lines;
   const lines = wrapTextWithAnsi(printable(text).trim(), Math.max(8, width - 2)).map(
     (line) => `  ${theme.fg("dim", theme.italic(line))}`,
   );
-  if (source) drawnParts.set(source, { width, theme, lines });
+  if (source) drawnParts.set(source, { width, colours: theme.colors, lines });
   return lines;
 }
 
@@ -1042,6 +1045,8 @@ export class RowView implements Component {
  */
 export class ListingLine implements Component {
   private readonly runs: (RunDetails & { id: number })[];
+  /** When the listing was made, or 0 if it does not say. */
+  private readonly at: number;
   private readonly theme: Theme;
   private readonly pad: number;
   private readonly expanded: () => boolean;
@@ -1049,12 +1054,14 @@ export class ListingLine implements Component {
 
   constructor(
     runs: (RunDetails & { id: number })[],
+    at: number,
     theme: Theme,
     pad: number,
     expanded: () => boolean,
     toggle: () => void,
   ) {
     this.runs = runs;
+    this.at = at;
     this.theme = theme;
     this.pad = pad;
     this.expanded = expanded;
@@ -1065,7 +1072,11 @@ export class ListingLine implements Component {
     const { theme, runs } = this;
     const pad = Math.min(this.pad, Math.max(0, Math.floor((width - 1) / 2)));
     const room = Math.max(1, width - pad * 2);
-    const doing = runs.map((run) => `#${run.id} ${activityText(run) || `turn ${run.turns + 1}`}`);
+    // What each was doing when the listing was made: a wait then is not still counting.
+    const then = this.at || undefined;
+    const doing = runs.map(
+      (run) => `#${run.id} ${activityText(run, then) || `turn ${run.turns + 1}`}`,
+    );
     const cost = runs.reduce((sum, run) => sum + run.usage.cost.total, 0);
     const caret = this.expanded() ? "▾" : "▸";
     const tail = ` · ${formatCost(cost)}  ${caret}`;

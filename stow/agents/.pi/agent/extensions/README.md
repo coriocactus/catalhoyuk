@@ -3,7 +3,7 @@
 Seven local TypeScript extensions for the Pi terminal coding agent, installed at `~/.pi/agent/extensions`. [`GLOSSARY.md`](GLOSSARY.md) defines the terms their code and docs use.
 
 - [`rearview`](rearview/README.md) starts the fullscreen transcript with its most recent entries and adds older pages above them as you scroll to the top.
-- [`mirage`](mirage/README.md) draws Pi's own tools (`read`, `bash`, `edit`, `write`, `codemode`, `grep`, `find`, `ls`) as compact rows, and consecutive calls as one group with collapsible output, image previews, and its own colours. Any other tool with no renderer of its own, such as an MCP tool, is drawn as a plain call. It only draws tools: Pi still runs them.
+- [`mirage`](mirage/README.md) draws Pi's own tools (`read`, `bash`, `edit`, `write`, `codemode`, `grep`, `find`, `ls`) as compact rows, and consecutive calls as one group with collapsible output, image previews, and its own colours. MCP tools, and any other tool with no renderer of its own, are drawn as plain calls. It only draws tools: Pi still runs them.
 - [`inspector`](inspector/README.md) opens a call's filename in your editor, in the same terminal, when you click it, also while Pi works.
 - [`interupt`](interupt/README.md) makes `Esc` stop a running response only on its second press within 1.5 seconds.
 - [`echo`](echo/README.md) expands an `@@name` token at the editor cursor into the Markdown snippet `~/.pi/agent/echo/name.md`.
@@ -40,6 +40,8 @@ No list of Pi files is kept by hand. `test/pi-diff.ts` reads every Pi import in 
 One `package.json` and lockfile in this directory hold every development dependency. No extension has a package of its own or a runtime dependency.
 
 Development needs Node 22.19+ (Pi's own minimum, which npm enforces through `devEngines`), Pi on `PATH` or `PI_PACKAGE_DIR`, `/usr/bin/vim`, and native build tools (on macOS, the Xcode Command Line Tools). Build `node-pty` from source: its 1.1.0 prebuilt helper has a permissions defect on macOS.
+
+The tests run on the Node that runs Pi, Homebrew's. `mise` would otherwise read `devEngines` as the Node to use here and pick an older one of its own, so `mise.toml` turns that off in this directory. Run `mise trust` here once.
 
 ```sh
 cd ~/.pi/agent/extensions
@@ -78,7 +80,7 @@ Node runs the TypeScript tests directly, with its own type stripping and no buil
 - Paging: history disabled, fast scrolling between a page being added and the next layout pass, the end of history, saved filenames and images, and model context left unchanged.
 - An adapter's fallback when Pi's internals have changed.
 - `echo` autocomplete and insertion without sending the message.
-- Idle CPU: with all seven extensions loaded, Pi uses at most 0.05 s of CPU in 10 s (`IDLE_CPU_SECONDS`, `IDLE_SECONDS`).
+- Idle CPU: with all seven extensions loaded, Pi uses at most 0.05 s of CPU in 10 s (`IDLE_CPU_SECONDS`, `IDLE_SECONDS`). Both suites start Pi with V8's memory reducer off (`quietNode` in `test/pi-package.ts`): some seconds after a process goes quiet it runs a few full collections, which are V8's work rather than a timer, and on Node 24 they land in the idle windows.
 
 Raw terminal output, cell snapshots, screens, and session files stay in the temporary directory the suite prints.
 

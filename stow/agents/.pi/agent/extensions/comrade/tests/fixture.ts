@@ -74,6 +74,8 @@ export function fixture(
     beside = undefined as ((api: ExtensionAPI) => void) | undefined,
     /** Pi's settings, such as `hideThinkingBlock`. A test may change them as it goes. */
     settings = {} as ReturnType<ExtensionAPI["getSettings"]>,
+    /** The caller's directory, as when a session is opened again. Default: a new one. */
+    home = undefined as string | undefined,
   } = {},
 ) {
   const pi = fakePi();
@@ -123,8 +125,8 @@ export function fixture(
   const tool = pi.tools.get("comrade");
   const list = pi.tools.get("comrades");
   assert(tool && list, "comrade and comrades registered");
-  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "comrade-test-")));
-  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const cwd = home ?? realpathSync(mkdtempSync(join(tmpdir(), "comrade-test-")));
+  if (!home) t.after(() => rmSync(cwd, { recursive: true, force: true }));
   const working: (string | undefined)[] = [];
   const widgets: (WidgetFactory | undefined)[] = [];
   const ui = {

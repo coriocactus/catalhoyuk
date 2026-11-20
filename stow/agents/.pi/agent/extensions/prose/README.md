@@ -33,7 +33,7 @@ Prose is an adapter. It installs three patches through `shared/patch.ts`, which 
 
 The classes are imported by name, so `npm run pi-diff` watches their modules on upgrades.
 
-Before each patch, Prose probes Pi's own code: a code block, a wrapped and cached text, and a selection, copy, and triple-click. A patch whose Pi code no longer looks as expected is not installed, with one warning. After each patch, Prose checks again through the patched code, since Pi could pass a probe and yet stop calling what Prose replaced. It removes a patch that fails this check, with one warning. Sessions share the patches, and the last to shut down restores Pi's methods. If another extension has replaced one of Prose's methods, Prose does not load.
+Before each patch, Prose probes Pi's own code: a code block, a wrapped and cached text, and a selection, copy, and triple-click. A patch whose Pi code no longer looks as expected is not installed, with one warning. After each patch, Prose checks again through the patched code, since Pi could pass a probe and yet stop calling what Prose replaced. It removes a patch that fails this check, with one warning. When Pi starts, such a warning waits for your first key: Pi draws the session's transcript after Prose loads, and the warning would otherwise sit above it. Sessions share the patches, and the last to shut down restores Pi's methods. If another extension has replaced one of Prose's methods, Prose does not load.
 
 Apply changes with `/reload`.
 

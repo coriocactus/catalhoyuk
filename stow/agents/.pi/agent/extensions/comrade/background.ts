@@ -21,8 +21,11 @@ import { summary as workSummary } from "./work.ts";
 
 /** Background comrades running at once, to bound cost. */
 export const MAX_BACKGROUND = 4;
-/** How long leaving a session waits for its comrades to stop: past the SIGKILL that ends them. */
-const STOP_MS = 6000;
+/**
+ * How long leaving a session waits for its comrades to stop: past the SIGKILL that ends them and
+ * the second their output is then read for, with time to spare.
+ */
+const STOP_MS = 8000;
 /** How long jobs parked for a /reload wait for the reloaded extension before being stopped. */
 const ADOPT_MS = 10_000;
 
@@ -34,6 +37,8 @@ export interface Job {
   run?: string;
   /** Steers sent to it. Absent in jobs adopted from older versions. */
   channel?: Channel;
+  /** The id of the session it runs for. Absent in jobs from older versions until adopted. */
+  sessionId?: string;
   task: string;
   request: Request;
   started: number;
@@ -137,7 +142,10 @@ export function createBackground(deps: BackgroundDeps) {
 
   /** A job's run has ended: its answer is saved, then sent. */
   function finish(job: Job, outcome: Outcome) {
-    jobs.delete(job.id);
+    // Left with its session, or ending only once another session has started: its answer is not
+    // this one's. It stays in its run record, which its own session reads when it next starts.
+    const away = !session.ui || job.sessionId !== session.id;
+    if (jobs.get(job.id) === job) jobs.delete(job.id);
     const conversation = job.request.session;
     const run = job.run;
     // The agent's own comrades call reports the stop, and the session records it there.
@@ -147,8 +155,7 @@ export function createBackground(deps: BackgroundDeps) {
     }
     // Leaving the session interrupted it: the session resumes it from its run record when it
     // next starts.
-    if (!session.ui && outcome.aborted && !job.stoppedBy && !outcome.timedOut)
-      return refreshWidget();
+    if (away && outcome.aborted && !job.stoppedBy && !outcome.timedOut) return refreshWidget();
     const base = {
       ...summary(job.request, outcome),
       stopReason: outcome.stopReason,
@@ -192,7 +199,7 @@ export function createBackground(deps: BackgroundDeps) {
       quietly(() =>
         updateRun<Delivery>(conversation, run, { phase: "done", answer: { delivery, body } }),
       );
-    if (!session.ui) return refreshWidget();
+    if (away) return refreshWidget();
     if (run) outbox.sent(run, conversation);
     outbox.deliver(delivery, body, wake);
     // Until the session holds its answer, its line stays in the widget, saying so.
@@ -224,6 +231,7 @@ export function createBackground(deps: BackgroundDeps) {
       toolCallId,
       run,
       channel: new Channel(),
+      sessionId: session.id,
       task: task ?? taskLine(request.task),
       request,
       started,
@@ -268,6 +276,8 @@ export function createBackground(deps: BackgroundDeps) {
     for (const job of adopted) {
       jobs.set(job.id, job);
       job.owner = finish;
+      // Parked under this session's id, which a /reload keeps.
+      job.sessionId ??= sessionId;
     }
     return adopted;
   };

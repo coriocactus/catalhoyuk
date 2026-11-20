@@ -1,0 +1,4 @@
+# package.json's devEngines states Pi's minimum Node, which npm enforces. mise would read it as
+# the Node to use here and pick an older one of its own; this keeps Homebrew's, which runs Pi.
+[settings]
+idiomatic_version_file_enable_tools = []

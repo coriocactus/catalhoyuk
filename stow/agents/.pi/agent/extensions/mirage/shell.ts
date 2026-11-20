@@ -29,6 +29,16 @@ const OPENS = new Set(["for", "while", "until", "if", "case", "select", "{"]);
 const CLOSES = new Set(["done", "fi", "esac", "}"]);
 /** Words after which the next word is still in command position. */
 const KEYWORDS = new Set(["do", "then", "else", "elif", "!", "{", "time"]);
+/** A function's name and parentheses: its body, such as a `{ …; }` group, follows. */
+const FUNCTION = /^[\w.:-]+\(\)$/;
+/** What closes each kind of span. */
+const CLOSERS: Readonly<Record<string, string>> = {
+  "'": "'",
+  '"': '"',
+  "`": "`",
+  "(": ")",
+  "{": "}",
+};
 
 type Kind = "word" | "string" | "operator" | "redirect" | "space" | "comment";
 interface Token {
@@ -36,28 +46,30 @@ interface Token {
   text: string;
 }
 
-/** Ends of a quoted or bracketed span starting at `i`, or -1 when it does not close. */
+/**
+ * Where the quoted or bracketed span starting at `i` ends: `'…'`, `"…"`, `` `…` ``, `(…)` or
+ * `{…}`, or the line's last character when it does not close. Spans inside it wait on a stack,
+ * not in recursion, so any nesting costs one pass.
+ */
 function spanEnd(line: string, i: number): number {
-  const open = line[i];
-  if (open === "'") {
-    const end = line.indexOf("'", i + 1);
-    return end < 0 ? line.length - 1 : end;
-  }
-  if (open === '"' || open === "`") {
-    for (let j = i + 1; j < line.length; j++) {
-      if (line[j] === "\\") j++;
-      else if (line[j] === open) return j;
-    }
-    return line.length - 1;
-  }
-  // $( … ), ${ … }, ( … ): keep nested brackets and quotes inside one token.
-  const close = open === "{" ? "}" : ")";
-  let depth = 0;
-  for (let j = i; j < line.length; j++) {
+  const closers = [CLOSERS[line[i]]];
+  for (let j = i + 1; j < line.length; j++) {
     const char = line[j];
-    if (char === "'" || char === '"' || char === "`") j = spanEnd(line, j);
-    else if (char === open) depth++;
-    else if (char === close && --depth === 0) return j;
+    const closer = closers[closers.length - 1];
+    if (closer === "'") {
+      if (char === "'") closers.pop();
+    } else if (char === "\\") j++;
+    else if (char === closer) closers.pop();
+    else if (closer === '"' || closer === "`") {
+      // `$(…)` inside double quotes holds quotes of its own: "$(git log --format="%h")".
+      if (closer === '"' && char === "$" && line[j + 1] === "(") {
+        closers.push(")");
+        j++;
+      }
+    } else if (char === "'" || char === '"' || char === "`") closers.push(char);
+    // $( … ), ${ … }, ( … ): brackets of the span's own kind nest.
+    else if (char === (closer === ")" ? "(" : "{")) closers.push(closer);
+    if (!closers.length) return j;
   }
   return line.length - 1;
 }
@@ -93,7 +105,9 @@ function tokenize(line: string): Token[] {
     let j = i;
     while (j < line.length && !/[\s|&;<>]/.test(line[j])) {
       const char = line[j];
-      if (char === "'" || char === '"' || char === "`") j = spanEnd(line, j) + 1;
+      // A backslash escapes the character after it, an operator or a space too: `\;`.
+      if (char === "\\") j += 2;
+      else if (char === "'" || char === '"' || char === "`") j = spanEnd(line, j) + 1;
       else if (char === "$" && (line[j + 1] === "(" || line[j + 1] === "{"))
         j = spanEnd(line, j + 1) + 1;
       else if (char === "(" && j === i) j = spanEnd(line, j) + 1;
@@ -168,29 +182,40 @@ export function showCommand(command: string, style: ShellPaint): ShownCommand {
   const lines: string[] = [];
   let elided = false;
   if (physical.length === 1) {
-    // One line: a line per step, each ending in its operator and a backslash, as typed by hand.
+    // One line: a line per step, each ending in its operator and, when a step follows, a
+    // backslash, as typed by hand.
     let step: Token[] = [];
-    const flush = (operator?: Token) => {
+    const flush = (operator?: Token, more = false) => {
       while (step.at(-1)?.kind === "space") step.pop();
       while (step[0]?.kind === "space") step.shift();
       if (!step.length && !operator) return;
       let line = paint(step, style);
-      if (operator)
-        line += `${operator.text === ";" ? "" : " "}${style.operator(operator.text)} ${style.operator("\\")}`;
+      if (operator) line += `${operator.text === ";" ? "" : " "}${style.operator(operator.text)}`;
+      if (more) line += ` ${style.operator("\\")}`;
       lines.push(line);
       step = [];
     };
-    // A loop, conditional or `{ …; }` group stays on one line, as people write them.
+    // A loop, conditional, `[[ … ]]` test or `{ …; }` group stays on one line, as people write
+    // them.
     let depth = 0;
+    let test = false;
     let command = true;
-    for (const token of first) {
-      if (token.kind === "word" && command) {
-        if (OPENS.has(token.text)) depth++;
-        else if (CLOSES.has(token.text)) depth = Math.max(0, depth - 1);
+    const last = first.findLastIndex((token) => token.kind !== "space");
+    for (const [index, token] of first.entries()) {
+      if (token.kind === "word") {
+        if (command && OPENS.has(token.text)) depth++;
+        else if (command && CLOSES.has(token.text)) depth = Math.max(0, depth - 1);
+        else if (command && token.text === "[[") test = true;
+        else if (token.text === "]]") test = false;
       }
       if (token.kind === "operator") command = true;
-      else if (token.kind !== "space" && !(command && KEYWORDS.has(token.text))) command = false;
-      if (token.kind === "operator" && SPLITS.has(token.text) && depth === 0) flush(token);
+      else if (
+        token.kind !== "space" &&
+        !(command && (KEYWORDS.has(token.text) || FUNCTION.test(token.text)))
+      )
+        command = false;
+      if (token.kind === "operator" && SPLITS.has(token.text) && depth === 0 && !test)
+        flush(token, index < last);
       else step.push(token);
     }
     flush();

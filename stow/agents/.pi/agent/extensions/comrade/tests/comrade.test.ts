@@ -243,7 +243,9 @@ test("a comrade's calls are summarised like mirage's groups, with the ones worth
 test("one line at rest, three while running, and its work behind Ctrl+O or a click", async (t) => {
   // A frozen clock holds the spinner on its first frame.
   t.mock.timers.enable({ apis: ["setInterval", "Date"] });
-  const { tool, call, updates } = fixture(t, "busy");
+  const { tool, call, updates, ctx } = fixture(t, "busy");
+  // Pi works while the call streams in and runs.
+  ctx.isIdle = () => false;
   const args = {
     title: "Review the diff",
     task: `Review the diff in ${homedir()}/notes\nwith care`,
@@ -383,7 +385,8 @@ test("a call Pi never finished, in a session opened again, is still", (t) => {
         args,
         state: {},
         toolCallId: "orphan",
-        argsComplete: true,
+        // As Pi rebuilds it: as if its task still streamed in.
+        argsComplete: false,
         executionStarted: false,
         invalidate() {},
       }),
@@ -926,7 +929,7 @@ test("the tools parameter names only the read-only tools active here", async (t)
 test("tool patterns must match a tool this Pi has", async (t) => {
   const { call } = fixture(t, "echo");
   const { args } = JSON.parse(answer(await call({ task: "✓", tools: ["gr*", "bash"] })));
-  assert.deepEqual(args.slice(10, 12), ["--tools", "gr*,bash"]);
+  assert.deepEqual(args.slice(10, 12), ["--tools", "grep,bash"]);
 });
 
 test("the comrades tool lists and stops background comrades, and a stop sends no message", async (t) => {
@@ -1918,13 +1921,13 @@ test("a comrade stops once its parent is gone", async (t) => {
   const gone = spawnSync(process.execPath, ["-e", "0"]).pid;
   assert(gone);
   const stopped = new Promise<void>((resolve) => {
-    const cancel = watchHost(gone, 5, resolve);
+    const cancel = watchHost(gone, 5, resolve, gone);
     t.after(cancel);
   });
   await stopped;
   // A living parent keeps it running; a missing or unusable pid is ignored.
   let stops = 0;
-  const cancel = watchHost(process.pid, 5, () => stops++);
+  const cancel = watchHost(process.pid, 5, () => stops++, process.pid);
   await new Promise((wake) => setTimeout(wake, 30));
   cancel();
   assert.equal(stops, 0);
@@ -2094,8 +2097,9 @@ test("an answer delivered on another branch is delivered here too, not run again
 });
 
 test("a background comrade Pi exited during is resumed, told which calls may not have run", async (t) => {
-  const { started } = await cutMidCall(t);
-  const again = fixture(t, "echo", { entries: [startRow(started)] });
+  const { first, started } = await cutMidCall(t);
+  // The session opened again, in its own directory.
+  const again = fixture(t, "echo", { entries: [startRow(started)], home: first.cwd });
   const [resumed] = again.sent;
   assert.deepEqual(resumed[1], { deliverAs: "followUp", triggerTurn: false });
   assert.equal(
@@ -2270,12 +2274,12 @@ test("a run another Pi is running is left to it, and cannot be continued meanwhi
 });
 
 test("a comrade that cannot be resumed is reported, saying why and whether it can be continued", async (t) => {
-  const { started } = await cutMidCall(t);
-  const moved = {
-    ...started,
-    details: { ...(started.details as Details), cwd: "/nonexistent/dir" },
-  };
-  const again = fixture(t, "echo", { entries: [startRow(moved)] });
+  const { started, session } = await cutMidCall(t);
+  // The directory its conversation runs in is gone.
+  const [header, ...rest] = readFileSync(session, "utf8").split("\n");
+  const moved = { ...JSON.parse(header), cwd: "/nonexistent/dir" };
+  writeFileSync(session, [JSON.stringify(moved), ...rest].join("\n"));
+  const again = fixture(t, "echo", { entries: [startRow(started)] });
   assert.equal(
     body(again.sent[0]),
     "[comrade #1 lost] Survey the parser\n\nPi exited or switched sessions while this comrade ran, and it was not resumed: its directory /nonexistent/dir is gone. Its conversation is saved: continue it with to: 1.",

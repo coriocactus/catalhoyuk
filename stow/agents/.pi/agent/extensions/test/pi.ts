@@ -18,11 +18,18 @@ export function piModule<T>(path: string): Promise<T> {
   return import(pathToFileURL(join(pkg, path)).href) as Promise<T>;
 }
 
+// Pi's theme draws bold, italic and underline through chalk, which emits them only when stdout
+// is a terminal, as it always is for Pi. Tests draw the same way wherever they run. Only Pi's own
+// load sees the setting: processes the tests start inherit the environment as it was.
+const forceColor = process.env.FORCE_COLOR;
+process.env.FORCE_COLOR = "3";
 export const core = await piModule<CodingAgent>("dist/index.js");
 export const tui = (await import(
   pathToFileURL(piRequire.resolve("@earendil-works/pi-tui")).href
 )) as Tui;
 export const themes = await piModule<Themes>("dist/modes/interactive/theme/theme.js");
+if (forceColor === undefined) delete process.env.FORCE_COLOR;
+else process.env.FORCE_COLOR = forceColor;
 core.initTheme("dark");
 
 const { createJiti } = piRequire("jiti") as typeof import("jiti");

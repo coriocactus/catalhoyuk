@@ -40,9 +40,41 @@ function failure(outcome: Outcome): string | undefined {
       : "Comrade finished without an answer.";
 }
 
+const why = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
 /**
- * Truncate like Pi's own tools, keeping the full answer beside the comrade's conversation:
- * `comrade-3.answer.md`, then `comrade-3.answer.2.md` for a later run of the same comrade.
+ * Saves the whole answer beside the comrade's conversation: `comrade-3.answer.md`, then
+ * `comrade-3.answer.2.md` for a later run of the same comrade.
+ */
+function save(answer: string, session: string | undefined, id: number): string {
+  // Jobs adopted across a /reload from an older version have no session.
+  const dir = session ? dirname(session) : join(tmpdir(), "pi-comrades");
+  mkdirSync(dir, { recursive: true });
+  for (let run = 1; ; run++) {
+    const file = join(dir, `comrade-${id}.answer${run === 1 ? "" : `.${run}`}.md`);
+    try {
+      writeFileSync(file, answer, { flag: "wx", mode: 0o600 });
+      return file;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+  }
+}
+
+/** The first bytes of a line too long to show whole, cut where a character starts. */
+function headOf(line: string, maxBytes: number): string {
+  // A character takes at least one byte for each of its UTF-16 units, so these hold enough bytes.
+  const bytes = Buffer.from(line.slice(0, maxBytes));
+  let end = Math.min(maxBytes, bytes.length);
+  // A byte of the form 10xxxxxx carries on a character: the cut goes before that character.
+  while (end > 0 && end < bytes.length && (bytes[end] & 0xc0) === 0x80) end--;
+  return bytes.subarray(0, end).toString("utf8");
+}
+
+/**
+ * Truncate like Pi's own tools, keeping the full answer beside the comrade's conversation. Pi
+ * keeps nothing of a first line over the byte limit, so the caller gets as much of it as fits.
+ * When the whole answer cannot be saved, the caller still gets what fits, and why.
  */
 export function limit(
   answer: string,
@@ -51,32 +83,33 @@ export function limit(
 ): { text: string; file?: string } {
   const cut = truncateHead(answer, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
   if (!cut.truncated) return { text: answer };
-  // Jobs adopted across a /reload from an older version have no session.
-  const dir = session ? dirname(session) : join(tmpdir(), "pi-comrades");
-  mkdirSync(dir, { recursive: true });
+  const head = cut.firstLineExceedsLimit ? headOf(answer, DEFAULT_MAX_BYTES) : cut.content;
+  const shown = cut.firstLineExceedsLimit
+    ? `part of line 1 of ${cut.totalLines} (${formatSize(Buffer.byteLength(head))} of ${formatSize(cut.totalBytes)})`
+    : `${cut.outputLines} of ${cut.totalLines} lines (${formatSize(cut.outputBytes)} of ${formatSize(cut.totalBytes)})`;
   let file: string;
-  for (let run = 1; ; run++) {
-    file = join(dir, `comrade-${id}.answer${run === 1 ? "" : `.${run}`}.md`);
-    try {
-      writeFileSync(file, answer, { flag: "wx", mode: 0o600 });
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    }
+  try {
+    file = save(answer, session, id);
+  } catch (error) {
+    return {
+      text: `${head}\n\n[Answer truncated: ${shown}. The full answer could not be saved: ${why(error)}]`,
+    };
   }
-  const shown = `${cut.outputLines} of ${cut.totalLines} lines (${formatSize(cut.outputBytes)} of ${formatSize(cut.totalBytes)})`;
-  return { text: `${cut.content}\n\n[Answer truncated: ${shown}. Full answer: ${file}]`, file };
+  return { text: `${head}\n\n[Answer truncated: ${shown}. Full answer: ${file}]`, file };
 }
 
-/** Write the answer where the caller asked, and say so with its first lines. */
+/** Write the answer where the caller asked, and say so with as much of it as the caller reads. */
 function written(answer: string, file: string): string {
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, answer);
   const lines = answer.split("\n").length;
   const size = `${lines} line${lines === 1 ? "" : "s"}, ${formatSize(Buffer.byteLength(answer))}`;
-  if (lines <= WRITTEN_HEAD) return `Answer written to ${file} (${size}):\n\n${answer}`;
   const head = truncateHead(answer, { maxLines: WRITTEN_HEAD, maxBytes: DEFAULT_MAX_BYTES });
-  return `Answer written to ${file} (${size}). First ${head.outputLines} lines:\n\n${head.content}`;
+  if (!head.truncated) return `Answer written to ${file} (${size}):\n\n${answer}`;
+  if (head.firstLineExceedsLimit)
+    return `Answer written to ${file} (${size}). Its first line alone is over ${formatSize(DEFAULT_MAX_BYTES)}, so none of it is shown here.`;
+  const shown = `${head.outputLines} line${head.outputLines === 1 ? "" : "s"}`;
+  return `Answer written to ${file} (${size}). First ${shown}:\n\n${head.content}`;
 }
 
 export interface Reply {
@@ -106,21 +139,24 @@ export function respond(
     return { text: `Comrade timed out after ${limitText} and was stopped.${run}`, isError: true };
   const failed = outcome.timedOut ? undefined : failure(outcome);
   if (failed !== undefined) return { text: failed + run, isError: true };
+  // A run that timed out has no answer, so its last text is no file's content.
+  const unwritten =
+    outcome.timedOut && request.output ? `, so it was not written to ${request.output}` : "";
   const state = outcome.timedOut
-    ? `[Comrade timed out after ${limitText} and was stopped. Its last text follows. It is not a final answer.]`
+    ? `[Comrade timed out after ${limitText} and was stopped. Its last text follows. It is not a final answer${unwritten}.]`
     : partialAnswer(details)
       ? `[Comrade's answer is partial: its last turn ended with stopReason "${outcome.stopReason}"${outcome.stopReason === "length" ? ", the model's output token limit" : ""}. It is not a final answer.]`
       : "";
   let body: string;
   let file: string | undefined;
   let isError = outcome.timedOut;
-  if (request.output)
+  if (request.output && !outcome.timedOut)
     try {
       body = written(outcome.text, request.output);
       file = request.output;
     } catch (error) {
       const shown = limit(outcome.text, request.session, id);
-      body = `Could not write the answer to ${request.output}: ${error instanceof Error ? error.message : error}\n\n${shown.text}`;
+      body = `Could not write the answer to ${request.output}: ${why(error)}\n\n${shown.text}`;
       file = shown.file;
       isError = true;
     }

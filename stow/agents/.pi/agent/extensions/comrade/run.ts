@@ -15,7 +15,7 @@ import {
   type RpcResponse,
 } from "@earendil-works/pi-coding-agent";
 import type { Face } from "./view.ts";
-import { emptyWork, Ledger, type Work } from "./work.ts";
+import { emptyWork, Ledger, oneLine, type Work } from "./work.ts";
 
 /**
  * Set in a comrade's environment to the host's process id, so it does not offer comrade
@@ -31,6 +31,8 @@ const KILL_MS = 5000;
 const DRAIN_MS = 1000;
 /** How often streamed text may update progress. State changes update it at once. */
 const STREAM_MS = 250;
+/** The longest delay a timer keeps: Node fires a longer one after 1ms. */
+const TIMER_MAX = 2 ** 31 - 1;
 /** How the records start that the reader has no use for. */
 const SKIPPED = ['{"type":"agent_end"', '{"type":"turn_end"'];
 
@@ -143,6 +145,7 @@ export interface Outcome extends Progress {
   stopReason?: string;
   errorMessage?: string;
   stderr: string;
+  /** How its Pi exited. 0 once the run has settled: its ending stands however its Pi then exits. */
   exitCode: number | null;
   aborted: boolean;
   /** Stopped because it ran past its timeout, not by Esc or the comrades tool. */
@@ -492,7 +495,8 @@ export async function run(
    * `fresh` starts the state over, as each new tool call does.
    */
   const enter = (next: Activity["state"], detail?: string, delta = "", fresh = false) => {
-    const label = detail || undefined;
+    // A tool's name or a retry's error, from another process: rows draw it as it is.
+    const label = oneLine(detail ?? "") || undefined;
     if (fresh || next !== state.activity.state || label !== state.activity.detail) {
       state.activity = { state: next, since: Date.now(), ...(label ? { detail: label } : {}) };
       return progress();
@@ -650,6 +654,13 @@ export async function run(
     let drain: ReturnType<typeof setTimeout> | undefined;
     let finished = false;
     let ended = false;
+    // The run settled, so its ending stands: whatever the timeout, Esc, or how its Pi then exits.
+    let stands = false;
+    const unstarted = (error: unknown) => {
+      state.errorMessage = `Could not start pi: ${error instanceof Error ? error.message : error}`;
+      channel?.close();
+      resolve(state);
+    };
     let child: ReturnType<typeof spawn>;
     try {
       child = spawn(invocation.command, [...invocation.args, ...piArgs(request)], {
@@ -658,58 +669,75 @@ export async function run(
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (error) {
-      state.errorMessage = `Could not start pi: ${error instanceof Error ? error.message : error}`;
-      channel?.close();
-      resolve(state);
+      unstarted(error);
       return;
     }
     const stdin = child.stdin;
     const stdout = child.stdout;
     const stderr = child.stderr;
-    if (!stdin || !stdout || !stderr) throw new Error("pi started without its pipes");
+    if (!stdin || !stdout || !stderr) {
+      // Out of file descriptors, Node returns a process without its pipes and says why on the next
+      // tick, in an error event that would end this Pi if nothing heard it.
+      let why: unknown = "it started without its pipes";
+      child.on("error", (error) => {
+        why = error;
+      });
+      setImmediate(() => unstarted(why));
+      return;
+    }
     if (child.pid !== undefined) {
       state.pid = child.pid;
       progress();
     }
 
-    // Commands, each answered by a response with its id. One the comrade exits before answering
-    // is answered as failed. Prompts in flight keep the comrade open: one may start a run.
+    // Commands, each answered by a response with its id, go one at a time. Pi does not order two
+    // prompts that reach it while it is idle: both start a run, and the second is acknowledged
+    // and lost. It marks its run as going before it answers a prompt, so one sent after that
+    // answer is queued into the run, or starts the next. One the comrade exits before answering,
+    // or before it is sent, is answered as failed. Prompts in flight, waiting ones too, keep the
+    // comrade open: one may start a run.
     let sent = 0;
     const answers = new Map<string, (response: RpcResponse) => void>();
     const inFlight = new Set<Promise<unknown>>();
+    let last: Promise<unknown> = Promise.resolve();
     const write = (record: RpcCommand | RpcExtensionUIResponse) => {
       if (!ended && stdin.writable) stdin.write(`${JSON.stringify(record)}\n`);
     };
     const command = (record: RpcCommand) => {
-      const response = new Promise<RpcResponse>((reply) => {
-        if (ended)
-          return reply({
-            type: "response",
-            command: record.type,
-            success: false,
-            error: "Pi exited",
-          });
-        const id = `comrade-${++sent}`;
-        answers.set(id, reply);
-        write({ ...record, id });
-      }).then((response) => {
-        // Accepted: it runs now, or in the run going now.
-        if (
-          response.success &&
-          response.command === "prompt" &&
-          response.data.disposition !== "handled"
-        )
-          going = true;
-        return response;
-      });
+      const response = last.then(
+        () =>
+          new Promise<RpcResponse>((reply) => {
+            if (ended)
+              return reply({
+                type: "response",
+                command: record.type,
+                success: false,
+                error: "Pi exited",
+              });
+            const id = `comrade-${++sent}`;
+            answers.set(id, reply);
+            write({ ...record, id });
+          }),
+      );
+      last = response;
       inFlight.add(response);
       void response.finally(() => inFlight.delete(response));
       return response;
     };
     answer = (response) => {
       if (response.id === undefined) return;
-      answers.get(response.id)?.(response);
+      const reply = answers.get(response.id);
+      if (!reply) return;
       answers.delete(response.id);
+      // Accepted: it runs now, or in the run going now. Noted as the response is read, since the
+      // rest of its chunk may hold that run's whole course, up to its agent_settled.
+      if (
+        response.success &&
+        response.command === "prompt" &&
+        response.data?.disposition !== "handled"
+      )
+        going = true;
+      reply(response);
     };
     ask = (request) => {
       if (DIALOGS.has(request.method))
@@ -743,7 +771,7 @@ export async function run(
         streamingBehavior: "steer",
       });
       if (!response.success) throw new Error(response.error);
-      if (response.command === "prompt" && response.data.disposition === "handled")
+      if (response.command === "prompt" && response.data?.disposition === "handled")
         throw new Error("an extension in its Pi took it instead");
     };
     // Settled: once Pi has answered every prompt in flight, the comrade is done unless one of
@@ -752,7 +780,9 @@ export async function run(
     settled = () => {
       settling = settling.then(async () => {
         while (inFlight.size && !ended) await Promise.all(inFlight);
-        if (!going && !state.aborted && !ended) end();
+        if (going || state.aborted || ended) return;
+        stands = true;
+        end();
       });
     };
 
@@ -786,11 +816,14 @@ export async function run(
     };
     signal?.addEventListener("abort", abort, { once: true });
     if (request.timeoutMs !== undefined) {
-      deadline = setTimeout(() => {
-        if (ended) return;
-        state.timedOut = true;
-        abort();
-      }, request.timeoutMs);
+      deadline = setTimeout(
+        () => {
+          if (ended) return;
+          state.timedOut = true;
+          abort();
+        },
+        Math.min(request.timeoutMs, TIMER_MAX),
+      );
       deadline.unref();
     }
 
@@ -824,7 +857,7 @@ export async function run(
       if (!response.success) {
         state.errorMessage = response.error;
         end();
-      } else if (response.command === "prompt" && response.data.disposition === "handled") end();
+      } else if (response.command === "prompt" && response.data?.disposition === "handled") end();
     });
     // After the prompt, so a message held until now reaches the run it started.
     channel?.connect(steer);
@@ -835,9 +868,11 @@ export async function run(
       finish();
     });
     // Its output closes once it exits, unless a process it started still holds it: then what
-    // is left is read for a moment, and the comrade is done.
+    // is left is read for a moment, and the comrade is done. Once the run has settled, its exit
+    // is only its shutdown: a Pi stopped because it hung, or one that failed as it shut down,
+    // takes nothing from the answer.
     child.on("exit", (code) => {
-      state.exitCode = code;
+      state.exitCode = stands ? 0 : code;
       drain = setTimeout(() => {
         flush();
         finish();
@@ -846,7 +881,7 @@ export async function run(
     });
     child.on("close", (code) => {
       flush();
-      state.exitCode = code;
+      state.exitCode = stands ? 0 : code;
       finish();
     });
   });

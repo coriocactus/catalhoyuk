@@ -33,6 +33,10 @@ function prompts(ctx: ExtensionContext): string[] {
 
 export default function (pi: ExtensionAPI) {
   let reset = () => {};
+  // Whether Pi's working indicator, which carries the hint, is up for a running response: from a
+  // turn's start until the response ends, or until compaction replaces it for the rest of the turn.
+  // Elsewhere, as while Pi compacts or waits to retry, Pi's own indicator says that Esc cancels.
+  let working = false;
   // The guarded editor this extension set, and the editor it guards, so that a second session
   // start guards the same editor again rather than its own guard.
   let guarded: EditorFactory | undefined;
@@ -73,6 +77,7 @@ export default function (pi: ExtensionAPI) {
         if (
           matchesKey(data, "escape") &&
           keybindings.matches(data, "app.interrupt") &&
+          working &&
           !ctx.isIdle() &&
           !completing() &&
           timer === undefined
@@ -92,7 +97,17 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setEditorComponent(guarded);
   });
 
+  pi.on("turn_start", () => {
+    working = true;
+  });
+  pi.on("session_before_compact", () => {
+    working = false;
+    reset();
+  });
   pi.on("agent_start", () => reset());
-  pi.on("agent_end", () => reset());
+  pi.on("agent_end", () => {
+    working = false;
+    reset();
+  });
   pi.on("session_shutdown", () => reset());
 }

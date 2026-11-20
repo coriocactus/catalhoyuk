@@ -35,6 +35,7 @@ import type { FileReference } from "../shared/protocol.ts";
 import { CONTENT_START, findMarker } from "../shared/selection.ts";
 import {
   type Expandable,
+  inProgress,
   isComplete,
   isFailed,
   type SearchToolName,
@@ -180,7 +181,10 @@ interface ViewActions {
   spinner?(): string | undefined;
   /** Told each time a frame draws the row with its spinner. */
   spun?(): void;
-  /** Whether Pi is redrawing the row for its spinner alone, with nothing else changed. */
+  /**
+   * Whether Pi is redrawing the row for its spinner, or for a change the model already holds:
+   * nothing drawn needs to be thrown away.
+   */
   animating?(): boolean;
 }
 
@@ -200,6 +204,22 @@ function clean(value: string): string {
 
 function oneLine(value: string): string {
   return clean(value).replace(/\s+/g, " ").trim();
+}
+
+/** Output cut to the bounds Pi gives its own tools: its first 2000 lines or 50KB. */
+const bounded = (output: string) =>
+  truncateHead(output, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
+
+/** A JSON object or array laid out two spaces deep, or undefined for any other output. */
+function laidOut(output: string): string | undefined {
+  const trimmed = output.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return undefined;
+  try {
+    const value: unknown = JSON.parse(trimmed);
+    return value !== null && typeof value === "object" ? JSON.stringify(value, null, 2) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function details(row: ToolCallState): Record<string, unknown> | undefined {
@@ -339,7 +359,8 @@ export class ToolGroupView implements Component {
   }
 
   invalidate(): void {
-    // A spinner frame changes nothing drawn but the frame, which render() reads from the clock.
+    // A spinner frame, or a change the model already holds, throws nothing away: render() reads
+    // the frame from the clock, and draws afresh what changed, as its revision says.
     if (this.actions.animating?.()) return;
     this.cache = undefined;
     // Keep hit targets for the last painted frame until render replaces them.
@@ -358,7 +379,7 @@ export class ToolGroupView implements Component {
     const padding = Math.min(this.actions.outputPad(), Math.max(0, Math.floor((width - 1) / 2)));
     const contentWidth = Math.max(0, width - padding * 2);
     // A group with calls in progress redraws for each spinner frame. A finished one stays cached.
-    const frame = group.rows.every(isComplete) ? "" : (this.actions.spinner?.() ?? "");
+    const frame = group.rows.some(inProgress) ? (this.actions.spinner?.() ?? "") : "";
     this.frame = frame;
     if (frame) this.actions.spun?.();
     if (
@@ -423,11 +444,13 @@ export class ToolGroupView implements Component {
     if (line <= 0) return { key: this.row, offset: line, top: true };
     const target = this.targets[line];
     if (!target) return undefined;
-    let key: object = target;
-    if ("rows" in target) key = this.row;
-    else if ("script" in target) key = target.script;
-    const start = Math.max(0, this.targets.indexOf(target));
-    return { key, offset: line - start };
+    // A call's lines need not be together, as a script's are not around its nested calls: the
+    // offset counts the lines of the same call above this one.
+    const key = this.anchorKey(target);
+    let offset = 0;
+    for (let above = 0; above < line; above++)
+      if (this.anchorKey(this.targets[above]) === key) offset++;
+    return { key, offset };
   }
 
   locate(anchor: RowAnchor, width: number): number | undefined {
@@ -439,10 +462,18 @@ export class ToolGroupView implements Component {
     )
       return undefined;
     if (anchor.top) return anchor.offset;
-    const lines = this.targets.flatMap((target, line) => (target === anchor.key ? [line] : []));
+    const lines = this.targets.flatMap((target, line) =>
+      this.anchorKey(target) === anchor.key ? [line] : [],
+    );
     // A collapsed group represents every member on its summary line.
     if (!lines.length) return 0;
-    return lines[0] + Math.min(anchor.offset, lines.length - 1);
+    return lines[Math.min(anchor.offset, lines.length - 1)];
+  }
+
+  /** What a line is anchored to: its call, a script's source its script, a summary the leader. */
+  private anchorKey(target: ToggleTarget): object {
+    if ("rows" in target) return this.row;
+    return "script" in target ? target.script : target;
   }
 
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
@@ -512,11 +543,13 @@ export class ToolGroupView implements Component {
     return this.theme.fg("dim", expanded ? "▾" : "▸");
   }
 
-  private status(status: ToolCallState["status"], command = false): string {
+  /** A status's mark. `abandoned`: a call nothing will end, which rests even while Pi works. */
+  private status(status: ToolCallState["status"], command = false, abandoned = false): string {
     if (status === "error") return paint(this.theme, "red", command ? "$" : "✗");
     if (status === "success") return paint(this.theme, "green", command ? "$" : "✓");
     // In progress while Pi works: Pi's own working spinner, in its colour.
-    if (this.frame && status !== "cancelled") return this.theme.fg("accent", this.frame);
+    if (this.frame && !abandoned && status !== "cancelled")
+      return this.theme.fg("accent", this.frame);
     if (command) return this.theme.fg("muted", "$");
     return this.theme.fg("muted", status === "cancelled" ? "✗" : "…");
   }
@@ -568,7 +601,7 @@ export class ToolGroupView implements Component {
       if (range) label += this.theme.fg("dim", range);
       if (row.kind === "edit" || row.kind === "write") label += this.changeSummary([row]);
     }
-    return `${this.status(row.status, row.kind === "bash")} ${label}`;
+    return `${this.status(row.status, row.kind === "bash", row.abandoned)} ${label}`;
   }
 
   /**
@@ -615,7 +648,9 @@ export class ToolGroupView implements Component {
         const tail = finished ? this.theme.fg("dim", ` (${finished} finished)`) : "";
         let phrase: string;
         if (group === "tool") {
-          const [type, name] = tally.split("\0");
+          const type = tally.slice(0, tally.indexOf("\0"));
+          // A model can name a tool anything: one line of it, as the tool's own row shows.
+          const name = oneLine(tally.slice(type.length + 1));
           phrase =
             type === "server"
               ? `${verb} ${plural(count, `${name} tool`)}`
@@ -685,7 +720,7 @@ export class ToolGroupView implements Component {
       trailer.push(`${note("(exit code: ")}${paint(this.theme, "red", code)}${note(")")}`);
     const pad = " ".repeat(indent);
     const lines = shown.lines.map((line, index) =>
-      index ? `${pad}    ${line}` : `${pad}${this.status(row.status, true)} ${line}`,
+      index ? `${pad}    ${line}` : `${pad}${this.status(row.status, true, row.abandoned)} ${line}`,
     );
     if (trailer.length) lines[lines.length - 1] += ` ${trailer.join(" ")}`;
     // Every line toggles the row. The caret ends the last one, unless a header above has it.
@@ -766,7 +801,14 @@ export class ToolGroupView implements Component {
     const bodyWidth = Math.max(1, width - indent);
     // A write that went through, or is still streaming in, is drawn from its chunks: the finished
     // write keeps the lines it streamed, so finishing costs no new layout.
-    if (row.kind === "write" && row.status !== "error" && row.status !== "cancelled") {
+    // A saved write whose content Pi did not keep has none to draw.
+    const unkeptContent = row.saved && typeof row.args.content !== "string";
+    if (
+      row.kind === "write" &&
+      row.status !== "error" &&
+      row.status !== "cancelled" &&
+      !unkeptContent
+    ) {
       this.addLines(this.chunked(row.id, this.writeLines(row), bodyWidth), row, indent);
       return;
     }
@@ -792,7 +834,19 @@ export class ToolGroupView implements Component {
       // Pi gives the output of a script's calls only to the script, and the session keeps
       // none of it.
       const missing = row.saved && !output && !isFailed(row);
-      const unkept = this.theme.fg("dim", "Output not kept in session.");
+      const unkept = this.theme.fg(
+        "dim",
+        `${row.kind === "write" ? "Content" : "Output"} not kept in session.`,
+      );
+      // A finished command is drawn whole, once, rather than in the chunks it grew in. Its header
+      // shows the command unless it had to leave part of it out, whether it failed or not.
+      let command = "";
+      if (row.kind === "bash") {
+        this.forgetChunks(row.id);
+        const source = clean(text(row.args.command));
+        if (source && (!source.trim() || showCommand(source, PLAIN).elided))
+          command = this.theme.fg("dim", `$ ${source}`);
+      }
       if (row.status === "error") {
         output = paint(this.theme, "red", output || "Tool failed.");
       } else if (row.status === "cancelled") {
@@ -803,16 +857,7 @@ export class ToolGroupView implements Component {
         if (details(row)?.rebuilt)
           output += `\n${this.theme.fg("dim", "Rebuilt from saved arguments, with line numbers relative to the replaced text.")}`;
       } else if (row.kind === "bash") {
-        // Finished: drawn whole, once, rather than in the chunks it grew in.
-        this.forgetChunks(row.id);
-        // The header shows the command, unless it had to leave part of it out.
-        const command = clean(text(row.args.command));
-        const elided = !command.trim() || showCommand(command, PLAIN).elided;
-        output = [
-          elided && command ? this.theme.fg("dim", `$ ${command}`) : "",
-          output ? this.theme.fg("toolOutput", output) : "",
-          missing ? unkept : "",
-        ]
+        output = [output ? this.theme.fg("toolOutput", output) : "", missing ? unkept : ""]
           .filter(Boolean)
           .join("\n");
       } else if (row.kind === "model") {
@@ -833,6 +878,7 @@ export class ToolGroupView implements Component {
         // codes, and an empty line.
         if (output) output = this.theme.fg("toolOutput", output);
       }
+      if (command) output = output ? `${command}\n${output}` : command;
       if (imageLines.length === 0) {
         for (const part of row.result?.content ?? []) {
           if (part.type === "image")
@@ -1012,29 +1058,20 @@ export class ToolGroupView implements Component {
 
   /**
    * The output of a tool Pi does not bound, as Pi bounds its own: its first 2000 lines or 50KB,
-   * then a note of how much more there was. JSON is laid out and highlighted.
+   * then a note of how much more there was. JSON is laid out and highlighted, and bounded as it is
+   * drawn: laid out, a line of JSON can become thousands.
    */
   private toolOutput(key: string, output: string): string {
     if (!output) return "";
-    const cut = truncateHead(output, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
+    let cut = bounded(output);
+    const laid = cut.truncated ? undefined : laidOut(output);
+    if (laid !== undefined) cut = bounded(laid);
     const more = cut.truncated
       ? `\n${this.theme.fg("dim", `Showing the first ${cut.outputLines} of ${cut.totalLines} lines.`)}`
       : "";
     const shown = cut.content;
-    const trimmed = shown.trim();
-    if (!cut.truncated && (trimmed.startsWith("{") || trimmed.startsWith("["))) {
-      let value: unknown;
-      try {
-        value = JSON.parse(trimmed);
-      } catch {
-        value = undefined;
-      }
-      if (value !== undefined && typeof value === "object") {
-        const laid = JSON.stringify(value, null, 2);
-        return this.once(key, "json", laid, () => highlightCode(laid, "json").join("\n"));
-      }
-    }
-    return this.theme.fg("toolOutput", shown) + more;
+    if (laid === undefined) return this.theme.fg("toolOutput", shown) + more;
+    return this.once(key, "json", shown, () => highlightCode(shown, "json").join("\n")) + more;
   }
 
   private code(key: string, source: string, path?: string): string {

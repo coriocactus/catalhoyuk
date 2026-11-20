@@ -538,3 +538,139 @@ test("a transcript paged in full draws Pi's own lines, with every blank line abo
     }
   }
 });
+
+test("a compacted transcript paged in full draws its summary above the entries it kept", async () => {
+  const sm = core.SessionManager.inMemory(process.cwd());
+  const turn = (name: string) => {
+    const id = sm.appendMessage({ role: "user", content: `${name}_PROMPT`, timestamp: 1 });
+    sm.appendMessage(assistant(`${name}_REPLY`));
+    return id;
+  };
+  for (let i = 0; i < 3; i++) turn(`SUMMARIZED_${i}`);
+  const kept = turn("KEPT_0");
+  for (let i = 1; i < 4; i++) turn(`KEPT_${i}`);
+  sm.appendCompaction("CHECKPOINT", kept, 1000);
+  for (let i = 0; i < 2; i++) turn(`AFTER_${i}`);
+  const context = sm.buildContextEntries();
+  const [checkpoint] = context;
+  assert(checkpoint?.type === "compaction");
+  // Pi draws the summary above the first entry the compaction kept. Paged in full, the summarized
+  // entries come above it.
+  const order = sm.getBranch().filter((entry) => entry !== checkpoint);
+  order.splice(
+    order.findIndex((entry) => entry.id === kept),
+    0,
+    checkpoint,
+  );
+  const drawn = (entries: SessionEntry[]) => {
+    const native = transcript(0);
+    native.host.sessionManager = sm;
+    native.host.renderSessionEntries(entries);
+    return text(native.chat);
+  };
+  const full = drawn(order);
+  const own = drawn(context);
+  assert(full.endsWith(own), "Pi's own rows end the transcript");
+  for (let size = 1; size <= order.length; size++) {
+    const f = transcript(0),
+      views: TranscriptView[] = [],
+      adapter = installHistoryAdapter(
+        (error) => {
+          throw error;
+        },
+        size,
+        (view) => views.push(view),
+      );
+    f.host.sessionManager = sm;
+    try {
+      f.host.renderSessionEntries(context);
+      // Unpaged, the transcript starts with the summary when it reaches the first kept entry, as
+      // Pi's own does.
+      if (size >= context.length - 1) assert.equal(text(f.chat), own, `page size ${size}`);
+      else assert(!text(f.chat).includes("Compacted from"), `page size ${size}`);
+      for (let trip = 0; trip < sm.getEntries().length; trip++) {
+        f.layout();
+        f.scroll.scrollToStart();
+        await tick();
+        // A rebuild while paging keeps the summary for the page that draws it.
+        if (trip === 1) {
+          f.chat.clear();
+          f.host.renderSessionEntries(sm.buildContextEntries());
+        }
+      }
+      assert.equal(text(f.chat), full, `page size ${size}`);
+      // What mirage reads matches what is drawn: pages, oldest first, then the latest entries.
+      const pages = views.filter((view) => view.prepend).reverse();
+      const latest = views.filter((view) => !view.prepend).at(-1);
+      assert.deepEqual(
+        [...pages.flatMap((view) => view.entries), ...(latest?.entries ?? [])].map(({ id }) => id),
+        order.map(({ id }) => id),
+        `page size ${size}`,
+      );
+    } finally {
+      adapter.dispose();
+    }
+  }
+});
+
+test("a compaction since the transcript was built stays drawn through a rebuild", () => {
+  const f = transcript(0),
+    sm = core.SessionManager.inMemory(process.cwd()),
+    adapter = installHistoryAdapter((error) => {
+      throw error;
+    }, 4);
+  f.host.sessionManager = sm;
+  for (let i = 0; i < 12; i++) sm.appendMessage(assistant(`REPLY_${i}`));
+  try {
+    f.host.renderSessionEntries(sm.buildContextEntries());
+    // The compaction keeps more than the transcript draws: its first kept entry is in history.
+    sm.appendCompaction("CHECKPOINT", sm.getEntries()[4].id, 1000);
+    f.chat.clear();
+    f.host.renderSessionEntries(sm.buildContextEntries());
+    assert.equal(count(text(f.chat), /Compacted from/g), 1);
+    assert.equal(count(text(f.chat), /REPLY_/g), 4);
+  } finally {
+    adapter.dispose();
+  }
+});
+
+test("a compaction that evicts the latest entries leaves the earlier summary to its page", async () => {
+  const f = transcript(0),
+    sm = core.SessionManager.inMemory(process.cwd()),
+    adapter = installHistoryAdapter((error) => {
+      throw error;
+    }, 3);
+  f.host.sessionManager = sm;
+  for (let i = 0; i < 2; i++) sm.appendMessage(assistant(`SUMMARIZED_${i}`));
+  const kept = sm.appendMessage(assistant("KEPT_0"));
+  for (let i = 1; i < 6; i++) sm.appendMessage(assistant(`KEPT_${i}`));
+  sm.appendCompaction("FIRST", kept, 1000);
+  const labels = () =>
+    text(f.chat)
+      .split("\n")
+      .map((line) => line.trim().replace(/^Compacted from.*/, "SUMMARY"))
+      .filter((line) => /^(SUMMARIZED|KEPT|LATER)_\d$|^SUMMARY$/.test(line));
+  try {
+    f.host.renderSessionEntries(sm.buildContextEntries());
+    assert.deepEqual(labels(), ["KEPT_3", "KEPT_4", "KEPT_5"]);
+    // A second compaction keeps only what follows: Pi draws again what it kept, then its summary.
+    const later = sm.appendMessage(assistant("LATER_0"));
+    sm.appendCompaction("SECOND", later, 1000);
+    f.chat.clear();
+    f.host.renderSessionEntries(sm.buildContextEntries().slice(1));
+    for (const _ of sm.getEntries()) {
+      f.layout();
+      f.scroll.scrollToStart();
+      await tick();
+    }
+    assert.deepEqual(labels(), [
+      "SUMMARIZED_0",
+      "SUMMARIZED_1",
+      "SUMMARY",
+      ...Array.from({ length: 6 }, (_, i) => `KEPT_${i}`),
+      "LATER_0",
+    ]);
+  } finally {
+    adapter.dispose();
+  }
+});

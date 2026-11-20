@@ -1,6 +1,6 @@
 // Turn the model's comrade arguments into a run request, rejecting what the comrade
 // could not use before it starts.
-import { statSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type {
@@ -82,20 +82,27 @@ export function thinkingSuffix(model: string): Thinking | undefined {
 /**
  * Tool names and `*` patterns, checked against the tools a comrade can have: those active
  * here. The caller's tool set is the ceiling, so a Pi started with `--tools read` cannot hand
- * a comrade `bash`. The default is the read-only set, less any tool not active here.
+ * a comrade `bash`. A pattern gives the comrade the active tools it matches, by name: the
+ * comrade's Pi would match a pattern against all its own tools, active here or not. The default
+ * is the read-only set, less any tool not active here.
  */
 export function resolveTools(requested: string[] | undefined, pi: ExtensionAPI): string[] {
   const active = pi.getActiveTools().filter((name) => !OWN.includes(name));
   if (requested === undefined) return defaultTools(active);
-  const tools = [...new Set(requested)];
-  if (tools.some((tool) => OWN.includes(tool))) throw new Error("A comrade cannot start comrades.");
+  const asked = [...new Set(requested)];
+  if (asked.some((tool) => OWN.includes(tool))) throw new Error("A comrade cannot start comrades.");
   const all = pi.getAllTools().map((tool) => tool.name);
-  for (const tool of tools) {
+  const tools: string[] = [];
+  for (const tool of asked) {
     const pattern = new RegExp(
       `^${tool.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replaceAll("*", ".*")}$`,
     );
     const valid = /^[\w.*:-]+$/.test(tool) && !tool.startsWith("-");
-    if (valid && active.some((name) => pattern.test(name))) continue;
+    const matched = valid ? active.filter((name) => pattern.test(name)) : [];
+    if (matched.length) {
+      tools.push(...matched);
+      continue;
+    }
     const available = active.length ? active.join(", ") : "none";
     // Pi silently ignores unknown names, which would leave the comrade without the tool.
     if (valid && all.some((name) => pattern.test(name)))
@@ -104,7 +111,7 @@ export function resolveTools(requested: string[] | undefined, pi: ExtensionAPI):
       );
     throw new Error(`Unknown tool "${tool}" for comrade. Active: ${available}.`);
   }
-  return tools;
+  return [...new Set(tools)];
 }
 
 /**
@@ -182,6 +189,9 @@ function resolveOutput(requested: string | undefined, cwd: string): string | und
   return file;
 }
 
+/** The longest timeout, in seconds: Node fires a longer timer at once, as if it had run out. */
+export const TIMEOUT_MAX = 2_147_483;
+
 /** The directory the comrade runs in, which must exist. */
 function resolveCwd(requested: string | undefined, cwd: string): string {
   if (requested === undefined) return cwd;
@@ -202,25 +212,62 @@ export function cleanTitle(title: string | undefined): string | undefined {
   return line.length > TITLE_MAX ? `${line.slice(0, TITLE_MAX - 1)}…` : line;
 }
 
-/** Whether `path` is `root` or inside it. */
+/** A path as the file system resolves it, or as written when it cannot. */
+function real(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+/**
+ * Whether `path` is `root` or inside it, as the file system resolves both: a symlink inside
+ * `root` to a directory elsewhere is not inside it.
+ */
 export function within(path: string, root: string): boolean {
-  const rel = relative(root, path);
+  const rel = relative(real(root), real(path));
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
 /** How a comrade ran, which its follow-ups keep unless they say otherwise. */
 export interface Previous {
+  /** The comrade's number. */
+  id: number;
   title?: string;
   provider: string;
   model: string;
   thinking?: string;
   tools?: string[];
+  /** The directory its conversation runs in, which no follow-up changes. */
   cwd?: string;
 }
 
 /**
+ * The directory a follow-up runs in: its conversation's own. Pi runs a conversation in the
+ * directory its file names, whatever directory it starts in, so a follow-up naming another is
+ * refused: its row would say it ran there, and the caller's trust would follow the name.
+ */
+function followUpCwd(requested: string | undefined, previous: Previous, cwd: string): string {
+  const own = previous.cwd ?? cwd;
+  if (!statSync(own, { throwIfNoEntry: false })?.isDirectory())
+    throw new Error(
+      `Comrade #${previous.id} cannot continue: its directory ${own} is gone. Start a new comrade.`,
+    );
+  if (requested !== undefined) {
+    const named = resolveCwd(requested, cwd);
+    if (real(named) !== real(own))
+      throw new Error(
+        `Comrade #${previous.id} runs in ${own}, and a follow-up runs where its conversation does. Start a new comrade to work in ${named}.`,
+      );
+  }
+  // The caller's own directory keeps the caller's name for it, so the row says nothing of it.
+  return real(own) === real(cwd) ? cwd : own;
+}
+
+/**
  * The comrade runs exactly the model named, under its own provider. A follow-up keeps the
- * comrade's own model, thinking level and tools, not the caller's.
+ * comrade's own model, thinking level and tools, not the caller's, and its own directory.
  */
 export function prepare(
   args: Arguments,
@@ -229,13 +276,17 @@ export function prepare(
   previous?: Previous,
 ): Omit<Request, "session" | "followUp"> {
   if (!args.task.trim()) throw new Error("comrade needs a task.");
+  if (args.timeout !== undefined && args.timeout > TIMEOUT_MAX)
+    throw new Error(
+      `comrade's timeout is at most ${TIMEOUT_MAX} seconds, about 24 days. Leave it unset for no limit.`,
+    );
   const chosen = args.model
     ? resolveModel(args.model, ctx)
     : previous
       ? { provider: previous.provider, model: previous.model, thinking: undefined }
       : ctx.model && { provider: ctx.model.provider, model: ctx.model.id, thinking: undefined };
   if (!chosen) throw new Error("No model is selected: pass comrade a model as provider/id.");
-  const cwd = resolveCwd(args.cwd ?? previous?.cwd, ctx.cwd);
+  const cwd = previous ? followUpCwd(args.cwd, previous, ctx.cwd) : resolveCwd(args.cwd, ctx.cwd);
   return {
     task: args.task,
     provider: chosen.provider,

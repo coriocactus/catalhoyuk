@@ -15,7 +15,7 @@ import { Spinner, spinnerFrame } from "../shared/spinner.ts";
 import { isTranscriptView, TRANSCRIPT_VIEW, type TranscriptView } from "../shared/transcript.ts";
 import {
   everyKind,
-  isComplete,
+  inProgress,
   TOOL_NAMES,
   type ToolCallState,
   ToolGroups,
@@ -30,6 +30,8 @@ const EMPTY: Component = { render: () => [], invalidate() {} };
 type DisplayState = { view?: ToolGroupView; outputPad?: number };
 type RenderCall = NonNullable<ToolRenderers["renderCall"]>;
 type RenderResult = NonNullable<ToolRenderers["renderResult"]>;
+/** An MCP server's tool, as Pi names it: `mcp__<server>__<tool>`. */
+const MCP_TOOL = /^mcp__.+?__.+$/;
 
 function installNativeRendering(
   report: (error: Error) => void,
@@ -66,29 +68,45 @@ export default function (pi: ExtensionAPI) {
       return true;
     }
   };
-  // Any other tool is drawn as a plain call when Pi would otherwise draw it in its default box:
-  // when neither the tool nor another extension draws it. Pi says so as it resolves the tool's
-  // renderers (see the resolver below), the first time it draws one of its calls.
+  // An MCP server's tool is drawn as a plain call, though Pi's MCP extension gives each one
+  // renderers of its own. Any other tool is drawn as one when Pi would otherwise draw it in its
+  // default box: when neither the tool nor another extension draws it. Pi says so as it resolves
+  // the tool's renderers (see the resolver below), the first time it draws one of its calls.
   const plain = new Map<string, boolean>();
   const kinds: ToolKinds = (name) =>
-    claims(name) ? (name as ToolName) : plain.get(name) ? "tool" : undefined;
+    claims(name) ? (name as ToolName) : MCP_TOOL.test(name) || plain.get(name) ? "tool" : undefined;
   const groups = new ToolGroups(kinds);
   let historyGroups = new WeakMap<HistoryPage, ToolGroups>();
   const images = new WeakMap<ToolCallState, (width: number) => string[]>();
   // Pi redraws a script's calls only when it redraws the script's row, so keep each script
   // row's redraw callback.
   const redraws = new WeakMap<ToolCallState, () => void>();
+  // True while mirage asks Pi to draw a row whose model it has already changed, for a nested
+  // call's event or a toggle. Pi invalidates the row first, but the view throws nothing away: it
+  // draws afresh only what changed, by revision, as for a spinner frame.
+  let redrawing = false;
+  const redrawChanged = (invalidate: () => void) => {
+    redrawing = true;
+    try {
+      invalidate();
+    } finally {
+      redrawing = false;
+    }
+  };
+  // Pi draws a compaction's summary below the entries it kept, until it next draws the whole
+  // transcript, which puts the summary first: a call made after the compaction starts a group.
+  let compacted = false;
   // Live rows whose group still has calls in progress spin while Pi works: see shared/spinner.ts.
   // Its timer stops once none remain or Pi is idle, when a row left in progress is redrawn once
   // to show its resting glyph, so nothing runs between turns.
   const working = () => sessionContext?.isIdle?.() === false;
   const spinning = new Spinner<ToolCallState>(working);
   const spinner = () => (working() ? spinnerFrame() : undefined);
+  /** Whether Pi is drawing a row again with nothing changed that its view must throw away. */
+  const animating = () => spinning.animating || redrawing;
   /** Whether a row still leads a group of the live model with calls in progress. */
   const spins = (row: ToolCallState) =>
-    groups.rows.get(row.id) === row &&
-    row.group.rows[0] === row &&
-    !row.group.rows.every(isComplete);
+    groups.rows.get(row.id) === row && row.group.rows[0] === row && row.group.rows.some(inProgress);
   const models = new Set([new WeakRef(groups)]);
   let thinkingHidden = false;
   const visibility = (hidden: boolean) => {
@@ -151,6 +169,7 @@ export default function (pi: ExtensionAPI) {
     transcript = value;
     groups.setAllExpanded(value.expanded);
     groups.replace(snapshot([...(value.history ?? []), ...value.entries], value.cwd));
+    if (compacted) groups.boundary();
   });
   function rebuild(ctx: ExtensionContext): void {
     groups.setAllExpanded(ctx.ui.getToolsExpanded());
@@ -170,6 +189,7 @@ export default function (pi: ExtensionAPI) {
     const history =
       transcript?.sessionId === ctx.sessionManager.getSessionId() ? (transcript.history ?? []) : [];
     groups.replace(snapshot([...history, ...entries], ctx.cwd));
+    if (compacted) groups.boundary();
   }
 
   function snapshot(entries: readonly SessionEntry[], cwd: string): ToolGroups {
@@ -198,6 +218,8 @@ export default function (pi: ExtensionAPI) {
         target.finishMessage(message, cwd);
       }
     }
+    // Only live calls are ever in progress: a saved one without its result never gets it.
+    target.abandonUnfinished();
   }
 
   function groupsFor(state: object): ToolGroups {
@@ -219,12 +241,15 @@ export default function (pi: ExtensionAPI) {
     visibility(pi.getSettings().hideThinkingBlock === true);
     sessionContext = ctx.mode === "tui" ? ctx : undefined;
     flushWarnings();
+    compacted = false;
     if (sessionContext) rebuild(ctx);
   });
   pi.on("session_tree", (_event, ctx) => {
+    compacted = false;
     if (sessionContext) rebuild(ctx);
   });
   pi.on("session_compact", (_event, ctx) => {
+    compacted = true;
     if (sessionContext) rebuild(ctx);
   });
   pi.on("session_shutdown", () => {
@@ -239,6 +264,8 @@ export default function (pi: ExtensionAPI) {
     historyGroups = new WeakMap();
   });
   pi.on("message_start", ({ message }, ctx) => {
+    // The compaction's redraws are over: any Pi draws from now on puts its summary first.
+    compacted = false;
     if (sessionContext) groups.startMessage(message, ctx.cwd);
   });
   pi.on("message_update", ({ message }, ctx) => {
@@ -251,7 +278,8 @@ export default function (pi: ExtensionAPI) {
   // Pi reports calls inside scripts only as tool_execution_* events whose parentToolCallId
   // names the calling script or call.
   const redraw = (script: ToolCallState | undefined) => {
-    if (script) redraws.get(script)?.();
+    const invalidate = script && redraws.get(script);
+    if (invalidate) redrawChanged(invalidate);
   };
   pi.on("tool_execution_start", (event, ctx) => {
     if (sessionContext && event.parentToolCallId)
@@ -286,8 +314,11 @@ export default function (pi: ExtensionAPI) {
       model.setThinkingHidden(thinkingHidden);
       models.add(new WeakRef(model));
       const views = new Map<string, ToolGroupView>();
+      // Whether the calls the agent left in progress when it last stopped are cancelled.
+      let ended = false;
       return {
         add(message) {
+          ended = false;
           model.startMessage(message, cwd);
           model.finishMessage(message, cwd);
           // Pi runs a reply's calls once it ends: they are under way, not waiting to start.
@@ -299,6 +330,11 @@ export default function (pi: ExtensionAPI) {
         },
         draws: () => true,
         row(id, theme) {
+          // No frame: the agent has stopped, and nothing will end the calls it left in progress.
+          if (!ended && frame() === undefined) {
+            ended = true;
+            model.cancelUnfinished("Cancelled when the agent stopped.");
+          }
           const row = model.rows.get(id);
           if (!row || row.group.rows[0] !== row) return undefined;
           let view = views.get(id);
@@ -336,9 +372,9 @@ export default function (pi: ExtensionAPI) {
   function renderers(name: string): ToolRenderers {
     const renderCall: RenderCall = (args, theme, context) => {
       const state = context.state as DisplayState & AnchorState;
-      // The spinner asked Pi to draw the row again: nothing but its frame has changed, and the
-      // view reads that from the clock when Pi draws it.
-      if (spinning.animating && state.view) return state.view;
+      // The spinner, or mirage after changing the model, asked Pi to draw the row again: the view
+      // reads the frame from the clock, and the change from the model, when Pi draws it.
+      if (animating() && state.view) return state.view;
       state.outputPad = outputPad(context.outputPad);
       const groups = groupsFor(state);
       // Observe global expansion during Pi's update callback, never during render().
@@ -349,7 +385,7 @@ export default function (pi: ExtensionAPI) {
       images.set(row, (width) => renderNativeImages(state, width));
       if (row.kind === "codemode") redraws.set(row, context.invalidate);
       // Only live calls are ever in progress, and only a group's leader draws it.
-      if (!row.group.rows.every(isComplete))
+      if (row.group.rows.some(inProgress))
         spinning.add(row, { redraw: context.invalidate, spinning: () => spins(row) });
       const view =
         state.view?.row === row
@@ -357,14 +393,14 @@ export default function (pi: ExtensionAPI) {
           : new ToolGroupView(row, groups, {
               toggle(target) {
                 groups.toggle(target);
-                context.invalidate();
+                redrawChanged(context.invalidate);
               },
               openFile,
               outputPad: () => state.outputPad ?? 0,
               renderImages: (target, width) => images.get(target)?.(width) ?? [],
               spinner,
               spun: () => spinning.drew(row),
-              animating: () => spinning.animating,
+              animating,
             });
       state.view = view;
       state[ROW_ANCHOR] = view;
@@ -372,7 +408,7 @@ export default function (pi: ExtensionAPI) {
       return view;
     };
     const renderResult: RenderResult = (result, options, _theme, context) => {
-      if (spinning.animating) return EMPTY;
+      if (animating()) return EMPTY;
       const groups = groupsFor(context.state);
       const row = groups.rows.get(context.toolCallId);
       if (row)
@@ -407,7 +443,9 @@ export default function (pi: ExtensionAPI) {
     }
   };
   pi.registerToolRenderer((name, next) => {
-    if (claims(name)) return drawn(name);
+    // Pi's own tools, and MCP servers' tools, whose renderers Pi's MCP extension resolves after
+    // mirage's: mirage draws them, whatever would draw them otherwise.
+    if (claims(name) || MCP_TOOL.test(name)) return drawn(name);
     // Any other tool keeps the renderer it has, its own or another extension's. One with none
     // would get Pi's default box: mirage draws it instead.
     const own = next();

@@ -16,7 +16,7 @@ import { type Background, createBackground } from "./background.ts";
 import { createNumbers } from "./conversation.ts";
 import { type Delivery, LISTING, type Listing, MESSAGE, notRunning, record } from "./details.ts";
 import { createOutbox, deliveries } from "./outbox.ts";
-import { currentPi, watchHost } from "./pi.ts";
+import { currentPi, hostOf, watchHost } from "./pi.ts";
 import { createReconciler, pendingRuns } from "./reconcile.ts";
 import { createRows, type Rows } from "./rows.ts";
 import { type Channel, type Invocation, NESTED } from "./run.ts";
@@ -85,6 +85,14 @@ export function register(pi: ExtensionAPI, invocation: Invocation | (() => Invoc
     session.id = ctx.sessionManager.getSessionId();
     session.entries = () => ctx.sessionManager.getEntries();
     session.branch = () => ctx.sessionManager.getBranch();
+    // A context gone stale, as after /resume or /reload, throws: Pi no longer works in it.
+    session.working = () => {
+      try {
+        return ctx.isIdle?.() === false;
+      } catch {
+        return false;
+      }
+    };
     session.terminal = ctx.mode === "tui";
     session.home = ctx.cwd;
     transcripts.started();
@@ -140,6 +148,7 @@ export function register(pi: ExtensionAPI, invocation: Invocation | (() => Invoc
     widget.close();
     session.entries = undefined;
     session.branch = undefined;
+    session.working = undefined;
     rows.ended();
     transcripts.ended();
     session.ui = undefined;
@@ -256,14 +265,16 @@ function registerList(pi: ExtensionAPI, background: Background, rows: Rows) {
   });
 }
 export default function (pi: ExtensionAPI) {
-  const host = process.env[NESTED];
+  // A PI_COMRADE whose host is not running came from something a comrade left running, such as
+  // a tmux server: this Pi is an ordinary one.
+  const host = hostOf(process.env[NESTED]);
   // A comrade offers no comrade of its own, and stops once its host is gone. It watches from
   // its session's start, not as the extension loads: Pi can load extensions and start no session.
   if (host !== undefined) {
     let unwatch = () => {};
     pi.on("session_start", () => {
       unwatch();
-      unwatch = watchHost(Number(host));
+      unwatch = watchHost(host);
     });
     pi.on("session_shutdown", () => unwatch());
     return;

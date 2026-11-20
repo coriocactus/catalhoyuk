@@ -123,14 +123,40 @@ export function savedCalls(record: unknown): SavedCall[] {
   });
 }
 
-/** `details.calls` previews arguments as JSON, which Pi truncates when long. */
-export function previewArgs(preview: string): Record<string, unknown> | undefined {
+function parseRecord(text: string): Record<string, unknown> | undefined {
   try {
-    const value: unknown = JSON.parse(preview);
+    const value: unknown = JSON.parse(text);
     return isRecord(value) ? value : undefined;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * `details.calls` previews arguments as JSON, which Pi cuts after 200 characters. A cut preview
+ * still holds whole the arguments before the cut, such as a write's path ahead of its content.
+ */
+export function previewArgs(preview: string): Record<string, unknown> | undefined {
+  const whole = parseRecord(preview);
+  if (whole) return whole;
+  // Every member before the last comma between the object's own members is whole.
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  let cut = -1;
+  for (let at = 0; at < preview.length; at++) {
+    const char = preview[at];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') quoted = false;
+    } else if (char === '"') quoted = true;
+    else if (char === "{" || char === "[") depth++;
+    else if (char === "}" || char === "]") depth--;
+    else if (char === "," && depth === 1) cut = at;
+  }
+  const members = cut > 0 ? parseRecord(`${preview.slice(0, cut)}}`) : undefined;
+  return members && Object.keys(members).length ? members : undefined;
 }
 
 // Pi's own renderer drops the same header, the script's status and wall time.

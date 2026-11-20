@@ -4,6 +4,7 @@ import {
   type SessionEntry,
   type SessionManager,
   type SettingsManager,
+  sessionEntryToContextMessages,
   ToolExecutionComponent,
   VERSION,
 } from "@earendil-works/pi-coding-agent";
@@ -13,10 +14,12 @@ import { installPatch } from "../shared/patch.ts";
 import type { TranscriptView } from "../shared/transcript.ts";
 import { captureViewportAnchor } from "./anchors.ts";
 import {
+  type Checkpoint,
   drawnAbove,
   HistoryCursor,
   historyBoundary,
   historyGap,
+  leftOutCheckpoint,
   PAGE_SIZE,
   recentEntries,
 } from "./model.ts";
@@ -170,6 +173,8 @@ export class HistoryController {
   private failed = false;
   private presentation = "";
   private contextEntries: SessionEntry[] = [];
+  /** The latest compaction, when the last selection left its summary for a page of a new view. */
+  private leftOut: Checkpoint | undefined;
   private readonly host: NativeHost;
   private readonly render: RenderEntries;
   private readonly report: (error: unknown) => void;
@@ -209,6 +214,7 @@ export class HistoryController {
   }
 
   select(entries: SessionEntry[]): SessionEntry[] {
+    this.leftOut = undefined;
     if (
       this.host.ui.mode !== "fullscreen" ||
       (this.sessionId === this.host.sessionManager.getSessionId() &&
@@ -216,11 +222,16 @@ export class HistoryController {
         !this.firstDisplayed)
     )
       return entries;
-    return recentEntries(
-      entries,
-      this.size,
-      this.sessionId === this.host.sessionManager.getSessionId() ? this.firstDisplayed : undefined,
-    );
+    const keepFrom =
+      this.sessionId === this.host.sessionManager.getSessionId() ? this.firstDisplayed : undefined;
+    const selected = recentEntries(entries, this.size, keepFrom);
+    const checkpoint = leftOutCheckpoint(entries, selected);
+    // Only a new view leaves the summary to its pages. A compaction since the view started stays
+    // above the latest entries, as before, since the entry it kept first may be drawn already.
+    if (checkpoint && keepFrom && checkpoint.entry.id !== this.cursor?.checkpoint?.entry.id)
+      return [checkpoint.entry, ...selected];
+    this.leftOut = checkpoint;
+    return selected;
   }
 
   present(entries: SessionEntry[]): void {
@@ -235,6 +246,7 @@ export class HistoryController {
               this.boundary,
               (id) => this.host.sessionManager.getEntry(id),
               new Set(entries.map((entry) => entry.id)),
+              this.cursor?.checkpoint?.entry.id,
             )
           : undefined;
       if (!gap) {
@@ -272,14 +284,14 @@ export class HistoryController {
       const lookup = (id: string) => this.host.sessionManager.getEntry(id);
       const gap =
         this.boundaryKey && this.sessionId === sessionId
-          ? historyGap(boundary, this.boundary, lookup, visible)
+          ? historyGap(boundary, this.boundary, lookup, visible, this.cursor?.checkpoint?.entry.id)
           : undefined;
       if (gap) {
         if (gap.length) this.pages.addChild(this.renderPage(gap));
       } else {
         this.pages.clear();
         this.pageEntries.clear();
-        this.cursor = new HistoryCursor(boundary, lookup, visible);
+        this.cursor = new HistoryCursor(boundary, lookup, visible, this.leftOut);
       }
       this.boundaryKey = key;
       this.boundary = boundary;
@@ -477,7 +489,9 @@ export function installHistoryAdapter(
         const owner = [...owners].at(-1);
         if (!owner || disabled.has(this)) return original.call(this, entries, options);
         let selected = entries,
-          visible = entries;
+          visible = entries,
+          fallback: Error | undefined;
+        const prompts: string[] = [];
         let current = controllers.get(this);
         try {
           if (!current) {
@@ -516,32 +530,42 @@ export function installHistoryAdapter(
           selected = entries.filter((entry) => ids.has(entry.id));
           current.controller.present(visible);
           // Keep native Up-arrow prompt history complete even when its old rows are
-          // not constructed. Paging itself never adds prompts to editor history.
+          // not constructed, reading messages as Pi does. Paging itself never adds prompts
+          // to editor history.
           if (options?.populateHistory)
             for (const entry of entries) {
-              if (!ids.has(entry.id) && entry.type === "message" && entry.message.role === "user") {
-                const text = this.getUserMessageText(entry.message);
-                if (text) this.editor.addToHistory?.(text);
+              if (ids.has(entry.id)) continue;
+              for (const message of sessionEntryToContextMessages(entry)) {
+                const text = message.role === "user" ? this.getUserMessageText(message) : "";
+                if (text) prompts.push(text);
               }
             }
         } catch (error) {
+          // The native render adds every prompt.
+          prompts.length = 0;
           selected = entries;
           visible = entries;
           current?.controller.dispose();
           controllers.delete(this);
           current = undefined;
           disabled.add(this);
-          owner.report(
-            new Error(
-              `Pi ${VERSION}: history paging disabled; using the native transcript. ${error instanceof Error ? error.message : String(error)} Run npm run verify in ~/.pi/agent/extensions.`,
-            ),
+          fallback = new Error(
+            `Pi ${VERSION}: history paging disabled; using the native transcript. ${error instanceof Error ? error.message : String(error)} Run npm run verify in ~/.pi/agent/extensions.`,
           );
         }
-        // Native errors must still propagate.
+        for (const text of prompts) this.editor.addToHistory?.(text);
+        // Native errors must still propagate. Pages load only in fullscreen, so only there does
+        // Pi build as if the history above were drawn.
         const lookup = (id: string) => this.sessionManager.getEntry(id);
-        belowHistory(this.chatContainer, Boolean(current) && drawnAbove(selected[0], lookup), () =>
-          original.call(this, selected, options),
-        );
+        const below =
+          Boolean(current) && this.ui.mode === "fullscreen" && drawnAbove(selected[0], lookup);
+        try {
+          belowHistory(this.chatContainer, below, () => original.call(this, selected, options));
+        } finally {
+          // After the native rows, so that the warning follows the transcript even when Pi
+          // draws it after session_start, as at startup.
+          if (fallback) owner.report(fallback);
+        }
         try {
           current?.controller.refresh(visible);
         } catch (error) {

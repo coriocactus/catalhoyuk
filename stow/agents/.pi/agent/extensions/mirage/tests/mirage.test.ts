@@ -239,7 +239,7 @@ test("mixed groups merge across tool-only turns without crossing messages or for
   }
   for (const role of ["user", "custom", "bashExecution"]) {
     const before = add(`before-${role}`, "edit");
-    model.startMessage({ role, content: "Boundary" } as unknown as Message, root);
+    model.startMessage({ role, content: "Boundary", display: true } as unknown as Message, root);
     assert.notEqual(add(`after-${role}`, "edit").group, before.group);
   }
 });
@@ -662,7 +662,11 @@ test("a command's own line has a status-coloured dollar; its summary a tick or a
   a.view.handleMouse(mouse(0));
   assert.equal(plain(a.view), "✗ Ran 1 command ▾\n  $ npm test\n  failed");
   const [, line] = a.view.render(160).map(unmark);
-  assert(line.trimStart().startsWith(`${paint(themes.theme, "red", "$")} npm test`));
+  assert(
+    line
+      .trimStart()
+      .startsWith(`${paint(themes.theme, "red", "$")} ${themes.theme.bold("npm")} test`),
+  );
   a.view.handleMouse(mouse(0));
   a.result(result("passed"));
   const b = f.call("bash", "dollar-b", { command: "npm run lint" }, false);
@@ -1122,11 +1126,11 @@ test("Pi executes its own tools; mirage draws them, and other tools only when th
   const base = () => foreign;
   for (const name of ["read", "bash", "edit", "write", "codemode", "grep", "find", "ls"])
     assert.notEqual(f.pi.renderers(name, base), foreign, `${name} is drawn by mirage`);
-  for (const name of ["mcp__docs__search", "web_search"]) {
-    assert.equal(f.pi.renderers(name, base), foreign, `${name} keeps its renderer`);
-    // With none, its own or another extension's, Pi would draw it in its default box.
-    assert(f.pi.renderers(name)?.renderCall, `${name} without a renderer is drawn by mirage`);
-  }
+  // An MCP server's tool is drawn by mirage, though Pi's MCP extension gives it renderers.
+  assert.notEqual(f.pi.renderers("mcp__docs__search", base), foreign);
+  assert.equal(f.pi.renderers("web_search", base), foreign, "web_search keeps its renderer");
+  // With none, its own or another extension's, Pi would draw it in its default box.
+  assert(f.pi.renderers("web_search")?.renderCall, "web_search is drawn by mirage");
   // A tool another extension registered under a built-in name keeps that extension's renderer.
   const sources: Record<string, string> = { read: "builtin", bash: "local", codemode: "builtin" };
   Object.assign(f.pi.api, {
@@ -1355,11 +1359,11 @@ test("a call seen before Pi resolves its renderer joins its group once mirage dr
     );
   // Pi reports the call before it draws it: until it resolves the tool's renderer, the call
   // holds its place and ends the group.
-  await ask("late-mcp", "mcp__late__lookup");
+  await ask("late-call", "late_lookup");
   // Pi draws it, finding no renderer of its own: mirage draws it, in the read's group.
-  const late = f.call("mcp__late__lookup", "late-mcp", {});
+  const late = f.call("late_lookup", "late-call", {});
   assert.equal(late.view.row.group, before.view.row.group);
-  assert.equal(plain(before.view), "… Reading 1 file, calling 1 late tool ▸");
+  assert.equal(plain(before.view), "… Reading 1 file, calling late_lookup ▸");
   // A tool that draws itself stays a boundary, and the next call starts a new group.
   const own: ToolRenderers = { renderCall: () => fake<Component>({}) };
   await ask("late-own", "drawn_elsewhere");

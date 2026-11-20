@@ -52,6 +52,11 @@ export interface ToolCallState {
   /** A call this runtime did not see run: Pi saved its arguments and status, not its output. */
   saved?: boolean;
   /**
+   * A call its session left unfinished, as when Pi was killed while it ran: nothing will end it,
+   * so it is no longer in progress.
+   */
+  abandoned?: boolean;
+  /**
    * Shown in place of arguments Pi did not keep: their `details.calls` preview, or a model
    * reference.
    */
@@ -124,6 +129,11 @@ export function isComplete(row: ToolCallState): boolean {
   return row.status === "success" || isFailed(row);
 }
 
+/** Whether a call is in progress: it has not ended, and something can still end it. */
+export function inProgress(row: ToolCallState): boolean {
+  return !isComplete(row) && !row.abandoned;
+}
+
 /** Calls a script made through tools, not its `models` calls. */
 export function toolCalls(row: ToolCallState): ToolCallState[] {
   return row.calls?.filter((call) => call.kind !== "model") ?? [];
@@ -152,7 +162,6 @@ export class ToolGroups {
   readonly rows = new Map<string, ToolCallState>();
   /** Calls inside scripts, by their own ids, such as `<script id>/<n>`. */
   private readonly nested = new Map<string, ToolCallState>();
-  private readonly seen = new Set<string>();
   private readonly kinds: ToolKinds;
   private tail?: ToolGroup;
   private allExpanded = false;
@@ -192,7 +201,6 @@ export class ToolGroups {
   reset(): void {
     this.rows.clear();
     this.nested.clear();
-    this.seen.clear();
     this.boundary();
     this.sequence = [];
     this.epoch++;
@@ -220,7 +228,13 @@ export class ToolGroups {
       // or thinking arriving later makes this boundary end the group.
       this.messageBoundary = { kind: "none" };
       this.sequence.push(this.messageBoundary);
-    } else if (message.role !== "toolResult") {
+    } else if (
+      message.role !== "toolResult" &&
+      // Pi draws neither a system message, such as a change of tools while it works, nor a custom
+      // message it is not to display.
+      message.role !== "system" &&
+      !(message.role === "custom" && !message.display)
+    ) {
       this.boundary();
     }
     this.observe(message, cwd);
@@ -231,6 +245,33 @@ export class ToolGroups {
     if (message.role !== "assistant") return;
     this.messageBoundary = undefined;
     if (["error", "aborted", "length"].includes(message.stopReason)) this.boundary();
+    if (message.stopReason !== "aborted" && message.stopReason !== "error") return;
+    // Pi runs no call of a failed turn, and shows each as failed with the turn's error. While it
+    // retries, Pi says how often it tried instead, which only its own result for the call knows.
+    const text =
+      message.stopReason === "aborted" ? "Operation aborted" : message.errorMessage || "Error";
+    for (const block of message.content) {
+      const row = block.type === "toolCall" ? this.rows.get(block.id) : undefined;
+      if (row && !isComplete(row)) this.end(row, "error", text);
+    }
+  }
+
+  /** The agent these calls are from stopped: each call it left in progress is cancelled. */
+  cancelUnfinished(text: string): void {
+    for (const row of this.rows.values()) if (!isComplete(row)) this.end(row, "cancelled", text);
+  }
+
+  /** The calls replayed from a session that it left unfinished: nothing will end them now. */
+  abandonUnfinished(): void {
+    for (const row of this.rows.values()) if (!isComplete(row)) row.abandoned = true;
+  }
+
+  /** Ends a call that will never report back, with the text shown for it. */
+  private end(row: ToolCallState, status: "error" | "cancelled", text: string): void {
+    row.status = status;
+    row.result = { content: [{ type: "text", text }], details: row.result?.details };
+    row.hasImages = false;
+    this.changed(row);
   }
 
   /** Classify the in-flight message before adding its calls, so boundaries precede calls. */
@@ -269,7 +310,6 @@ export class ToolGroups {
       this.updateCall(existing, args, cwd);
       return this.drawn(existing) ? existing : undefined;
     }
-    this.seen.add(id);
     // Every call is kept, drawn or not: which tools mirage draws can change as Pi resolves their
     // renderers, and a call it does not draw holds its place as a boundary meanwhile.
     const kind = this.kinds(name);
@@ -328,6 +368,7 @@ export class ToolGroups {
   markStarted(row: ToolCallState): void {
     if (row.status !== "pending") return;
     row.status = "running";
+    row.abandoned = false;
     this.changed(row);
   }
 
@@ -352,6 +393,7 @@ export class ToolGroups {
     durationMs: number | undefined,
   ): void {
     row.result = retained(result);
+    row.abandoned = false;
     if (failed) row.status = "error";
     else if (partial) row.status = "running";
     else row.status = "success";
@@ -558,6 +600,8 @@ export class ToolGroups {
     for (const snapshot of source.rows.values()) {
       const row = this.rows.get(snapshot.id) ?? snapshot;
       if (row !== snapshot) {
+        // A call this runtime sees run stays in progress, whatever the snapshot left of it.
+        row.abandoned = snapshot.abandoned === true && row.status !== "running";
         row.args = snapshot.args;
         row.cwd = snapshot.cwd;
         row.file = snapshot.file;
@@ -579,8 +623,6 @@ export class ToolGroups {
       this.rows.set(id, row);
       this.indexCalls(row);
     }
-    this.seen.clear();
-    for (const id of source.seen) this.seen.add(id);
     this.sequence = source.sequence.map((item) =>
       "id" in item ? (retainedRows.get(item.id) ?? item) : item,
     );
@@ -629,19 +671,12 @@ export class ToolGroups {
    */
   stagePrepend(source: ToolGroups): { commit(): void; rollback(): void } {
     const added = new Set<string>();
-    const seen = new Set<string>();
     for (const row of source.rows.values()) {
       if (this.rows.has(row.id)) continue;
       row.group.expansion = undefined;
       this.rows.set(row.id, row);
       this.indexCalls(row);
       added.add(row.id);
-    }
-    // Rendering a saved call must never append a boundary to the live range.
-    for (const id of source.seen) {
-      if (this.seen.has(id)) continue;
-      this.seen.add(id);
-      seen.add(id);
     }
     let settled = false;
     return {
@@ -659,7 +694,6 @@ export class ToolGroups {
           for (const call of this.rows.get(id)?.calls ?? []) this.nested.delete(call.id);
           this.rows.delete(id);
         }
-        for (const id of seen) this.seen.delete(id);
       },
     };
   }

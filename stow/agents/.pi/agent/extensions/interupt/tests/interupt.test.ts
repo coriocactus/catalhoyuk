@@ -94,6 +94,8 @@ function fixture(
   });
   const emit = (name: string, event: object = {}) => pi.emit(name, event, ctx);
   emit("session_start", { reason });
+  // Pi works: a response runs, and its working indicator shows it from the turn's start.
+  emit("turn_start");
   t.after(() => emit("session_shutdown"));
   return {
     emit,
@@ -225,6 +227,8 @@ for (const event of ["agent_start", "agent_end", "session_shutdown", "session_st
     f.emit(event); // Idempotent cleanup/replacement.
     assert.equal(f.status, undefined);
     t.mock.timers.tick(2000);
+    // After a response ends, the next one's turn shows the working indicator again.
+    if (event === "agent_end") f.emit("turn_start");
     if (event !== "session_shutdown") {
       f.editor.handleInput("\x1b");
       assert.equal(f.escapes, 0);
@@ -232,6 +236,40 @@ for (const event of ["agent_start", "agent_end", "session_shutdown", "session_st
     }
   });
 }
+
+test("while Pi compacts, Esc stays native until a turn shows the working indicator again", (t) => {
+  const f = fixture(t);
+  f.editor.handleInput("\x1b");
+  f.emit("session_before_compact");
+  assert.equal(f.status, undefined, "compaction disarms the stop");
+  // Pi's compaction indicator says that Esc cancels, and Pi's own handler does.
+  f.editor.handleInput("\x1b");
+  assert.equal(f.escapes, 1);
+  f.emit("session_compact");
+  f.editor.handleInput("\x1b");
+  assert.equal(f.escapes, 2, "no working indicator until the next turn");
+  f.emit("turn_start");
+  f.editor.handleInput("\x1b");
+  assert.equal(f.escapes, 2);
+  assert.match(f.status ?? "", /Press Esc again/);
+});
+
+test("between responses, as while Pi waits to retry, Esc stays native", (t) => {
+  const f = fixture(t);
+  // Pi is not idle: its retry countdown says that Esc cancels.
+  f.emit("agent_end");
+  f.editor.handleInput("\x1b");
+  assert.equal(f.escapes, 1);
+  assert.equal(f.status, undefined);
+  // The retry starts a response, whose first turn shows the working indicator.
+  f.emit("agent_start");
+  f.editor.handleInput("\x1b");
+  assert.equal(f.escapes, 2, "not before that turn");
+  f.emit("turn_start");
+  f.editor.handleInput("\x1b");
+  assert.equal(f.escapes, 2);
+  assert.match(f.status ?? "", /Press Esc again/);
+});
 
 test("an editor another extension set is kept, and guarded in its place", (t) => {
   class Other extends core.CustomEditor {}
