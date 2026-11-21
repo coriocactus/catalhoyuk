@@ -287,7 +287,7 @@ export function registerComrade(deps: ToolDeps): void {
           content: [
             {
               type: "text",
-              text: `Comrade #${job.id} started in the background. Keep working. Its answer will arrive as a [comrade #${job.id} …] message, which starts a new turn if you have finished, so there is no need to check on it. Stop it with the comrades tool if you no longer need it.`,
+              text: `Comrade #${job.id} started in the background. Keep working. Its answer will arrive as a [comrade #${job.id} …] message, between your tool calls while you work or in a new turn if you have finished, so there is no need to check on it. Stop it with the comrades tool if you no longer need it.`,
             },
           ],
           details: {

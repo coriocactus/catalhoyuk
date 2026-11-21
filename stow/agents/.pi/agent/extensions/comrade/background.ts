@@ -122,6 +122,18 @@ export function createBackground(deps: BackgroundDeps) {
       const total = [...jobs.values()].reduce((sum, job) => sum + job.progress.usage.cost.total, 0);
       lines.push(`${lines.length} running · ${formatCost(total)} so far`);
     }
+    // Runs that have ended, whose answers the session does not hold yet. An agent told only of
+    // runs in progress would take such an answer for lost, and ask for it again.
+    for (const run of outbox.answered.values())
+      lines.push(
+        [
+          `#${run.id}`,
+          run.title.slice(0, 60),
+          `${run.ended ?? "finished"}, its answer on its way as a [comrade #${run.id} …] message`,
+          formatCost(run.cost),
+          formatDuration(run.elapsedMs),
+        ].join(" · "),
+      );
     return lines.join("\n");
   };
 
@@ -133,6 +145,16 @@ export function createBackground(deps: BackgroundDeps) {
       doing: doingNow(job),
       cost: job.progress.usage.cost.total,
       seconds: Math.round((Date.now() - job.started) / 100) / 10,
+    }));
+
+  /** What a codemode script reads of the runs whose answers are on their way, as the listing. */
+  const ended = () =>
+    [...outbox.answered.values()].map((run) => ({
+      number: run.id,
+      title: run.title.slice(0, 60),
+      ending: run.ended ?? "finished",
+      cost: run.cost,
+      seconds: Math.round(run.elapsedMs / 100) / 10,
     }));
 
   /** What each job's widget line says it is doing, held steady as its row's line is. */
@@ -208,8 +230,9 @@ export function createBackground(deps: BackgroundDeps) {
       };
       body = reply.text;
     }
-    // Saved before it is sent: Pi holds a message that arrives during a turn in memory until
-    // the turn ends, so the session's next start delivers one Pi exits with first from here.
+    // Saved before it is sent: Pi holds a message that arrives while the agent works in memory
+    // until its current calls end, so the session's next start delivers one Pi exits with first
+    // from here.
     if (run)
       quietly(() =>
         updateRun<Delivery>(conversation, run, { phase: "done", answer: { delivery, body } }),
@@ -327,5 +350,5 @@ export function createBackground(deps: BackgroundDeps) {
     ]);
   };
 
-  return { jobs, listed, listing, running, working, start, finish, adopt, park, stop };
+  return { jobs, listed, listing, running, ended, working, start, finish, adopt, park, stop };
 }

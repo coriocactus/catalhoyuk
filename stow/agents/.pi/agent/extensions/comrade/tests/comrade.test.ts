@@ -490,7 +490,7 @@ test("a background comrade returns at once, then its answer arrives and wakes th
   const result = await call(args);
   assert.equal(
     text(result),
-    "Comrade #1 started in the background. Keep working. Its answer will arrive as a [comrade #1 …] message, which starts a new turn if you have finished, so there is no need to check on it. Stop it with the comrades tool if you no longer need it.",
+    "Comrade #1 started in the background. Keep working. Its answer will arrive as a [comrade #1 …] message, between your tool calls while you work or in a new turn if you have finished, so there is no need to check on it. Stop it with the comrades tool if you no longer need it.",
   );
   assert.equal(details(result).id, 1);
   assert.deepEqual(fields(result), { number: 1, background: true });
@@ -530,7 +530,7 @@ test("a background comrade returns at once, then its answer arrives and wakes th
     saved(message),
   );
   assert.equal(render(startRow()), "↗ Comrade #1  ✓ survey the parser  background · finished ▸");
-  assert.deepEqual(message[1], { deliverAs: "followUp", triggerTurn: true });
+  assert.deepEqual(message[1], { deliverAs: "steer", triggerTurn: true });
   assert.equal(message[0].customType, "comrade");
   assert.match(body(message), /^\[comrade #1 finished\] ✓ survey the parser\n\n\{"args"/);
   assert.equal(delivery(message).status, "finished");
@@ -779,7 +779,7 @@ test("comrades lost when Pi exited are reported, and numbering continues past th
   ] as unknown as SessionEntry[];
   const { call, sent } = fixture(t, "echo", { entries });
   assert.equal(sent.length, 1);
-  assert.deepEqual(sent[0][1], { deliverAs: "followUp", triggerTurn: false });
+  assert.deepEqual(sent[0][1], { deliverAs: "steer", triggerTurn: false });
   assert.equal(
     body(sent[0]),
     "[comrade #7 lost] Survey the parser\n\nPi exited or switched sessions while this comrade ran, so its answer will not arrive.",
@@ -961,7 +961,7 @@ test("the comrades tool lists and stops background comrades, and a stop sends no
   const { call, comrades, sent } = fixture(t, "hang");
   const none = await comrades({});
   assert.equal(text(none), "No background comrades are running.");
-  assert.deepEqual(none.structuredContent, { running: [] });
+  assert.deepEqual(none.structuredContent, { running: [], ended: [] });
   await call({ task: "first", background: true });
   await call({ task: "second", background: true });
   const listing = await comrades({});
@@ -1048,7 +1048,7 @@ test("a comrade that finishes during /reload is delivered once the extension is 
   });
   assert.equal(after.sent.length, 1);
   assert.match(body(after.sent[0]), /^\[comrade #1 finished\] ✓ quick\n\n\{"args"/);
-  assert.deepEqual(after.sent[0][1], { deliverAs: "followUp", triggerTurn: true });
+  assert.deepEqual(after.sent[0][1], { deliverAs: "steer", triggerTurn: true });
   assert.equal(before.sent.length, 0, "the outgoing extension delivers nothing");
 });
 
@@ -1445,7 +1445,7 @@ test("a background comrade past its timeout is delivered as failed", async (t) =
   const { call, delivered } = fixture(t, "slow");
   await call({ task: "x", background: true, timeout: 1 });
   const [message] = await delivered(1);
-  assert.deepEqual(message[1], { deliverAs: "followUp", triggerTurn: true });
+  assert.deepEqual(message[1], { deliverAs: "steer", triggerTurn: true });
   assert.equal(delivery(message).status, "failed");
   assert.equal(delivery(message).timedOut, true);
   assert.match(body(message), /^\[comrade #1 failed\] x\n\n\[Comrade timed out after 1\.0s/);
@@ -2116,7 +2116,7 @@ test("an answer Pi exited before saving is delivered when the session next start
   const again = fixture(t, "echo", { entries: [startRow(started)] });
   assert.equal(again.sent.length, 1, "delivered, not resumed");
   assert.equal(body(again.sent[0]), body(message));
-  assert.deepEqual(again.sent[0][1], { deliverAs: "followUp", triggerTurn: false });
+  assert.deepEqual(again.sent[0][1], { deliverAs: "steer", triggerTurn: false });
   assert.equal(delivery(again.sent[0]).run, "call");
 
   // Once the session holds it, its record goes.
@@ -2137,7 +2137,7 @@ test("an answer the session dropped from behind a turn is sent again once the ag
   t.mock.timers.tick(1000);
   assert.equal(sent.length, 2);
   assert.equal(body(sent[1]), body(message));
-  assert.deepEqual(sent[1][1], { deliverAs: "followUp", triggerTurn: false });
+  assert.deepEqual(sent[1][1], { deliverAs: "steer", triggerTurn: false });
   // Once the session holds it, it is not sent again.
   entries.push(saved(sent[1]));
   await pi.event("agent_settled", { aborted: true }, ctx);
@@ -2158,7 +2158,7 @@ test("an answer delivered on another branch is delivered here too, not run again
   });
   assert.equal(again.sent.length, 1);
   assert.equal(again.sent[0][0].content, message[0].content);
-  assert.deepEqual(again.sent[0][1], { deliverAs: "followUp", triggerTurn: false });
+  assert.deepEqual(again.sent[0][1], { deliverAs: "steer", triggerTurn: false });
   assert.equal(text(await again.comrades({})), "No background comrades are running.");
 });
 
@@ -2167,7 +2167,7 @@ test("a background comrade Pi exited during is resumed, told which calls may not
   // The session opened again, in its own directory.
   const again = fixture(t, "echo", { entries: [startRow(started)], home: first.cwd });
   const [resumed] = again.sent;
-  assert.deepEqual(resumed[1], { deliverAs: "followUp", triggerTurn: false });
+  assert.deepEqual(resumed[1], { deliverAs: "steer", triggerTurn: false });
   assert.equal(
     body(resumed),
     "[comrade #1 resumed] Survey the parser\n\nPi exited while this comrade ran, so it resumes from where it stopped. Its answer will arrive as another [comrade #1 …] message.",
@@ -2188,7 +2188,7 @@ test("a background comrade Pi exited during is resumed, told which calls may not
     /^↻ Comrade #1 {2}Survey the parser {2}resumed ▾\n {2}Pi exited while this comrade ran, so it resumes from where it stopped\. Its answer will arrive as another \[comrade #1\n {2}…\] message\.$/,
   );
   const [, finished] = await again.delivered(2);
-  assert.deepEqual(finished[1], { deliverAs: "followUp", triggerTurn: true });
+  assert.deepEqual(finished[1], { deliverAs: "steer", triggerTurn: true });
   const [head, json] = body(finished).split("\n\n");
   assert.equal(head, "[comrade #1 finished] Survey the parser");
   const echoed = JSON.parse(json);
@@ -2272,7 +2272,7 @@ test("a run its conversation shows answered is delivered from there, without run
     body(again.sent[0]),
     /^\[comrade #1 finished\] Survey the parser\n\nThe parser is fine\.\n\n\[comrade #1: anthropic\/claude-opus-5-5:xhigh · 2 turns · /,
   );
-  assert.deepEqual(again.sent[0][1], { deliverAs: "followUp", triggerTurn: false });
+  assert.deepEqual(again.sent[0][1], { deliverAs: "steer", triggerTurn: false });
   assert.equal(text(await again.comrades({})), "No background comrades are running.");
   assert.equal(record.phase, "asked");
 });
@@ -2628,6 +2628,36 @@ test("a background comrade has a line in the widget above the editor until its a
   void entries;
   void pi;
   void ctx;
+});
+
+test("the comrades tool lists runs whose answers are on their way, so none seems lost", async (t) => {
+  const { call, delivered, comrades, entries, pi, ctx } = fixture(t, "echo");
+  await call({ task: "Quick", background: true });
+  const [message] = await delivered(1);
+  // Ended, its answer sent but not yet in the session: queued behind the agent's calls.
+  const listing = await comrades({});
+  assert.match(
+    text(listing),
+    /^#1 · Quick · finished, its answer on its way as a \[comrade #1 …\] message · \$0\.02 · \d/,
+  );
+  const value = listing.structuredContent as {
+    running: unknown[];
+    ended: { number: number; title: string; ending: string; cost: number; seconds: number }[];
+  };
+  assert.deepEqual(value.running, []);
+  assert.deepEqual(
+    value.ended.map(({ number, title, ending }) => ({ number, title, ending })),
+    [{ number: 1, title: "Quick", ending: "finished" }],
+  );
+  // Once the session holds the answer, nothing is left to list.
+  entries.push(saved(message));
+  await pi.event("agent_settled", { aborted: false }, ctx);
+  assert.equal(text(await comrades({})), "No background comrades are running.");
+
+  const failed = fixture(t, "error");
+  await failed.call({ task: "Doomed", background: true });
+  await failed.delivered(1);
+  assert.match(text(await failed.comrades({})), /^#1 · Doomed · failed, its answer on its way /);
 });
 
 test("no widget where no one could see it", async (t) => {

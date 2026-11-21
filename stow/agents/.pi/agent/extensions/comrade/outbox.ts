@@ -1,7 +1,7 @@
 // Delivering background runs' answers into the caller's session, at least once. An answer is
 // saved in its run record before it is sent, and stays there until the session holds it: Pi
-// keeps a message that arrives during a turn in memory until the turn ends, so one Pi exits
-// with first, or that Esc clears, would otherwise be lost.
+// keeps a message that arrives while the agent works in memory until its current calls end, so
+// one Pi exits with first, or that Esc clears, would otherwise be lost.
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { message } from "./answer.ts";
 import { type Delivery, MESSAGE } from "./details.ts";
@@ -42,6 +42,10 @@ export function createOutbox(pi: ExtensionAPI, session: Session, hooks: OutboxHo
   /** Background runs that have ended, by run, until the session holds their answer. */
   const answered = new Map<string, Running>();
 
+  // An answer reaches an agent at work as a steer does, before its next model request, so it can
+  // use the answer in the work it is doing: a follow-up would wait until the agent stopped, which
+  // an agent with more to do may not until long after. An idle agent starts a turn for it, and
+  // one sent without waking it joins the session once the current turn's calls end.
   const deliver = (delivery: Delivery, body: string, wake: boolean) => {
     pi.sendMessage(
       {
@@ -51,7 +55,7 @@ export function createOutbox(pi: ExtensionAPI, session: Session, hooks: OutboxHo
         display: true,
         details: delivery,
       },
-      { deliverAs: "followUp", triggerTurn: wake },
+      { deliverAs: "steer", triggerTurn: wake },
     );
   };
 
@@ -100,10 +104,10 @@ export function createOutbox(pi: ExtensionAPI, session: Session, hooks: OutboxHo
         display: entry.display,
         details: entry.details,
       },
-      { deliverAs: "followUp", triggerTurn: false },
+      { deliverAs: "steer", triggerTurn: false },
     );
 
-  // Pi takes an answer queued behind a turn when the turn ends; in the terminal, Esc or the
+  // Pi takes an answer queued behind the agent's calls once they end; in the terminal, Esc or the
   // dequeue key drops it instead. Once the agent has been idle a moment, so an answer sent as it
   // settled has been taken, any the session still does not hold is sent again, without starting
   // a turn. Only in the terminal, whose every abort clears the queue first: elsewhere an abort,

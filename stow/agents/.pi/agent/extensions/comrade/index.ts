@@ -207,7 +207,10 @@ export function register(pi: ExtensionAPI, invocation: Invocation | (() => Invoc
   registerList(pi, background, rows);
 }
 
-/** What a codemode script's comrades call resolves to: the runs in progress, or a stop. */
+/**
+ * What a codemode script's comrades call resolves to: the runs in progress and those whose answers
+ * are on their way, or a stop.
+ */
 const listValue = Type.Union([
   Type.Object({
     running: Type.Array(
@@ -218,6 +221,19 @@ const listValue = Type.Union([
         cost: Type.Number({ description: "So far, in US dollars" }),
         seconds: Type.Number({ description: "How long it has run" }),
       }),
+    ),
+    ended: Type.Array(
+      Type.Object({
+        number: Type.Integer(),
+        title: Type.String(),
+        ending: Type.Unsafe<"finished" | "failed">({
+          type: "string",
+          enum: ["finished", "failed"],
+        }),
+        cost: Type.Number({ description: "In US dollars" }),
+        seconds: Type.Number({ description: "How long it ran" }),
+      }),
+      { description: "Runs that have ended, whose answers are on their way as messages" },
     ),
   }),
   Type.Object({
@@ -238,10 +254,11 @@ function registerList(pi: ExtensionAPI, background: Background, rows: Rows) {
     label: "Comrades",
     description:
       "List your running background comrades, or stop some of them. Without stop, it lists each " +
-      "comrade's number, progress, cost so far, and task. With stop, it stops those comrades and " +
-      "waits for them to exit. No message arrives for a comrade you stopped. There is no need to " +
-      "check on comrades: each answer arrives by itself, and starts a new turn if you have " +
-      "finished. List them only to decide something now.",
+      "comrade's number, progress, cost so far, and task, and those that have ended whose " +
+      "answers are on their way. With stop, it stops those comrades and waits for them to exit. " +
+      "No message arrives for a comrade you stopped. There is no need to check on comrades: each " +
+      "answer arrives by itself, between your tool calls while you work, or in a new turn if you " +
+      "have finished. List them only to decide something now.",
     promptSnippet: "List or stop your background comrades",
     parameters: Type.Object({
       stop: Type.Optional(
@@ -265,7 +282,7 @@ function registerList(pi: ExtensionAPI, background: Background, rows: Rows) {
     async execute(_toolCallId, params) {
       const ids = [...new Set(params.stop ?? [])];
       if (!ids.length) {
-        const value: ListValue = { running: background.running() };
+        const value: ListValue = { running: background.running(), ended: background.ended() };
         return {
           content: [
             { type: "text", text: background.listing() || "No background comrades are running." },

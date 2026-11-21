@@ -1,12 +1,12 @@
 // Comrade in a real Pi session: Pi's own extension loader, tool pipeline, codemode, and message
 // delivery, with an offline model as the caller and the stand-in as each comrade's Pi.
 import assert from "node:assert/strict";
-import { readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Message } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { load } from "../../test/pi.ts";
 import { ai, script, scriptReturns, startSession, until, userTexts } from "../../test/session.ts";
 import { standIn } from "./fixture.ts";
@@ -130,4 +130,52 @@ test("a background answer arrives after the caller settles, starts a turn, and a
   // The session holds the answer, so its run record has gone.
   const file = session.sessionManager.getSessionFile() ?? "";
   assert.deepEqual(readdirSync(file.replace(/\.jsonl$/, ".comrades")), ["comrade-1.jsonl"]);
+});
+
+test("a background answer reaches a caller still at work, before its next model request", async (t) => {
+  let gate = "";
+  // A call that runs on until the comrade's answer has been sent, as a caller's work outlasts a
+  // quick comrade: it opens the gate the comrade waits on, then waits for its saved answer.
+  const work = (pi: ExtensionAPI) =>
+    pi.registerTool({
+      name: "work",
+      label: "Work",
+      description: "Some work that takes a while",
+      parameters: { type: "object", properties: {} } as unknown as ToolDefinition["parameters"],
+      async execute(_id, _params, _signal, _update, ctx) {
+        writeFileSync(gate, "");
+        const conversation = (ctx.sessionManager.getSessionFile() ?? "").replace(/\.jsonl$/, "");
+        const record = join(`${conversation}.comrades`, "comrade-1.runs.json");
+        // Saved, then sent at once.
+        await until(
+          () => existsSync(record) && readFileSync(record, "utf8").includes('"answer"'),
+          "the comrade's answer is sent",
+        );
+        return { content: [{ type: "text", text: "Worked." }], details: undefined };
+      },
+    });
+  const { session, model, cwd } = await startSession(t, {
+    factories: [comrade({ name: "gated" }), work],
+  });
+  gate = join(cwd, "gate");
+  const requests: Message[][] = [];
+  model.setResponses([
+    ai.fauxAssistantMessage(
+      ai.fauxToolCall("comrade", { title: "Wait for the gate", task: gate, background: true }),
+    ),
+    ai.fauxAssistantMessage(ai.fauxToolCall("work", {})),
+    (context) => {
+      requests.push(context.messages);
+      return ai.fauxAssistantMessage("Done, with its answer.");
+    },
+  ]);
+  await session.prompt("Start a comrade, then work");
+  // The request after the work carries the answer, in the same run: no turn of its own later.
+  assert.equal(requests.length, 1);
+  const [after] = requests;
+  assert.equal(after.at(-2)?.role, "toolResult");
+  const delivery = userTexts(after).at(-1) ?? "";
+  assert.match(delivery, /^\[comrade #1 finished\] /);
+  assert.match(delivery, /Opened\./);
+  assert.equal(model.state.callCount, 3);
 });
