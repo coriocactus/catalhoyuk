@@ -63,6 +63,25 @@ The number at its start is what a follow-up's `to` takes. Its last part is the s
 
 A truncated answer ends with `[Answer truncated: 2000 of 3000 lines (50.0KB of 58.6KB). Full answer: <file>]`. When its first line alone is over 50KB, the caller reads as much of that line as fits. When the whole answer cannot be saved, as on a full disk, the note says so and why in place of the file, and the truncated answer still comes back. With `output`, an answer whose first line alone is over 50KB comes back as the path and its size alone.
 
+### In a codemode script
+
+A codemode script reads the same as fields, in place of the text. `tools.comrade(...)` resolves to:
+
+| Field | What it holds |
+| --- | --- |
+| `number` | The comrade's number, which `to` takes. |
+| `ending` | `finished`, `partial`, `timed out`, `failed`, or `stopped`, as the row says it. Only `finished` is a final answer. |
+| `answer` | The comrade's last text in the run, whole: never truncated, and also when `output` wrote it to a file. An answer is one reply of the model's, so its output token limit bounds it. Empty when it said nothing. |
+| `file` | The file holding the whole answer: `output`, or the copy saved beside the conversation when the answer was too long for the model. |
+| `error` | Why the run failed or timed out, as its row says, or why `output` could not be written. |
+| `cost`, `seconds` | What the run cost in US dollars, and how long it took. |
+
+A run that failed, timed out, or was stopped still resolves, with its `ending`: Pi's codemode resolves a call on failure too when the tool returns its fields, so a script checks `ending` instead of catching. A call refused before any run, such as one naming an unknown model or a missing file, or a fifth background run, rejects with the reason the model would read. A background start resolves to `{ number, background: true }`, and a steer to `{ number, steered: true }`. Pi hands the fields to the script only: the session keeps the text.
+
+`tools.comrades({})` resolves to `{ running: [{ number, title, doing, cost, seconds }] }`, and with `stop` to `{ stopped, missing }`: the numbers it stopped, and those no running comrade had.
+
+Both tools declare hints, with the meaning of MCP's tool annotations, for an extension that confirms calls before they run. `comrade` declares the cautious ones, which Pi also assumes of a tool that declares none: given `edit`, `write`, or `bash`, a comrade can do anything they can, and it reaches a model provider's API. `comrades` changes nothing but this Pi's runs, keeps a stopped comrade's conversation, and stopping a comrade twice does no more than once.
+
 ## Follow-ups
 
 Each comrade's conversation is a Pi session file beside the caller's session. For the session `~/.pi/agent/sessions/<cwd>/<stamp>_<id>.jsonl`, comrade #3 is `<stamp>_<id>.comrades/comrade-3.jsonl`. When the caller's session is not saved, conversations go in `$TMPDIR/pi-comrades/<session id>/`. Comrade creates these directories readable by the user only. Pi's session lists ignore the subdirectory. A row never prints the file, but `pi --session <file>` opens it, and an expanded row reads what the comrade did from it.
@@ -292,7 +311,7 @@ Once the runs have ended, the newest listing says how:
 | `tool.ts` | The `comrade` tool: its parameters, what running it does, and how a steer reaches a comrade. |
 | `request.ts` | Turning the caller's arguments into a run request, and refusing what the comrade could not use. |
 | `run.ts` | One run: the comrade's Pi, its event stream folded into progress, and its ending. |
-| `answer.ts` | What the caller reads of a run. |
+| `answer.ts` | What the caller reads of a run, as text, or as fields in a script. |
 | `conversation.ts` | Where a conversation is kept, and what a later run needs to continue it. |
 | `runs.ts` | Run records. |
 | `resume.ts` | A run as its conversation shows it: interrupted, with the calls that may have taken effect, or finished. |

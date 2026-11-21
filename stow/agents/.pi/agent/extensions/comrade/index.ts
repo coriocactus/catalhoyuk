@@ -10,7 +10,7 @@
 //   widget.ts       the lines above the editor
 //   run.ts          one run of a comrade's Pi; runs.ts and resume.ts are what is saved of it
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { type Static, Type } from "typebox";
 import { Spinner } from "../shared/spinner.ts";
 import { type Background, createBackground } from "./background.ts";
 import { createNumbers } from "./conversation.ts";
@@ -207,6 +207,26 @@ export function register(pi: ExtensionAPI, invocation: Invocation | (() => Invoc
   registerList(pi, background, rows);
 }
 
+/** What a codemode script's comrades call resolves to: the runs in progress, or a stop. */
+const listValue = Type.Union([
+  Type.Object({
+    running: Type.Array(
+      Type.Object({
+        number: Type.Integer(),
+        title: Type.String(),
+        doing: Type.String(),
+        cost: Type.Number({ description: "So far, in US dollars" }),
+        seconds: Type.Number({ description: "How long it has run" }),
+      }),
+    ),
+  }),
+  Type.Object({
+    stopped: Type.Array(Type.Integer()),
+    missing: Type.Array(Type.Integer(), { description: "Numbers no running comrade had" }),
+  }),
+]);
+type ListValue = Static<typeof listValue>;
+
 /**
  * The agent's view of its background comrades: list them, or stop some. It reads text; its row
  * shows the runs as their start rows do, from the details, which the model never reads.
@@ -230,19 +250,30 @@ function registerList(pi: ExtensionAPI, background: Background, rows: Rows) {
         }),
       ),
     }),
+    outputSchema: listValue,
+    // It reaches only this Pi's own runs, and a comrade it stops keeps its conversation.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     renderShell: "self",
     renderCall: rows.renderListCall,
     renderResult: rows.renderListResult,
 
     async execute(_toolCallId, params) {
       const ids = [...new Set(params.stop ?? [])];
-      if (!ids.length)
+      if (!ids.length) {
+        const value: ListValue = { running: background.running() };
         return {
           content: [
             { type: "text", text: background.listing() || "No background comrades are running." },
           ],
           details: rows.listing(background.listed()),
+          structuredContent: value,
         };
+      }
       // As they stood before they stopped: their rows say how they ended.
       const listed = background.listed().filter((item) => ids.includes(item.details.id));
       const stopping = ids.flatMap((id) => jobs.get(id) ?? []);
@@ -252,6 +283,7 @@ function registerList(pi: ExtensionAPI, background: Background, rows: Rows) {
       }
       await Promise.all(stopping.map((job) => job.done));
       const missing = ids.filter((id) => !stopping.some((job) => job.id === id));
+      const value: ListValue = { stopped: stopping.map((job) => job.id), missing };
       const report = [
         stopping.length ? `Stopped comrade ${stopping.map((job) => `#${job.id}`).join(", ")}.` : "",
         missing.length ? notRunning(missing) : "",
@@ -259,6 +291,7 @@ function registerList(pi: ExtensionAPI, background: Background, rows: Rows) {
       return {
         content: [{ type: "text", text: report.filter(Boolean).join(" ") }],
         details: { stopped: stopping.map((job) => job.id), listed, missing },
+        structuredContent: value,
         isError: stopping.length === 0,
       };
     },

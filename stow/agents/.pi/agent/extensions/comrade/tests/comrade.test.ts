@@ -31,6 +31,7 @@ const { isConversationMessage, lean, steering } = await load<typeof import("../r
 );
 const runs = await load<typeof import("../runs.ts")>("../runs.ts", import.meta.url);
 type Details = import("../index.ts").Details;
+type ScriptValue = import("../answer.ts").ScriptValue;
 type Delivery = import("../index.ts").Delivery;
 type Sent = Parameters<ExtensionAPI["sendMessage"]>;
 type Result = Awaited<ReturnType<Tool["execute"]>>;
@@ -55,6 +56,8 @@ const text = (result: Result) => {
   return first.text;
 };
 const details = (result: Result) => result.details as Details;
+/** What a codemode script's call resolves to in place of the text. */
+const fields = (result: Result) => result.structuredContent as ScriptValue;
 /** The run line that ends the result of every comrade that ran. */
 const RUN = /\n\n\[comrade #\d+: [^\n]*\]$/;
 /** A result's text without its run line. */
@@ -168,6 +171,12 @@ test("a long answer is truncated and saved in full beside the comrade's conversa
     /\[Answer truncated: 2000 of 3000 lines .*Full answer: .*comrade-1\.answer\.md\]$/,
   );
   assert.equal(readFileSync(file, "utf8").split("\n").length, 3000);
+  // A script reads the whole answer, and where it is saved.
+  const value = fields(result);
+  assert("ending" in value);
+  assert.equal(value.ending, "finished");
+  assert.equal(value.answer, readFileSync(file, "utf8"));
+  assert.equal(value.file, file);
   // A later run of the same comrade keeps the earlier answer.
   remember(result);
   const again = await call({ task: "x", to: 1 });
@@ -189,6 +198,11 @@ test("failures are errors that say why", async (t) => {
     const result = await fixture(t, scenario, options).call({ task: "✓" });
     assert.equal(result.isError, true, scenario);
     assert.match(answer(result), message, scenario);
+    // A script reads the same failure as fields, rather than a rejection.
+    const value = fields(result);
+    assert("ending" in value);
+    assert.equal(value.ending, "failed", scenario);
+    assert.equal(value.error, answer(result).replace(/^Comrade failed: /, ""), scenario);
   }
 });
 
@@ -199,6 +213,16 @@ test("aborting stops the comrade process", async (t) => {
   const result = await call({ task: "x" }, controller.signal, () => controller.abort());
   assert.equal(result.isError, true);
   assert.equal(text(result), "Comrade #1 stopped.");
+  assert.deepEqual(
+    { ...fields(result), seconds: 0 },
+    {
+      number: 1,
+      ending: "stopped",
+      answer: "",
+      cost: 0,
+      seconds: 0,
+    },
+  );
   assert(Date.now() - started < 4000, "stopped by SIGTERM, not the SIGKILL fallback");
   // An already-aborted signal starts nothing.
   const again = await call({ task: "x" }, controller.signal);
@@ -469,6 +493,7 @@ test("a background comrade returns at once, then its answer arrives and wakes th
     "Comrade #1 started in the background. Keep working. Its answer will arrive as a [comrade #1 …] message, which starts a new turn if you have finished, so there is no need to check on it. Stop it with the comrades tool if you no longer need it.",
   );
   assert.equal(details(result).id, 1);
+  assert.deepEqual(fields(result), { number: 1, background: true });
   const startRow = () =>
     tool.renderResult?.(
       result,
@@ -934,19 +959,32 @@ test("tool patterns must match a tool this Pi has", async (t) => {
 
 test("the comrades tool lists and stops background comrades, and a stop sends no message", async (t) => {
   const { call, comrades, sent } = fixture(t, "hang");
-  assert.equal(text(await comrades({})), "No background comrades are running.");
+  const none = await comrades({});
+  assert.equal(text(none), "No background comrades are running.");
+  assert.deepEqual(none.structuredContent, { running: [] });
   await call({ task: "first", background: true });
   await call({ task: "second", background: true });
-  assert.match(
-    text(await comrades({})),
-    /^#1 · first · .*\n#2 · second · .*\n2 running · \$0\.00 so far$/,
+  const listing = await comrades({});
+  assert.match(text(listing), /^#1 · first · .*\n#2 · second · .*\n2 running · \$0\.00 so far$/);
+  // A script reads each run as fields.
+  const { running } = listing.structuredContent as {
+    running: { number: number; title: string; doing: string; cost: number; seconds: number }[];
+  };
+  assert.deepEqual(
+    running.map(({ number, title, doing, cost }) => ({ number, title, doing, cost })),
+    [
+      { number: 1, title: "first", doing: running[0].doing, cost: 0 },
+      { number: 2, title: "second", doing: running[1].doing, cost: 0 },
+    ],
   );
+  assert(running.every((run) => run.doing && typeof run.seconds === "number"));
 
   const stopped = await comrades({ stop: [1, 9] });
   assert.equal(text(stopped), "Stopped comrade #1. No running comrade #9.");
   assert.equal(stopped.isError, false);
   const { listed, ...stop } = stopped.details;
   assert.deepEqual(stop, { stopped: [1], missing: [9] });
+  assert.deepEqual(stopped.structuredContent, { stopped: [1], missing: [9] });
   // As its row shows it: the comrade it stopped, as it stood.
   assert.deepEqual(
     listed.map((item: { details: { id: number; task: string }; run: string }) => [
@@ -960,6 +998,8 @@ test("the comrades tool lists and stops background comrades, and a stop sends no
 
   const missing = await comrades({ stop: [9] });
   assert.equal(missing.isError, true);
+  // An error that a script still reads as fields.
+  assert.deepEqual(missing.structuredContent, { stopped: [], missing: [9] });
   await comrades({ stop: [2] });
   assert.equal(sent.length, 0, "the agent already knows; nothing wakes it");
 });
@@ -1320,6 +1360,16 @@ test("a partial answer at the output limit says so first, and is not an error", 
     /^\[Comrade's answer is partial: its last turn ended with stopReason "length", the model's output token limit\. It is not a final answer\.\]\n\nThe first half of an\n\n\[comrade #1: .* · length\]$/,
   );
   assert.equal(details(result).stopReason, "length");
+  assert.deepEqual(
+    { ...fields(result), seconds: 0 },
+    {
+      number: 1,
+      ending: "partial",
+      answer: "The first half of an",
+      cost: 0.011,
+      seconds: 0,
+    },
+  );
   assert.equal(
     row(tool, result, "✓"),
     "! Comrade #1  ✓  partial · $0.01 · 1.0s ▸\n  Reached its output token limit. The answer is partial.",
@@ -1340,6 +1390,10 @@ test("output writes the whole answer to its file and returns the first lines and
     /^Answer written to .*\/out\/answer\.md \(3000 lines, [^)]+\)\. First 20 lines:\n\nline 1\n[\s\S]*\nline 20$/,
   );
   assert.equal(details(result).answer, file, "the row names the file; nothing is saved elsewhere");
+  const value = fields(result);
+  assert("ending" in value);
+  assert.equal(value.file, file);
+  assert.equal(value.answer, readFileSync(file, "utf8"), "a script reads it whole");
 
   const short = fixture(t, "echo");
   const echoed = await short.call({ task: "✓", output: `${short.cwd}/a.md` });
@@ -1362,6 +1416,17 @@ test("a comrade past its timeout is stopped, and its last text is marked as not 
   );
   assert.equal(details(result).timedOut, true);
   assert.equal(details(result).stopped, undefined, "a timeout is not an Esc");
+  assert.deepEqual(
+    { ...fields(result), seconds: 0 },
+    {
+      number: 1,
+      ending: "timed out",
+      answer: "Notes so far.",
+      error: "Stopped at its 1.0s limit. Its last text is kept.",
+      cost: 0.011,
+      seconds: 0,
+    },
+  );
   assert.equal(
     row(slow.tool, result, "x"),
     "✗ Comrade #1  x  timed out · $0.01 · 1.0s ▸\n  Stopped at its 1.0s limit. Its last text is kept.",
@@ -1674,6 +1739,7 @@ test("a message to a running comrade reaches it, and its answer comes as it woul
     "Sent to comrade #1. It reads your message once its current tool calls finish, before its next model request. Its answer returns from the call that started it.",
   );
   assert.deepEqual(told.details, { id: 1, steered: true, title: "Survey the parser" });
+  assert.deepEqual(fields(told), { number: 1, steered: true });
   // Its row names the comrade by its title, and the message, sent.
   assert.equal(
     row(tool, told, "Only the lexer"),

@@ -94,20 +94,25 @@ export function createBackground(deps: BackgroundDeps) {
       ...(job.toolCallId ? { row: job.toolCallId } : {}),
     }));
 
+  const titleOf = (job: Job) => job.request.face?.title ?? taskLine(job.task).slice(0, 60);
+  /** What a job is doing now, as the agent reads it. */
+  const doingNow = (job: Job) =>
+    activityText(live(job.request, job.progress, job.started)) ||
+    workSummary(job.progress.work.tallies) ||
+    "no calls yet";
+
   /** What the agent and `/comrades` read: a line per job, then their cost together. */
   const listing = () => {
     const lines = [...jobs.values()].map((job) =>
       [
         `#${job.id}`,
-        job.request.face?.title ?? taskLine(job.task).slice(0, 60),
+        titleOf(job),
         job.request.thinking
           ? `${job.request.provider}/${job.request.model}:${job.request.thinking}`
           : `${job.request.provider}/${job.request.model}`,
         // Counted from Pi's turn starts, as the row counts them.
         `turn ${job.progress.activity.turn ?? job.progress.turns + 1}`,
-        activityText(live(job.request, job.progress, job.started)) ||
-          workSummary(job.progress.work.tallies) ||
-          "no calls yet",
+        doingNow(job),
         formatCost(job.progress.usage.cost.total),
         formatDuration(Date.now() - job.started),
       ].join(" · "),
@@ -119,6 +124,16 @@ export function createBackground(deps: BackgroundDeps) {
     }
     return lines.join("\n");
   };
+
+  /** What a codemode script reads of the jobs, in place of the listing. */
+  const running = () =>
+    [...jobs.values()].map((job) => ({
+      number: job.id,
+      title: titleOf(job),
+      doing: doingNow(job),
+      cost: job.progress.usage.cost.total,
+      seconds: Math.round((Date.now() - job.started) / 100) / 10,
+    }));
 
   /** What each job's widget line says it is doing, held steady as its row's line is. */
   const steady = new WeakMap<Job, Steady>();
@@ -312,5 +327,5 @@ export function createBackground(deps: BackgroundDeps) {
     ]);
   };
 
-  return { jobs, listed, listing, working, start, finish, adopt, park, stop };
+  return { jobs, listed, listing, running, working, start, finish, adopt, park, stop };
 }

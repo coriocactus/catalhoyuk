@@ -166,7 +166,7 @@ The message that brings a background run's answer into the caller's session.
 _Avoid_: notification, follow-up message
 
 **Ending**:
-How a run ended: finished, failed, stopped, or lost.
+How a run ended, as its row says it: finished, partial, timed out, failed, stopped, or lost. Only a finished run's answer is final.
 _Avoid_: outcome, status, phase
 
 **Interrupted**:

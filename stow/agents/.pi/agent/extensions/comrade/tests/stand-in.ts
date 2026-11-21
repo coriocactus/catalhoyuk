@@ -420,6 +420,11 @@ async function scenario(name: string, prompt: Prompt, history: string[]) {
       await until(() => steering.length > 0);
       said("Done before reading it.");
       return settled();
+    case "gated":
+      // It answers once the file its task names exists, so a test decides when the run ends.
+      await until(() => existsSync(prompt.message.trim()));
+      said("Opened.");
+      return settled();
     case "late":
       // It settles while a message to it is on its way: Pi starts a run with the message.
       await until(() => arrived);

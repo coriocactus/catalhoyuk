@@ -9,7 +9,7 @@ import {
   formatSize,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { reasonOf, respond } from "./answer.ts";
+import { reasonOf, respond, type ScriptValue, scripted, scriptValue } from "./answer.ts";
 import { type Background, MAX_BACKGROUND } from "./background.ts";
 import { conversation, type Numbers, sessionFile } from "./conversation.ts";
 import { type Details, emptyProgress, live, type Steer, summary } from "./details.ts";
@@ -191,6 +191,7 @@ export function registerComrade(deps: ToolDeps): void {
       ? `Its answer will arrive as a [comrade #${id} …] message, as before.`
       : "Its answer returns from the call that started it.";
     const details: Steer = { id, steered: true, ...(title ? { title } : {}) };
+    const value: ScriptValue = { number: id, steered: true };
     return {
       content: [
         {
@@ -199,6 +200,7 @@ export function registerComrade(deps: ToolDeps): void {
         },
       ],
       details,
+      structuredContent: value,
     };
   }
 
@@ -226,6 +228,16 @@ export function registerComrade(deps: ToolDeps): void {
       "A result whose first line starts [Comrade's answer is partial or [Comrade timed out is not a finished answer.",
     ],
     parameters: parameters(models, tools),
+    // Scripts read the run as fields; the model reads the text.
+    outputSchema: scriptValue,
+    // Given edit, write, or bash, a comrade can do anything they can, and it reaches a model
+    // provider's API: the cautious hints, which Pi also assumes of a tool that declares none.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     // Flat, as mirage draws its rows: no box behind it.
     renderShell: "self",
     renderCall: rows.renderCall,
@@ -270,6 +282,7 @@ export function registerComrade(deps: ToolDeps): void {
       };
       if (inBackground) {
         const job = background.start(request, id, toolCallId, toolCallId, taskLine(params.task));
+        const value: ScriptValue = { number: job.id, background: true };
         return {
           content: [
             {
@@ -284,6 +297,7 @@ export function registerComrade(deps: ToolDeps): void {
             background: true,
             started: job.started,
           },
+          structuredContent: value,
         };
       }
 
@@ -324,11 +338,14 @@ export function registerComrade(deps: ToolDeps): void {
       };
       const reason = reasonOf(outcome, request);
       if (reason) details.reason = reason;
-      const reply = respond(request, outcome, details, Date.now() - began, id);
+      const durationMs = Date.now() - began;
+      const reply = respond(request, outcome, details, durationMs, id);
+      const structuredContent = scripted(id, outcome, reply, reason, durationMs);
       if (reply.isError)
         return {
           content: [{ type: "text", text: reply.text }],
           details: { ...details, answer: reply.file },
+          structuredContent,
           usage: outcome.usage,
           isError: true,
         };
@@ -338,6 +355,7 @@ export function registerComrade(deps: ToolDeps): void {
       return {
         content: [{ type: "text", text: note + reply.text }],
         details: { ...details, answer: reply.file },
+        structuredContent,
         usage: outcome.usage,
       };
     },

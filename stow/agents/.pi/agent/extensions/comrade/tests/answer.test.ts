@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { type TestContext, test } from "node:test";
 import { load } from "../../test/pi.ts";
 
-const { limit, respond } = await load<typeof import("../answer.ts")>(
+const { limit, respond, scripted } = await load<typeof import("../answer.ts")>(
   "../answer.ts",
   import.meta.url,
 );
@@ -103,6 +103,7 @@ test("a run that timed out writes nothing to output, and says so", (t) => {
   );
   assert.equal(reply.isError, true);
   assert.equal(reply.file, undefined);
+  assert.equal(reply.ending, "timed out");
   // A partial answer is an answer: it is written, and says what it is.
   const partial = respond(
     request(dir, { output }),
@@ -113,6 +114,7 @@ test("a run that timed out writes nothing to output, and says so", (t) => {
   );
   assert.equal(readFileSync(output, "utf8"), "The first half of an");
   assert.match(read(partial.text), /^\[Comrade's answer is partial: .*\]\n\nAnswer written to /);
+  assert.equal(partial.ending, "partial");
 });
 
 test("a first line over the byte limit still reaches the caller, cut where a character starts", (t) => {
@@ -150,4 +152,14 @@ test("an answer whose whole cannot be saved still reaches the caller, with why",
   assert.equal(reply.isError, true);
   assert.match(reply.text, /^Could not write the answer to .*: EACCES: [^\n]*\n\nline 1\n/);
   assert.match(reply.text, /The full answer could not be saved: EACCES: /);
+  // The comrade finished: a script reads its whole answer, and why it is in no file.
+  const value = scripted(1, outcome(long), reply, undefined, 1234);
+  assert.deepEqual(value, {
+    number: 1,
+    ending: "finished",
+    answer: long,
+    error: `${reply.text.split("\n")[0]}`,
+    cost: 0,
+    seconds: 1.2,
+  });
 });

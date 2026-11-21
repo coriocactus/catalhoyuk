@@ -1,5 +1,6 @@
 // What the caller reads of a run: its answer, cut to what a tool result may hold or written
-// where the caller asked, and what is said instead when the run did not finish.
+// where the caller asked, and what is said instead when the run did not finish. A codemode
+// script reads the same as fields instead (`scriptValue`).
 import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -9,6 +10,7 @@ import {
   formatSize,
   truncateHead,
 } from "@earendil-works/pi-coding-agent";
+import { type Static, Type } from "typebox";
 import { formatDuration } from "../shared/format.ts";
 import type { Delivery } from "./details.ts";
 import type { Outcome, Request } from "./run.ts";
@@ -16,6 +18,51 @@ import { partialAnswer, type RunDetails, runLine, taskLine } from "./view.ts";
 
 /** Lines of an answer written to output that the calling model still reads. */
 const WRITTEN_HEAD = 20;
+
+/**
+ * How a run ended, as the caller reads it: the words its row shows. Only `finished` is a final
+ * answer.
+ */
+export const ENDINGS = ["finished", "partial", "timed out", "failed", "stopped"] as const;
+export type Ending = (typeof ENDINGS)[number];
+
+/**
+ * What a codemode script's comrade call resolves to, in place of the text the model reads: how
+ * the run ended and the whole answer, as fields, or that a run started in the background or a
+ * steer was sent. Pi hands it to the script and keeps it out of the session.
+ */
+export const scriptValue = Type.Union([
+  Type.Object({
+    number: Type.Integer({ description: "The comrade's number: continue it with to" }),
+    ending: Type.Unsafe<Ending>({
+      type: "string",
+      enum: [...ENDINGS],
+      description:
+        "Only finished is a final answer. partial: its last turn was cut short, usually by the " +
+        "model's output token limit. timed out: stopped at timeout. Both keep its last text.",
+    }),
+    answer: Type.String({ description: "The comrade's last text in this run, whole" }),
+    file: Type.Optional(
+      Type.String({
+        description: "The file holding the whole answer: output, or a copy when it is too long",
+      }),
+    ),
+    error: Type.Optional(
+      Type.String({ description: "Why it failed or timed out, or why output was not written" }),
+    ),
+    cost: Type.Number({ description: "In US dollars" }),
+    seconds: Type.Number({ description: "How long the run took" }),
+  }),
+  Type.Object({
+    number: Type.Integer(),
+    background: Type.Literal(true, { description: "Its answer arrives later as a message" }),
+  }),
+  Type.Object({
+    number: Type.Integer(),
+    steered: Type.Literal(true, { description: "The running comrade took the task" }),
+  }),
+]);
+export type ScriptValue = Static<typeof scriptValue>;
 
 /** Why a run did not succeed, for its row: its first line always shows. Stopped, nothing. */
 export function reasonOf(outcome: Outcome, request: Request): string | undefined {
@@ -115,8 +162,11 @@ function written(answer: string, file: string): string {
 export interface Reply {
   text: string;
   isError: boolean;
+  ending: Ending;
   /** The file holding the whole answer. */
   file?: string;
+  /** Why the answer could not be written to output. */
+  writeError?: string;
 }
 
 /**
@@ -131,37 +181,71 @@ export function respond(
   id: number,
 ): Reply {
   if (outcome.aborted && !outcome.timedOut)
-    return { text: `Comrade #${id} stopped.`, isError: true };
+    return { text: `Comrade #${id} stopped.`, isError: true, ending: "stopped" };
   // Even a comrade that failed at once ends with its run line, which carries its number.
   const run = `\n\n${runLine(details, durationMs, id)}`;
   const limitText = formatDuration(request.timeoutMs ?? 0);
   if (outcome.timedOut && !outcome.text)
-    return { text: `Comrade timed out after ${limitText} and was stopped.${run}`, isError: true };
+    return {
+      text: `Comrade timed out after ${limitText} and was stopped.${run}`,
+      isError: true,
+      ending: "timed out",
+    };
   const failed = outcome.timedOut ? undefined : failure(outcome);
-  if (failed !== undefined) return { text: failed + run, isError: true };
+  if (failed !== undefined) return { text: failed + run, isError: true, ending: "failed" };
+  const partial = !outcome.timedOut && partialAnswer(details);
   // A run that timed out has no answer, so its last text is no file's content.
   const unwritten =
     outcome.timedOut && request.output ? `, so it was not written to ${request.output}` : "";
   const state = outcome.timedOut
     ? `[Comrade timed out after ${limitText} and was stopped. Its last text follows. It is not a final answer${unwritten}.]`
-    : partialAnswer(details)
+    : partial
       ? `[Comrade's answer is partial: its last turn ended with stopReason "${outcome.stopReason}"${outcome.stopReason === "length" ? ", the model's output token limit" : ""}. It is not a final answer.]`
       : "";
   let body: string;
   let file: string | undefined;
-  let isError = outcome.timedOut;
+  let writeError: string | undefined;
   if (request.output && !outcome.timedOut)
     try {
       body = written(outcome.text, request.output);
       file = request.output;
     } catch (error) {
       const shown = limit(outcome.text, request.session, id);
-      body = `Could not write the answer to ${request.output}: ${why(error)}\n\n${shown.text}`;
+      writeError = `Could not write the answer to ${request.output}: ${why(error)}`;
+      body = `${writeError}\n\n${shown.text}`;
       file = shown.file;
-      isError = true;
     }
   else ({ text: body, file } = limit(outcome.text, request.session, id));
-  return { text: [state, body].filter(Boolean).join("\n\n") + run, isError, file };
+  return {
+    text: [state, body].filter(Boolean).join("\n\n") + run,
+    isError: outcome.timedOut || writeError !== undefined,
+    ending: outcome.timedOut ? "timed out" : partial ? "partial" : "finished",
+    ...(file ? { file } : {}),
+    ...(writeError ? { writeError } : {}),
+  };
+}
+
+/**
+ * What a script reads of a run that ended: what the model reads, as fields, with the whole
+ * answer however long. An answer is one reply of the model's, so its output token limit bounds it.
+ */
+export function scripted(
+  id: number,
+  outcome: Outcome,
+  reply: Reply,
+  reason: string | undefined,
+  durationMs: number,
+): ScriptValue {
+  const error = reply.writeError ?? reason;
+  return {
+    number: id,
+    ending: reply.ending,
+    answer: outcome.text,
+    ...(reply.file ? { file: reply.file } : {}),
+    ...(error ? { error } : {}),
+    cost: outcome.usage.cost.total,
+    seconds: Math.round(durationMs / 100) / 10,
+  };
 }
 
 /** Message text: one header line, then the body. The renderer shows the body under its own header. */

@@ -4,11 +4,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { piRequire, pkg } from "./pi-package.ts";
+import { dependencyRoot, piRequire, pkg } from "./pi-package.ts";
 
 export { cli, piRequire, pkg, version } from "./pi-package.ts";
 
 type CodingAgent = typeof import("@earendil-works/pi-coding-agent");
+type Ai = typeof import("@earendil-works/pi-ai");
 type Tui = typeof import("@earendil-works/pi-tui");
 type Themes =
   typeof import("@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js");
@@ -31,6 +32,11 @@ export const themes = await piModule<Themes>("dist/modes/interactive/theme/theme
 if (forceColor === undefined) delete process.env.FORCE_COLOR;
 else process.env.FORCE_COLOR = forceColor;
 core.initTheme("dark");
+// The copy of pi-ai that Pi's own packages import, where test/session.ts finds its offline model.
+// Its package exports only an `import` entry, which require.resolve cannot follow.
+export const ai = (await import(
+  pathToFileURL(join(dependencyRoot("@earendil-works/pi-ai"), "dist/index.js")).href
+)) as Ai;
 
 const { createJiti } = piRequire("jiti") as typeof import("jiti");
 const tuiEntry = piRequire.resolve("@earendil-works/pi-tui");
