@@ -108,14 +108,16 @@ export default function (pi: ExtensionAPI) {
   const spins = (row: ToolCallState) =>
     groups.rows.get(row.id) === row && row.group.rows[0] === row && row.group.rows.some(inProgress);
   const models = new Set([new WeakRef(groups)]);
+  /** Another agent's calls (see below), which do not follow Ctrl+T. */
+  const nestedModels = new WeakSet<ToolGroups>();
   let thinkingHidden = false;
   const visibility = (hidden: boolean) => {
     if (hidden === thinkingHidden) return;
     thinkingHidden = hidden;
     for (const reference of models) {
       const model = reference.deref();
-      if (model) model.setThinkingHidden(hidden);
-      else models.delete(reference);
+      if (!model) models.delete(reference);
+      else if (!nestedModels.has(model)) model.setThinkingHidden(hidden);
     }
   };
   let transcript: TranscriptView | undefined;
@@ -200,8 +202,8 @@ export default function (pi: ExtensionAPI) {
   }
 
   function replay(target: ToolGroups, entries: readonly SessionEntry[], cwd: string): void {
-    // Pi shows cache warming between calls only with this setting, as a line of its own.
-    const notices = pi.getSettings().showCacheMissNotices === true;
+    // Pi shows cache warming between calls only with this notice on, as a line of its own.
+    const notices = pi.getSettings().notices?.cacheWarming === true;
     for (const entry of entries) {
       // Custom entries store extension data, such as codemode's store() writes between a
       // script's call and its result. Live events never include custom entries, so they are
@@ -306,12 +308,13 @@ export default function (pi: ExtensionAPI) {
 
   // Another extension's agent's calls, drawn as these rows, so they look the same everywhere:
   // see shared/nested.ts. Each transcript is its own model, grouped by the same rules, starting
-  // collapsed whatever Ctrl+O says, and following Ctrl+T as this transcript's rows do.
+  // collapsed whatever Ctrl+O says. Its thinking is what the extension shows, whatever Ctrl+T
+  // says, so it always separates calls.
   const nested: NestedRows = {
     transcript(cwd, frame) {
       // Another agent's calls have no renderer of their own here: mirage draws every one.
       const model = new ToolGroups(everyKind);
-      model.setThinkingHidden(thinkingHidden);
+      nestedModels.add(model);
       models.add(new WeakRef(model));
       const views = new Map<string, ToolGroupView>();
       // Whether the calls the agent left in progress when it last stopped are cancelled.
@@ -353,7 +356,6 @@ export default function (pi: ExtensionAPI) {
         },
       };
     },
-    thinkingHidden: () => thinkingHidden,
   };
   const unsubscribeNested = pi.events.on(NESTED_ROWS_EVENT, (value) => {
     if (isNestedRowsRequest(value)) value.rows = nested;

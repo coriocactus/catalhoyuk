@@ -4,7 +4,7 @@ Seven local TypeScript extensions for the Pi terminal coding agent, installed at
 
 - [`rearview`](rearview/README.md) starts the fullscreen transcript with its most recent entries and adds older pages above them as you scroll to the top.
 - [`mirage`](mirage/README.md) draws Pi's own tools (`read`, `bash`, `edit`, `write`, `codemode`, `grep`, `find`, `ls`) as compact rows, and consecutive calls as one group with collapsible output, image previews, and its own colours. MCP tools, and any other tool with no renderer of its own, are drawn as plain calls. It only draws tools: Pi still runs them.
-- [`inspector`](inspector/README.md) opens a call's filename in your editor, in the same terminal, when you click it, also while Pi works.
+- [`inspector`](inspector/README.md) opens a call's filename in your editor, in the same terminal, when you click it, also while Pi works, and so a Markdown link to a text file, at the line it names.
 - [`interupt`](interupt/README.md) makes `Esc` stop a running response only on its second press within 1.5 seconds.
 - [`echo`](echo/README.md) expands an `@@name` token at the editor cursor into the Markdown snippet `~/.pi/agent/echo/name.md`.
 - [`comrade`](comrade/README.md) adds a tool that hands a self-contained task to a fresh Pi process and returns its answer. A comrade shows its progress while it works, keeps its conversation for follow-ups, can be steered during a run, and can run in the background, where it is resumed if Pi exits while it runs.
@@ -66,7 +66,7 @@ Node runs the TypeScript tests directly, with its own type stripping and no buil
 - `<extension>/tests/*.test.ts` are one extension's unit tests. A suite imports only its own extension, `shared/`, and `test/`, so deleting an extension breaks no other extension's tests. Only the files in `test/` then need a change.
 - `<extension>/tests/session.test.ts` runs that extension in a real Pi session (`test/session.ts`), in the test's own process and with no terminal: the installed Pi's extension loader, events, tool pipeline, and `codemode`, with an offline model whose replies the test scripts. The fakes check what an extension asks of Pi's API. A session test checks what Pi does with it, in Pi's own order: `comrade`'s results as a script reads them and a background answer's delivery, and `interupt`'s `Esc` around a real response, its stop, and a retry.
 - `<extension>/tests/*.ts` without `.test` are that extension's fixtures.
-- `test/*.test.ts` cover more than one extension: the `shared/` protocols, including two extensions meeting through separate copies of `shared/`; `mirage` with `rearview`; and `comrade` with `mirage`. Two guards sit beside them. Pi must autoload the seven extensions and never `test/` or `shared/`, which hold no `index.ts`, and `pi-diff` must trace every Pi import.
+- `test/*.test.ts` cover more than one extension: the `shared/` protocols, including two extensions meeting through separate copies of `shared/`; `mirage` with `rearview`; `comrade` with `mirage`; and `comrade` with `prose`. Two guards sit beside them. Pi must autoload the seven extensions and never `test/` or `shared/`, which hold no `index.ts`, and `pi-diff` must trace every Pi import.
 - `test/e2e/` holds the terminal and budget suites, with their offline providers.
 - `test/pi.ts`, `test/fake-pi.ts`, `test/session.ts`, `test/transcript.ts`, and `test/headless-terminal.ts` are test support. Extension code loads through `jiti` against the installed Pi, as Pi loads it. The fakes are typed against Pi's own declarations, so a renamed Pi API fails `npm run typecheck` at the fake.
 
@@ -76,7 +76,7 @@ Node runs the TypeScript tests directly, with its own type stripping and no buil
 
 - Groups, scripts run by Pi's `codemode` tool (live nested calls, saved calls after `/resume`, and `store()` entries), a live change of output padding, and command and script times, live and resumed.
 - Tool errors, diffs, and images. Image checks read the Kitty graphics commands Pi sent, not pixels.
-- Clicks and `Ctrl+O`, the agent working while Vim owns the terminal, newer and replaced editor drafts, a failing editor, saving a file, and resizing the terminal.
+- Clicks and `Ctrl+O`, a Markdown file link opening in Vim at its line, the agent working while Vim owns the terminal, newer and replaced editor drafts, a failing editor, saving a file, and resizing the terminal.
 - Cleanup across `/new`, `/resume`, `/fork`, and `/reload`.
 - Paging: history disabled, fast scrolling between a page being added and the next layout pass, the end of history, saved filenames and images, and model context left unchanged.
 - An adapter's fallback when Pi's internals have changed.

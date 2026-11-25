@@ -1,6 +1,6 @@
-// What each run did, as its row shows it: its words, its thinking, the steers sent to it, and its
-// calls, as mirage's rows where mirage is loaded. Built as the run's messages arrive, so a row
-// drawn again costs nothing until its run has said or done more.
+// What each run did, as its row shows it: its words, its titled thoughts, the steers sent to it,
+// and its calls, as mirage's rows where mirage is loaded. Built as the run's messages arrive, so a
+// row drawn again costs nothing until its run has said or done more.
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import {
@@ -13,13 +13,12 @@ import { spinnerFrame } from "../shared/spinner.ts";
 import type { Details } from "./details.ts";
 import { runMessages } from "./resume.ts";
 import { fromSteering } from "./run.ts";
+import { shownMessage, titledThinking } from "./thoughts.ts";
 import type { Block, LiveRow, Look } from "./view.ts";
 import { callRow } from "./work.ts";
 
 /** Runs kept in memory: the few last drawn. */
 const SHOWN_MAX = 40;
-/** How long one reading of Pi's thinking setting stands. */
-const SETTING_MS = 250;
 
 type Call = { id: string; name: string; arguments: unknown };
 type RowsBlock = Extract<Block, { kind: "rows" }>;
@@ -29,13 +28,14 @@ type CallBlock = Extract<Block, { kind: "call" }>;
 interface Built {
   // What the blocks depend on besides the messages. A change in any starts them over.
   running: boolean;
-  thinking: boolean;
   theme: Theme;
   /** The theme's colours: Pi hands every row the same theme object whatever the theme. */
   colours: object;
   cwd: string;
   /** The messages read so far. */
   read: number;
+  /** The thinking blocks shown so far: the next one's key. */
+  thinking: number;
   blocks: Block[];
   /** `blocks` as last handed out: a new array each time they change, so a row can tell. */
   view: Block[];
@@ -90,25 +90,6 @@ export function createTranscripts(pi: ExtensionAPI) {
     return mirage ?? undefined;
   };
 
-  // Pi's thinking toggle: mirage follows it as it changes. Without mirage, Pi's own setting,
-  // which Ctrl+T changes. A row asks on every draw and Pi copies its settings for each answer,
-  // so one reading stands for a quarter of a second.
-  let setting: { at: number; hidden: boolean } | undefined;
-  const settingHidden = () => {
-    const now = Date.now();
-    if (setting && now - setting.at < SETTING_MS) return setting.hidden;
-    let hidden = setting?.hidden ?? false;
-    try {
-      hidden = pi.getSettings().hideThinkingBlock === true;
-    } catch {
-      // Pi has not bound its runtime yet, as while it loads: the last reading stands.
-    }
-    setting = { at: now, hidden };
-    return hidden;
-  };
-  /** Whether Pi shows thinking now, so a row shows the comrade's. */
-  const thinkingShown = () => !(rowsService()?.thinkingHidden() ?? settingHidden());
-
   // By run: a foreground row's tool call, or a background run's id. The few last drawn, as kept
   // in memory; another is read again from its conversation when its row is expanded. A run whose
   // conversation is not known is kept too, with no messages, so it is not looked for again.
@@ -129,7 +110,7 @@ export function createTranscripts(pi: ExtensionAPI) {
 
   /** Reads the messages a run's blocks have not taken in yet. */
   const extend = (known: Shown, built: Built) => {
-    const { running, thinking, theme, cwd, blocks } = built;
+    const { running, theme, cwd, blocks } = built;
     const rowOf = (call: Call): LiveRow => {
       const result = built.results.get(call.id);
       const status = result
@@ -174,8 +155,8 @@ export function createTranscripts(pi: ExtensionAPI) {
       if (message.role !== "assistant") continue;
       for (const part of message.content) {
         if (part.type === "thinking") {
-          if (thinking && part.thinking.trim())
-            blocks.push({ kind: "thinking", text: part.thinking, source: part });
+          const text = titledThinking(part.thinking);
+          if (text) blocks.push({ kind: "thinking", text, key: built.thinking++ });
         } else if (part.type === "text") {
           if (part.text.trim()) blocks.push({ kind: "text", text: part.text, source: part });
         } else if (part.type === "toolCall") {
@@ -209,10 +190,10 @@ export function createTranscripts(pi: ExtensionAPI) {
   };
 
   /**
-   * What a run did, in order, for its row: its words, its thinking where Pi shows thinking, the
-   * steers sent to it, and its calls, mirage's rows for mirage's tools. Its task is the
-   * row's own, so it is left out. Nothing for a run whose conversation is not known. The array is
-   * the same one until the run has said or done more.
+   * What a run did, in order, for its row: its words, its titled thoughts, the steers sent to it,
+   * and its calls, mirage's rows for mirage's tools. Its task is the row's own, so it is left out.
+   * Nothing for a run whose conversation is not known. The array is the same one until the run
+   * has said or done more.
    */
   const blocksFor = (
     key: string,
@@ -231,27 +212,26 @@ export function createTranscripts(pi: ExtensionAPI) {
       known.added = 0;
       known.built = undefined;
     }
+    // Mirage groups the calls around what the row shows of the thinking, as around Pi's own.
     for (; known.added < known.messages.length; known.added++)
-      known.transcript?.add(known.messages[known.added]);
-    const thinking = thinkingShown();
+      known.transcript?.add(shownMessage(known.messages[known.added]));
     let built = known.built;
-    // A run's messages only ever grow. Whether it still runs, whether Pi shows thinking, and the
-    // theme and directory its calls are drawn in can change behind them: each starts over.
+    // A run's messages only ever grow. Whether it still runs, and the theme and directory its
+    // calls are drawn in, can change behind them: each starts over.
     if (
       !built ||
       built.running !== running ||
-      built.thinking !== thinking ||
       built.colours !== theme.colors ||
       built.cwd !== cwd ||
       built.read > known.messages.length
     )
       built = known.built = {
         running,
-        thinking,
         theme,
         colours: theme.colors,
         cwd,
         read: 0,
+        thinking: 0,
         blocks: [],
         view: [],
         prompted: false,
@@ -263,18 +243,15 @@ export function createTranscripts(pi: ExtensionAPI) {
   };
 
   /**
-   * Keeps a row's work in step with its run and with Pi's thinking toggle, which redraws rows
-   * without rendering them afresh. A row at work asks on every draw, which costs nothing until
-   * its run has done more. One at rest asks once per setting: its run is over, and asking again
-   * could read its conversation from its file again.
+   * Keeps a row's work in step with its run. A row at work asks on every draw, which costs nothing
+   * until its run has done more. One at rest asks once: its run is over, and asking again could
+   * read its conversation from its file again.
    */
   const keepCurrent = (look: Look, work: () => Block[] | undefined, atWork: boolean) => {
-    let done: boolean | undefined;
+    let done = false;
     return () => {
-      const thinking = thinkingShown();
-      if (!atWork && done === thinking) return;
-      done = thinking;
-      look.thinking = thinking;
+      if (!atWork && done) return;
+      done = true;
       const blocks = work();
       if (blocks) look.blocks = blocks;
       else delete look.blocks;
@@ -292,13 +269,11 @@ export function createTranscripts(pi: ExtensionAPI) {
     blocksFor,
     keepCurrent,
     savedRun,
-    thinkingShown,
     /** Forgets a run, whose row will read it again from its conversation. */
     forget: (key: string) => void shown.delete(key),
-    /** A session started: mirage and Pi's setting are asked again. */
+    /** A session started: mirage is asked again. */
     started() {
       mirage = undefined;
-      setting = undefined;
     },
     /**
      * The session ended. Mirage's rows belong to its runtime: a reloaded one draws them afresh.

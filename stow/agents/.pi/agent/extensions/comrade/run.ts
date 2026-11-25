@@ -14,6 +14,7 @@ import {
   type RpcExtensionUIResponse,
   type RpcResponse,
 } from "@earendil-works/pi-coding-agent";
+import { lastTitle } from "./thoughts.ts";
 import type { Face } from "./view.ts";
 import { emptyWork, Ledger, oneLine, type Work } from "./work.ts";
 
@@ -125,15 +126,13 @@ export interface Progress {
   pid?: number;
   /** Its task is in its conversation: Pi has saved it. */
   asked?: boolean;
-  /** The last complete line of its thinking or text. */
+  /**
+   * The last complete line of its text, or the title of its latest thought (thoughts.ts),
+   * whichever came last. Its thinking's words never show.
+   */
   said?: string;
-  /** Whether that line is its thinking, which only shows where Pi shows thinking. */
-  saidThinking?: boolean;
-  /** The last complete line of its text alone, for where thinking is hidden. */
-  spoke?: string;
-  /** Said or spoke in an earlier turn than this one. */
+  /** Said in an earlier turn than this one. */
   saidBefore?: boolean;
-  spokeBefore?: boolean;
   /**
    * Its conversation in this run, as each message ends: its replies, their results, and what it
    * was told. Kept lean: without images, and with long results cut, as its row shows them.
@@ -436,27 +435,27 @@ export async function run(
   let trailing: ReturnType<typeof setTimeout> | undefined;
   // The turn Pi last started: the turns finished before it, plus this one.
   let turn = 0;
-  // The thinking or text block now streaming, whose last complete line is what it says.
+  // The thinking or text block now streaming: what it says is the last complete line of text, or
+  // the title of the latest thought.
   let block = "";
   let blockThinking = false;
   let unread = false;
-  const say = (said: string, thinking: boolean) => {
+  const say = (said: string) => {
     state.said = said;
-    state.saidThinking = thinking;
     state.saidBefore = undefined;
-    if (thinking) return;
-    state.spoke = said;
-    state.spokeBefore = undefined;
+  };
+  /** Takes in what the streaming block says, once some of it has not been read. */
+  const read = () => {
+    if (!unread) return;
+    unread = false;
+    const said = blockThinking ? lastTitle(block) : lastSaid(block);
+    if (said) say(said);
   };
   const progress = () => {
     clearTimeout(trailing);
     trailing = undefined;
     reported = Date.now();
-    if (unread) {
-      unread = false;
-      const said = lastSaid(block);
-      if (said) say(said, blockThinking);
-    }
+    read();
     state.work = ledger.snapshot();
     if (turn) state.activity.turn = turn;
     onProgress({
@@ -551,6 +550,8 @@ export async function run(
           return progress();
         }
         if (message?.role !== "assistant") return progress();
+        // What streamed since the last report, such as a thought that ended the message.
+        read();
         state.turns++;
         state.streamed = undefined;
         addUsage(state.usage, message.usage);
@@ -565,9 +566,8 @@ export async function run(
         if (text) {
           state.text = text;
           const said = lastSaid(text, true);
-          if (said) say(said, false);
+          if (said) say(said);
         }
-        unread = false;
         return progress();
       }
       case "tool_execution_start":
@@ -588,6 +588,8 @@ export async function run(
         switch (update?.type) {
           case "thinking_start":
           case "text_start":
+            // The block before it may have said more since the last report.
+            read();
             block = "";
             blockThinking = update.type === "thinking_start";
             return enter(update.type === "text_start" ? "writing" : "thinking");
@@ -614,7 +616,6 @@ export async function run(
         turn = state.turns + 1;
         // What it said is kept, marked as from an earlier turn, until it says more.
         if (state.said) state.saidBefore = true;
-        if (state.spoke) state.spokeBefore = true;
         return enter("waiting");
       // A request is out, and nothing has come back yet.
       case "agent_start":

@@ -13,7 +13,7 @@ import type {
   ToolRenderers,
 } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI, TuiMouseEvent, TuiMouseEventType } from "@earendil-works/pi-tui";
-import { MARKERS } from "../../shared/selection.ts";
+import { ALL_MARKERS } from "../../shared/selection.ts";
 import { type FakePi, fake, fakePi, type Tool } from "../../test/fake-pi.ts";
 import { core, load, themes, tui } from "../../test/pi.ts";
 import type { ToolGroupView } from "../view.ts";
@@ -83,7 +83,7 @@ export const mouse = (x: number, y = 0, type: TuiMouseEventType = "click"): TuiM
 });
 /** A rendered line without prose's zero-width selection markers, to compare raw styling. */
 export const unmark = (line: string) =>
-  MARKERS.reduce((value, marker) => value.replaceAll(marker, ""), line);
+  ALL_MARKERS.reduce((value, marker) => value.replaceAll(marker, ""), line);
 export const plain = (component: Component, width = 160) =>
   component
     .render(width)

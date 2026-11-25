@@ -203,13 +203,13 @@ A run in progress shows Pi's working spinner in the accent colour, as the editor
   parseList swallows the error that parseBlock rethrows.
 ```
 
-1. **What it is doing**, once it has lasted two seconds. That is the call in progress, as mirage names it, with the spinner, or mirage's line for the group when several are in progress (`⠋ Exploring 3 files`). Between calls, it is what the comrade waits on. Until something lasts, the line says what its calls have come to, as an ended row does (`✓ Read 10 files, ran 5 commands`), and only its counts change. So does it while the line below shows the words it thinks or writes, rather than labelling them. Between quick calls a comrade waits, calls and runs many times a second, and a line that followed every change would flash. A retry shows at once. Once shown, a thing stays at least a second, so one that lasted just long enough does not flash by when it ends. A call held that way is drawn as it is now: its spinner keeps turning, and it shows `✓` once it ends. The waiting line of an expanded row and the line in the widget follow the same rules.
-2. **What it said last.** The last complete sentence or line it said, in italics, without Markdown's marks. A half-written sentence never shows: the line changes when one is complete. When it does not fit, the newest words win: earlier sentences on the line go first, and only a sentence too long by itself is cut. It stays through later turns, dimmer, until the comrade says more. Its thinking shows here only where Pi shows thinking (`Ctrl+T`). Until it has said anything, the line has its tokens so far.
+1. **What it is doing**, once it has lasted two seconds. That is the call in progress, as mirage names it, with the spinner, or mirage's line for the group when several are in progress (`⠋ Exploring 3 files`). Between calls, it is what the comrade waits on. Until something lasts, the line says what its calls have come to, as an ended row does (`✓ Read 10 files, ran 5 commands`), and only its counts change. So does it while the line below shows the words it writes or the title of its latest thought, rather than labelling them. Between quick calls a comrade waits, calls and runs many times a second, and a line that followed every change would flash. A retry shows at once. Once shown, a thing stays at least a second, so one that lasted just long enough does not flash by when it ends. A call held that way is drawn as it is now: its spinner keeps turning, and it shows `✓` once it ends. The waiting line of an expanded row and the line in the widget follow the same rules.
+2. **What it said last.** The last complete sentence or line it wrote, in italics, without Markdown's marks, or the title of its latest thought (see [Thoughts](#thoughts)), whichever came last. Nothing else of its thinking shows here. A half-written sentence or title never shows: the line changes when one is complete. When it does not fit, the newest words win: earlier sentences on the line go first, and only a sentence too long by itself is cut. It stays through later turns, dimmer, until the comrade says more. Until it has said anything, the line has its tokens so far.
 
 | What it waits on | While |
 | --- | --- |
 | `starting` | Pi loads. |
-| `waiting` | A request is out and nothing has streamed back. Some providers, such as Gemini through OpenRouter, send nothing until the reply is done, so this can last minutes on a long first turn. After the first turn it says how long: `waiting 48s`. |
+| `waiting` | A request is out and nothing has streamed back yet. After the first turn it says how long: `waiting 48s`. |
 | `thinking`, `writing` | The reply streams. Streamed text updates the row at most every 250ms. |
 | `calling edit` | The model writes a call's arguments. |
 | `retrying · 1/3 · 529 overloaded` | Pi retries a failed request, in the warning colour. |
@@ -221,7 +221,7 @@ The spinner costs no frame of its own while Pi's working indicator turns: a row 
 
 ### Expanded
 
-`Ctrl+O` expands every row, and a click expands or collapses one row, as on any call's row. Expanded, a row is the run in order: its task behind a bar, then what the comrade did, as Pi's transcript shows Pi's own work. That is what it said, its thinking where Pi shows thinking, the steers sent to it, and its calls.
+`Ctrl+O` expands every row, and a click expands or collapses one row, as on any call's row. Expanded, a row is the run in order: its task behind a bar, then what the comrade did, as Pi's transcript shows Pi's own work. That is what it said, its thoughts, the steers sent to it, and its calls.
 
 ```text
 ✓ Comrade #3  Review parser error paths  $0.71 · 12m 43s ▾
@@ -243,11 +243,41 @@ The spinner costs no frame of its own while Pi's working indicator turns: a row 
 ```
 
 - **Calls.** Where mirage is loaded, mirage draws the comrade's calls, in groups by its own rules, as it draws Pi's. A click expands a group, a command shows on its own lines with how it exited (`(exit code: 1)`), an edit shows its diff, and a filename opens in inspector. Comrade asks for them over Pi's event bus (`shared/nested.ts`), so neither extension needs the other. They start collapsed whatever `Ctrl+O` says, so an expanded row reads at a glance. Without mirage, each call is one line in mirage's wording: `✓ Read ~/p`, `✓ Searched "TODO" in ~/p`, `$ npm test (exit code: 1)`, `✗ Read ~/q  ENOENT: no such file or directory`. A command of several lines shows its first and `…`.
-- **Length.** An expanded row shows the latest 24 pieces of the run (its words, thoughts, and groups of calls) after `… N earlier ▸`, which a click expands. A task longer than six lines shows its first six and `… N more lines ▸`, which a click expands.
-- **Thinking.** It follows Pi's `Ctrl+T` in rows already drawn. Through mirage, it changes at once. Without mirage, it comes from Pi's `hideThinkingBlock` setting, which `Ctrl+T` saves, read at most every 250ms when a row is drawn.
+- **Length.** An expanded row shows the latest 24 pieces of the run (its words, thinking blocks, and groups of calls) after `… N earlier ▸`, which a click expands. A task longer than six lines shows its first six and `… N more lines ▸`, which a click expands.
+- **Thoughts.** `Chain of thought ▸` for each thinking block with titled thoughts, which a click expands: see [Thoughts](#thoughts).
+- **Selection.** Where [`prose`](../prose/README.md) is loaded, a selection in a row is bounded to its text, as in Pi's own rows. Each line marks where its content starts, after the row's indents and the task's bar, and where it ends, before its caret. The lines of a wrapped task, reason, note, or thinking mark how they continue, so a copy joins them back. Comrade wraps plain text with Pi's `Text`, which prose wraps.
 - **In progress.** An expanded row grows as the comrade works, and ends with what it waits on when that is not a call. To bound memory, the row keeps the run's messages without images, and each call's result up to its first 32,000 characters.
 - **Ended.** The first time it is expanded, a row reads the run from the last 4 MB of the comrade's conversation, so a row from an earlier session expands the same. A run that ended before those 4 MB, a row from before comrades showed their work, and a row whose conversation was deleted show a summary of the run's calls instead, with the ones worth naming. A follow-up's row shows its own run, not the conversation before or after it.
 - **Answer.** When the whole answer is in a file, the expanded row ends with `Full answer:` and its path. The row never shows the run line, or the first lines that tell the caller of a partial answer or a timeout: it shows the same facts in its own places.
+
+### Thoughts
+
+A row shows a comrade's thinking only as titled thoughts. Some models stream their thinking as summaries, each a title alone on a line in bold, then its paragraphs. Gemini does, a thought every few seconds:
+
+```text
+**Charting Bipartite Cycles**
+
+I'm now focusing on counting labeled 2-regular bipartite graphs…
+```
+
+No API marks a title: a thought's title is a line that is wholly bold, and its paragraphs run to the next title. Nothing else of the thinking shows: not thinking without titles, such as Anthropic's summaries, not thinking before a block's first title, and not the numbered list, with bold only inside its lines, that Gemini's summarizer sometimes leaks. Pi's `Ctrl+T` and `hideThinkingBlock` do not apply: they are for Pi's own thinking.
+
+- **In progress**, the line under what it is doing shows the latest thought's title once its line is complete, as it shows a complete sentence it wrote, whichever came last.
+- **Expanded**, a thinking block with titled thoughts is one line, `Chain of thought ▸`, in the colour and italics Pi gives its own hidden thinking's label. A click shows its thoughts under it, from the first title on, as Markdown in Pi's style for thinking, and another hides them. Each thinking block is one of the row's 24 pieces, however many thoughts it holds.
+
+```text
+  Reading the parser first.
+
+  Chain of thought ▾
+    Analyzing the parser
+
+    I'm following the error parseBlock rethrows up to parseList, which
+    catches it and returns an empty list.
+
+  ✓ Explored 3 files, ran 2 searches ▸
+```
+
+Mirage groups the comrade's calls around what the row shows: a thinking block with titled thoughts between two calls separates them, as visible thinking does in Pi's transcript, and thinking the row does not show separates nothing.
 
 ### Background runs' rows
 
@@ -298,7 +328,7 @@ Once the runs have ended, the newest listing says how:
 ```
 
 - **Expanding.** A click expands or collapses one row, which then shows the task and, while the run goes on, the work so far. `Ctrl+O` expands or collapses every row and forgets the clicks. A blank line separates an expanded row from the rows beside it.
-- **`/comrades`.** It adds a session entry that Pi draws and saves but never sends to the model, so it costs no tokens and the caller never sees it. It is drawn again after `/reload` and `/resume`. While the caller is writing a reply, Pi puts the entry just above that reply. When the last thing in the thread is already a listing, it adds nothing: that listing follows the runs. With nothing running, `/comrades` says so and adds nothing. Outside the terminal, it lists the runs as text.
+- **`/comrades`.** It adds a session entry that Pi draws and saves but never sends to the model, so it costs no tokens and the caller never sees it. It is drawn again after `/reload` and `/resume`. While the caller is writing a reply, Pi puts the entry just above that reply. When the last thing in the thread is already a listing, it adds nothing: that listing follows the runs. With no background runs, `/comrades` says `No background comrades running.` and adds nothing. Outside the terminal, it lists the runs as text.
 - **A `comrades` call.** The caller reads the listing [Background runs](#background-runs) describes, as text. The row is drawn from the call's details, which the model never reads. A call with `stop` shows `Stopping comrade #N` while it waits, then each run it stopped and how it ended, and under them any number that no comrade had. A stop is not a listing: it never makes an older listing stop following its runs.
 - **Checking less.** The `comrades` tool tells the caller there is no need to check: each answer arrives by itself, between its calls while it works, or in a new turn if it has finished. A background start tells it the same.
 
@@ -321,6 +351,7 @@ Once the runs have ended, the newest listing says how:
 | `rows.ts` | What each row shows, listings included, and keeping the rows in progress turning. |
 | `view.ts` | How a row looks. |
 | `transcripts.ts` | What each run did, for its row, built as the run's messages arrive. |
+| `thoughts.ts` | What counts as a titled thought, the only thinking a row shows. |
 | `work.ts` | What a comrade did, folded into counts by kind and the calls worth naming. |
 | `details.ts` | Run details: what the session keeps of each row. |
 | `widget.ts` | The widget above the editor. |

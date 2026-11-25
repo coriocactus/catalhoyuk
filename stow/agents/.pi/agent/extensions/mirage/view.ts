@@ -22,7 +22,7 @@ import {
   truncateToWidth,
 } from "@earendil-works/pi-tui";
 import type { RowAnchor } from "../shared/anchors.ts";
-import { paint } from "../shared/colours.ts";
+import { muted, paint } from "../shared/colours.ts";
 import {
   diffCounts,
   exitCode,
@@ -32,7 +32,7 @@ import {
   writtenLines,
 } from "../shared/format.ts";
 import type { FileReference } from "../shared/protocol.ts";
-import { CONTENT_START, findMarker } from "../shared/selection.ts";
+import { CONTENT_END, CONTENT_START, findMarker } from "../shared/selection.ts";
 import {
   type Expandable,
   inProgress,
@@ -543,14 +543,18 @@ export class ToolGroupView implements Component {
     return this.theme.fg("dim", expanded ? "▾" : "▸");
   }
 
-  /** A status's mark. `abandoned`: a call nothing will end, which rests even while Pi works. */
+  /**
+   * A status's mark, a bold `$` for a command. `abandoned`: a call nothing will end, which rests
+   * even while Pi works.
+   */
   private status(status: ToolCallState["status"], command = false, abandoned = false): string {
-    if (status === "error") return paint(this.theme, "red", command ? "$" : "✗");
-    if (status === "success") return paint(this.theme, "green", command ? "$" : "✓");
+    const dollar = this.theme.bold("$");
+    if (status === "error") return paint(this.theme, "red", command ? dollar : "✗");
+    if (status === "success") return paint(this.theme, "green", command ? dollar : "✓");
     // In progress while Pi works: Pi's own working spinner, in its colour.
     if (this.frame && !abandoned && status !== "cancelled")
       return this.theme.fg("accent", this.frame);
-    if (command) return this.theme.fg("muted", "$");
+    if (command) return this.theme.fg("muted", dollar);
     return this.theme.fg("muted", status === "cancelled" ? "✗" : "…");
   }
 
@@ -735,8 +739,9 @@ export class ToolGroupView implements Component {
     const theme = this.theme;
     return {
       command: (value) => theme.bold(value),
-      flag: (value) => theme.fg("syntaxFunction", value),
-      string: (value) => theme.fg("syntaxString", value),
+      // Flags in the terminal's yellow, strings in its green, dimmed.
+      flag: (value) => paint(theme, "yellow", value),
+      string: (value) => muted(theme, "moss", value),
       variable: (value) => theme.fg("syntaxVariable", value),
       operator: (value) => theme.fg("syntaxOperator", value),
       redirect: (value) => theme.bold(value),
@@ -749,10 +754,15 @@ export class ToolGroupView implements Component {
     this.targets[this.rawLines.length] = target;
     if (label.includes(FILE_LINK)) this.linked.push(this.rawLines.length);
     const arrow = this.arrow(this.model.expanded(target));
-    // Keep the caret visible even when the filename or command is truncated.
+    // Keep the caret visible even when the filename or command is truncated. It is layout: a
+    // selection ends before it.
     this.rawLines.push(
       this.pad +
-        markStart(width > 2 ? `${this.fit(label, width - 2)} ${arrow}` : this.fit(arrow, width)),
+        markStart(
+          width > 2
+            ? `${this.fit(label, width - 2)}${CONTENT_END} ${arrow}`
+            : this.fit(arrow, width),
+        ),
     );
   }
 

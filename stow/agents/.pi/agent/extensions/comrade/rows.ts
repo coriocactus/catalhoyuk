@@ -55,11 +55,12 @@ interface Args {
   title?: unknown;
 }
 
-/** Whether a listed run's row is expanded, and its task and earlier work with it. */
+/** Whether a listed run's row is expanded, and its task, earlier work and thinking with it. */
 interface Shown {
   expanded: boolean;
   taskExpanded?: boolean;
   earlierExpanded?: boolean;
+  thinkingOpen: Set<number>;
 }
 
 /** A listing's rows, as clicks left them since Ctrl+O last expanded or collapsed them all. */
@@ -79,6 +80,13 @@ interface RowState {
   taskExpanded?: boolean;
   /** All its work, not just its latest blocks. */
   earlierExpanded?: boolean;
+  /** The thinking blocks expanded to their thoughts. */
+  thinkingOpen?: Set<number>;
+}
+
+/** Expands or collapses one thinking block of those a row has expanded. */
+function toggleKey(open: Set<number>, key: number): void {
+  if (!open.delete(key)) open.add(key);
 }
 
 export interface RowsDeps {
@@ -232,6 +240,9 @@ export function createRows(deps: RowsDeps) {
     const args: Args = context.args ?? {};
     const task = String(args.task ?? "");
     const pad = context.outputPad;
+    // Made now, so a click shows at once what it expanded, before Pi renders the row afresh.
+    state.thinkingOpen ??= new Set();
+    const thinkingOpen = state.thinkingOpen;
     // Its header is Pi's to expand and collapse, as on every call's row; the task's toggle is its own.
     const toggles: Toggles = {
       task: () => {
@@ -240,6 +251,10 @@ export function createRows(deps: RowsDeps) {
       },
       earlier: () => {
         state.earlierExpanded = !state.earlierExpanded;
+        context.invalidate();
+      },
+      thinking: (key) => {
+        toggleKey(thinkingOpen, key);
         context.invalidate();
       },
     };
@@ -342,6 +357,7 @@ export function createRows(deps: RowsDeps) {
       expanded,
       taskExpanded: state.taskExpanded,
       earlierExpanded: state.earlierExpanded,
+      thinkingOpen,
       id,
       spinner: running ? spinnerFrame() : undefined,
       live: inBackground && running,
@@ -378,11 +394,13 @@ export function createRows(deps: RowsDeps) {
     const details = isDelivery(entry.details) ? entry.details : undefined;
     const body = details ? content.slice(content.indexOf("\n\n") + 2) : content;
     const phase: Phase = details?.status ?? "finished";
+    const thinkingOpen = new Set<number>();
     const look: Look = {
       phase,
       task: details?.task ?? "",
       id: details?.id,
       expanded,
+      thinkingOpen,
       durationMs: details?.durationMs,
       home: session.home,
       ...(phase === "resumed" ? { note: body } : {}),
@@ -420,6 +438,7 @@ export function createRows(deps: RowsDeps) {
       earlier: () => {
         look.earlierExpanded = !look.earlierExpanded;
       },
+      thinking: (key) => toggleKey(thinkingOpen, key),
     });
   };
 
@@ -452,7 +471,7 @@ export function createRows(deps: RowsDeps) {
   ): ((current: boolean) => Stacked) => {
     const { id } = details;
     const spin = `${key}\0${id}`;
-    const shown = state.rows.get(id) ?? { expanded: state.expanded };
+    const shown = state.rows.get(id) ?? { expanded: state.expanded, thinkingOpen: new Set() };
     state.rows.set(id, shown);
     // A resumed run has a run of its own, but keeps its start row.
     const ours = (job: Job | undefined): job is Job =>
@@ -482,6 +501,7 @@ export function createRows(deps: RowsDeps) {
         expanded: shown.expanded,
         taskExpanded: shown.taskExpanded,
         earlierExpanded: shown.earlierExpanded,
+        thinkingOpen: shown.thinkingOpen,
         id,
         live: job !== undefined,
         home: session.home,
@@ -540,6 +560,7 @@ export function createRows(deps: RowsDeps) {
           look.earlierExpanded = !look.earlierExpanded;
           shown.earlierExpanded = look.earlierExpanded;
         },
+        thinking: (key) => toggleKey(shown.thinkingOpen, key),
       };
       return draw(view, look, card, "", theme, pad, toggles);
     };

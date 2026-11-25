@@ -1,7 +1,12 @@
 // A real InteractiveMode prototype with only the transcript fields Pi's native
 // renderer reads. Shared by history unit tests and cross-extension tests.
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { SessionEntry, SessionManager, ToolRenderers } from "@earendil-works/pi-coding-agent";
+import type {
+  SessionEntry,
+  SessionManager,
+  SettingsManager,
+  ToolRenderers,
+} from "@earendil-works/pi-coding-agent";
 import type { Component, Container, ScrollView } from "@earendil-works/pi-tui";
 import type { BaseRenderers } from "./fake-pi.ts";
 import { core, tui } from "./pi.ts";
@@ -74,11 +79,17 @@ export function transcript(count = 130) {
   const host: TranscriptHost = Object.create(core.InteractiveMode.prototype);
   const fields = {
     sessionManager: sm,
+    // What Pi's native renderer reads, typed so that a renamed method fails typecheck here.
     settingsManager: {
-      getShowCacheMissNotices: () => false,
+      getNotices: () => ({
+        cacheMisses: false,
+        cacheWarming: false,
+        compactionCosts: false,
+        reasoningDrops: false,
+      }),
       getShowImages: () => false,
       getImageWidthCells: () => 8,
-    },
+    } satisfies Pick<SettingsManager, "getNotices" | "getShowImages" | "getImageWidthCells">,
     chatContainer: chat,
     documentContainer: document,
     transcriptScrollView: scroll,

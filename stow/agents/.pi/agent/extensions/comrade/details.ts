@@ -177,9 +177,9 @@ const isListed = (value: unknown): value is Listed => {
   );
 };
 
-/** What an agent's `comrades` call says of numbers it asked to stop that no comrade had. */
-export const notRunning = (ids: readonly number[]) =>
-  `No running comrade ${ids.map((id) => `#${id}`).join(", ")}.`;
+/** What stopping says of numbers that no background comrade running had. */
+export const notRunning = (ids: readonly (number | string)[]) =>
+  `No background comrade${ids.length === 1 ? "" : "s"} ${ids.map((id) => `#${id}`).join(", ")} running.`;
 
 /** The numbers a saved `comrades` call asked to stop that no comrade had. */
 export function missingIn(saved: unknown): number[] {
@@ -252,17 +252,30 @@ export function summary(request: Request, progress: Progress): Details {
   };
 }
 
+/**
+ * What a running comrade said last. A run from an older version, adopted across /reload, also
+ * says the words of its thinking, marked `saidThinking`, with its text alone as `spoke`: a row
+ * never shows those words, so it shows that text instead.
+ */
+function saidIn(progress: Progress): Pick<Details, "said" | "saidBefore"> {
+  const older = progress as Progress & {
+    saidThinking?: boolean;
+    spoke?: string;
+    spokeBefore?: boolean;
+  };
+  const [said, before] = older.saidThinking
+    ? [older.spoke, older.spokeBefore]
+    : [progress.said, progress.saidBefore];
+  return said ? { said, ...(before ? { saidBefore: true } : {}) } : {};
+}
+
 /** A running comrade's row: its run details, when it started, and what it is doing. */
 export const live = (request: Request, progress: Progress, started: number): Details => ({
   ...summary(request, progress),
   started,
   ...(progress.activity ? { activity: progress.activity } : {}),
   ...(progress.streamed ? { streamed: progress.streamed } : {}),
-  ...(progress.said ? { said: progress.said } : {}),
-  ...(progress.saidThinking ? { saidThinking: true } : {}),
-  ...(progress.saidBefore ? { saidBefore: true } : {}),
-  ...(progress.spoke ? { spoke: progress.spoke } : {}),
-  ...(progress.spokeBefore ? { spokeBefore: true } : {}),
+  ...saidIn(progress),
 });
 
 export const emptyProgress = (): Progress => ({

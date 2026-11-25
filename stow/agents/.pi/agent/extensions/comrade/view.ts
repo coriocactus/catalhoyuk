@@ -10,13 +10,14 @@ import {
   type Component,
   Markdown,
   sliceByColumn,
+  Text,
   type TuiMouseEvent,
   type TuiMouseEventResult,
   visibleWidth,
-  wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { paint } from "../shared/colours.ts";
 import { formatCost, formatDuration, homePath } from "../shared/format.ts";
+import { ALL_MARKERS, CONTENT_END, CONTENT_START, findMarker } from "../shared/selection.ts";
 import type { Activity, Streamed } from "./run.ts";
 import { type Live, oneLine, type Row, summary, type Work } from "./work.ts";
 
@@ -67,15 +68,10 @@ export interface RunDetails extends Face {
   ended?: number;
   activity?: Activity;
   streamed?: Streamed;
-  /** While it runs: the last complete line of its thinking or text. */
+  /** While it runs: the last complete line of its text, or the title of its latest thought. */
   said?: string;
-  /** Whether that line is its thinking, shown only where Pi shows thinking. */
-  saidThinking?: boolean;
-  /** The last complete line of its text alone, for where thinking is hidden. */
-  spoke?: string;
-  /** Said or spoke in an earlier turn: still shown, dimmer. */
+  /** Said in an earlier turn: still shown, dimmer. */
   saidBefore?: boolean;
-  spokeBefore?: boolean;
 }
 
 export type Phase =
@@ -123,17 +119,16 @@ export interface Look {
   taskExpanded?: boolean;
   /** All its work, not just its latest blocks. */
   earlierExpanded?: boolean;
-  /** Its work, in order, once known: its words, thinking, the steers sent to it, and its calls. */
+  /** Its work, in order, once known: its words, thoughts, the steers sent to it, and its calls. */
   blocks?: Block[];
-  /** Whether Pi shows thinking now, so a row shows the comrade's. */
-  thinking?: boolean;
+  /** The thinking blocks expanded to their thoughts, by `key`. */
+  thinkingOpen?: ReadonlySet<number>;
   /** The caller's directory, which a comrade run elsewhere is named from. */
   home?: string;
   /**
    * Brings the look up to date before each draw: Pi draws rows again without rendering them
-   * afresh, for its thinking toggle and for every frame while a comrade works. It may change
-   * `spinner`, `durationMs`, `thinking` and `blocks`, and returns the run details to draw when it
-   * has newer ones than the row was given.
+   * afresh, for every frame while a comrade works. It may change `spinner`, `durationMs` and
+   * `blocks`, and returns the run details to draw when it has newer ones than the row was given.
    */
   // biome-ignore lint/suspicious/noConfusingVoidType: a refresh with no newer run details returns nothing.
   refresh?: () => RunDetails | undefined | void;
@@ -143,8 +138,12 @@ export interface Look {
 export type Block =
   /** What it said. `source` is the message part it came from, by which it is drawn once. */
   | { kind: "text"; text: string; source?: object }
-  /** What it thought, shown only where Pi shows thinking. */
-  | { kind: "thinking"; text: string; source?: object }
+  /**
+   * A thinking block with titled thoughts (thoughts.ts): `Chain of thought ▸`, and once expanded
+   * its thoughts, from the first title on, as Markdown. `key` counts the thinking blocks of its run
+   * a row shows, so an expanded one stays expanded as the run goes on.
+   */
+  | { kind: "thinking"; text: string; key: number }
   /** A steer sent to it. */
   | { kind: "message"; text: string }
   /**
@@ -164,6 +163,8 @@ export interface Toggles {
   task?: () => void;
   /** An expanded row's work before its latest blocks. */
   earlier?: () => void;
+  /** One of its thinking blocks, by key: its thoughts. */
+  thinking?: (key: number) => void;
 }
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: keep only newlines and tabs of a task.
@@ -392,9 +393,10 @@ function header(
   const parts = [said, ...costs.filter(Boolean).map((part) => theme.fg("dim", part))].filter(
     Boolean,
   );
-  const caret = expands ? theme.fg("dim", look.expanded ? "▾" : "▸") : "";
-  const trailer = [parts.join(theme.fg("dim", " · ")), caret].filter(Boolean).join(" ");
-  const tail = trailer ? `  ${trailer}` : "";
+  const shown = parts.join(theme.fg("dim", " · "));
+  // The caret is layout: a selection ends before it.
+  const caret = expands ? caretAfter(theme, look.expanded ? "▾" : "▸", shown ? " " : "  ") : "";
+  const tail = `${shown ? `  ${shown}` : ""}${caret}`;
   const line = cut(label, Math.max(0, width - visibleWidth(tail))) + tail;
   // An ended start row is history: all of it dim.
   return ended ? theme.fg("dim", stripStyles(line)) : line;
@@ -442,14 +444,18 @@ function callLabel(row: Omit<Row, "status">, theme: Theme): string {
   return row.label;
 }
 
-/** A call's status mark: `$` for commands, `✓` or `✗` otherwise, or the spinner while running. */
+/**
+ * A call's status mark: a bold `$` for commands, `✓` or `✗` otherwise, or the spinner while
+ * running.
+ */
 function mark(row: { label: string; status: Live }, theme: Theme, spinner?: string): string {
   const command = row.label.startsWith("$ ");
+  const glyph = (other: string) => (command ? theme.bold("$") : other);
   if (row.status === "running")
-    return spinner ? theme.fg("accent", spinner) : theme.fg("muted", command ? "$" : "…");
-  if (row.status === "success") return paint(theme, "green", command ? "$" : "✓");
-  if (row.status === "error") return paint(theme, "red", command ? "$" : "✗");
-  return theme.fg("muted", command ? "$" : "✗");
+    return spinner ? theme.fg("accent", spinner) : theme.fg("muted", glyph("…"));
+  if (row.status === "success") return paint(theme, "green", glyph("✓"));
+  if (row.status === "error") return paint(theme, "red", glyph("✗"));
+  return theme.fg("muted", glyph("✗"));
 }
 
 /** One call worth naming, after a finished comrade's summary. */
@@ -560,11 +566,10 @@ function doneLine(work: Work, theme: Theme): string {
  * What a running row says under its header, in two lines that change in place. First, what it
  * is doing, once that has lasted SETTLE_MS: the call it runs, or mirage's line for its group when
  * several run at once; else what it waits on. Until then, what its calls have come to, or before
- * any, what it waits on. Then the last complete thing it said, its thinking only where Pi shows
- * thinking, dimmer once a later turn has begun; or until it has said anything, its tokens so
- * far. While it thinks or writes what shows below, the line above sums up its calls instead,
- * rather than labelling the words. The first line is held steady, so it changes at most once a
- * second.
+ * any, what it waits on. Then the last complete thing it said, or the title of its latest
+ * thought, dimmer once a later turn has begun; or until it has said anything, its tokens so far.
+ * While it thinks or writes what shows below, the line above sums up its calls instead, rather
+ * than labelling the words. The first line is held steady, so it changes at most once a second.
  */
 function progressLines(
   look: Look,
@@ -576,9 +581,7 @@ function progressLines(
   const latest = look.blocks?.findLast((block) => block.kind === "rows" || block.kind === "call");
   const recent = card.work?.recent?.at(-1);
   const state = card.activity?.state;
-  const thought = look.thinking || !card.saidThinking;
-  const said = thought ? card.said : card.spoke;
-  const before = thought ? card.saidBefore : card.spokeBefore;
+  const { said, saidBefore: before } = card;
   const shownBelow = Boolean(said) && !before && (state === "thinking" || state === "writing");
   const done = card.work?.tallies.length ? card.work : undefined;
   const named = !done || lasting(card);
@@ -648,6 +651,33 @@ function waiting(card: RunDetails, theme: Theme): string {
 const printable = (text: string) =>
   text.replace(/\r\n?/g, "\n").replace(/\t/g, "  ").replace(CONTROLS_BUT_LINES, "");
 
+/**
+ * Marks where a line's content starts, after its indent, for prose's bounded selection, unless the
+ * line marks it already: Markdown, wrapped text and mirage's rows do.
+ */
+function marked(line: string): string {
+  if (!line || findMarker(line)) return line;
+  const lead = line.length - line.trimStart().length;
+  return `${line.slice(0, lead)}${CONTENT_START}${line.slice(lead)}`;
+}
+
+/** A line without its markers, to be joined to another. */
+const unmarked = (line: string) =>
+  ALL_MARKERS.reduce((text, each) => text.replaceAll(each, ""), line);
+
+/** A caret after a line's content, which a selection leaves out. */
+const caretAfter = (theme: Theme, caret: string, gap = " ") =>
+  `${CONTENT_END}${gap}${theme.fg("dim", caret)}`;
+
+/**
+ * Plain text wrapped to the width as Pi's Text wraps it, and so as prose does where it is loaded:
+ * each continuation line hangs under its line's indent and marks how it continues, so a copy joins
+ * it back. Without the spaces Text pads each line with.
+ */
+function wrap(text: string, width: number): string[] {
+  return new Text(text, 0, 0).render(width).map((line) => line.replace(/ +$/, ""));
+}
+
 /** Tasks already drawn, by width, whether expanded, and text. */
 const tasks = new Map<string, { lines: string[]; toggle?: number }>();
 
@@ -662,20 +692,19 @@ function taskBlock(
   const key = `${width}\u0000${expanded}\u0000${task}`;
   const known = tasks.get(key);
   if (known) return known;
-  const source = printable(task).trim().split("\n");
+  const source = printable(task).trim();
   const room = width - 2 - visibleWidth(BAR);
   const bar = theme.fg("muted", BAR);
-  const wrapped =
-    room < 8 ? source : source.flatMap((line) => (line ? wrapTextWithAnsi(line, room) : [""]));
+  const wrapped = room < 8 ? source.split("\n") : wrap(source, room);
+  // The bar is layout: a selection starts after it.
   const lines = (expanded ? wrapped : wrapped.slice(0, TASK_LINES)).map(
-    (line) => `  ${bar}${line}`,
+    (line) => `  ${bar}${findMarker(line) ? line : `${CONTENT_START}${line}`}`,
   );
   let block: { lines: string[]; toggle?: number } = { lines };
   if (wrapped.length > TASK_LINES) {
     const more = wrapped.length - TASK_LINES;
-    lines.push(
-      `  ${theme.fg("dim", expanded ? "show fewer lines ▴" : `… ${more} more line${more === 1 ? "" : "s"} ▸`)}`,
-    );
+    const toggle = expanded ? "show fewer lines" : `… ${more} more line${more === 1 ? "" : "s"}`;
+    lines.push(`  ${theme.fg("dim", toggle)}${caretAfter(theme, expanded ? "▴" : "▸")}`);
     block = { lines, toggle: lines.length - 1 };
   }
   if (tasks.size >= DRAWN_MAX) tasks.delete(tasks.keys().next().value as string);
@@ -703,37 +732,35 @@ const drawing = (theme: Theme) => {
   tasks.clear();
 };
 
-/** Text as Markdown, two columns in, at most once per width. */
-function markdown(text: string, width: number, theme: Theme, source?: object): readonly string[] {
+/**
+ * Text as Markdown, two columns in, at most once per width. Thinking is four columns in, under
+ * its `Chain of thought` line, in Pi's style for thinking.
+ */
+function markdown(
+  text: string,
+  width: number,
+  theme: Theme,
+  source?: object,
+  thinking = false,
+): readonly string[] {
   drawing(theme);
   const part = source && drawnParts.get(source);
   if (part?.width === width && part.colours === theme.colors) return part.lines;
   const key = `${width}\u0000${text}`;
   let lines = source ? undefined : drawn.get(key);
   if (!lines) {
-    lines = new Markdown(printable(text), 2, 0, getMarkdownTheme()).render(width);
+    const style = thinking
+      ? { color: (line: string) => theme.fg("thinkingText", line), italic: true }
+      : undefined;
+    lines = new Markdown(printable(text), thinking ? 4 : 2, 0, getMarkdownTheme(), style).render(
+      width,
+    );
     if (source) drawnParts.set(source, { width, colours: theme.colors, lines });
     else {
       if (drawn.size >= DRAWN_MAX) drawn.delete(drawn.keys().next().value as string);
       drawn.set(key, lines);
     }
   }
-  return lines;
-}
-
-/** Thinking, dim and italic, wrapped two columns in, at most once per width. */
-function thinkingLines(
-  text: string,
-  width: number,
-  theme: Theme,
-  source?: object,
-): readonly string[] {
-  const part = source && drawnParts.get(source);
-  if (part?.width === width && part.colours === theme.colors) return part.lines;
-  const lines = wrapTextWithAnsi(printable(text).trim(), Math.max(8, width - 2)).map(
-    (line) => `  ${theme.fg("dim", theme.italic(line))}`,
-  );
-  if (source) drawnParts.set(source, { width, colours: theme.colors, lines });
   return lines;
 }
 
@@ -769,7 +796,9 @@ export class RowView implements Component {
   private theme: Theme;
   private pad: number;
   private toggles: Toggles;
-  private targets = new Map<number, keyof Toggles>();
+  private targets = new Map<number, Exclude<keyof Toggles, "thinking">>();
+  /** The lines that say `Chain of thought`, and the thinking block each expands. */
+  private thinkingTargets = new Map<number, number>();
   private zones: Zone[] = [];
   private indent = 0;
   /** While it works, what it is doing, collapsed and expanded, each held steady. */
@@ -778,7 +807,6 @@ export class RowView implements Component {
   /** The lines last drawn, and everything a later frame could have changed since. */
   private cache?: {
     width: number;
-    thinking?: boolean;
     spinner?: string;
     durationMs?: number;
     second?: number;
@@ -838,7 +866,6 @@ export class RowView implements Component {
     const cache = this.cache;
     if (
       cache?.width === width &&
-      cache.thinking === look.thinking &&
       cache.spinner === look.spinner &&
       cache.durationMs === durationMs &&
       cache.second === second &&
@@ -853,14 +880,14 @@ export class RowView implements Component {
     );
     const room = Math.max(1, width - pad * 2);
     this.targets.clear();
+    this.thinkingTargets.clear();
     this.zones = [];
     this.indent = pad;
     const lines = this.lines(room, card).map((line) =>
-      line ? " ".repeat(pad) + cut(line, room) : "",
+      line ? " ".repeat(pad) + cut(marked(line), room) : "",
     );
     this.cache = {
       width,
-      thinking: look.thinking,
       spinner: look.spinner,
       durationMs,
       second,
@@ -885,6 +912,13 @@ export class RowView implements Component {
       return result;
     }
     if (event.type !== "click") return undefined;
+    // `Chain of thought` expands or collapses its thoughts.
+    const thinking = this.thinkingTargets.get(event.y);
+    if (thinking !== undefined && this.toggles.thinking) {
+      this.toggles.thinking(thinking);
+      this.invalidate();
+      return { handled: true };
+    }
     // Anywhere else, a click expands or collapses the row: Pi does it for a call's row, and the row
     // itself for its answer, which has no toggle of Pi's.
     const target = this.targets.get(event.y) ?? (this.targets.has(0) ? "row" : undefined);
@@ -893,6 +927,19 @@ export class RowView implements Component {
     toggle();
     this.invalidate();
     return { handled: true };
+  }
+
+  /**
+   * A thinking block: `Chain of thought ▸`, as Pi labels hidden thinking, which a click expands to
+   * its thoughts under it.
+   */
+  private thinking(block: Extract<Block, { kind: "thinking" }>, lines: string[], width: number) {
+    const { look, theme } = this;
+    const open = look.thinkingOpen?.has(block.key) === true;
+    if (this.toggles.thinking) this.thinkingTargets.set(lines.length, block.key);
+    const label = theme.italic(theme.fg("thinkingText", "Chain of thought"));
+    lines.push(`  ${label}${caretAfter(theme, open ? "▾" : "▸")}`);
+    if (open) lines.push(...markdown(block.text, width, theme, block, true));
   }
 
   private lines(width: number, card: RunDetails | undefined): string[] {
@@ -916,18 +963,17 @@ export class RowView implements Component {
           `  ${theme.fg("dim", `${card.files} file${card.files === 1 ? "" : "s"} attached`)}`,
         );
     };
-    // Its work, in order: its words, its thinking where Pi shows it, the steers sent to it, and its
-    // calls, mirage's rows stacked as mirage stacks them.
-    // Its work, its latest blocks unless all were asked for, with a toggle for the rest.
+    // Its work, in order: its words, its thoughts, the steers sent to it, and its calls, mirage's
+    // rows stacked as mirage stacks them. Its latest blocks unless all were asked for, with a
+    // toggle for the rest.
     const work = () => {
       const blocks = look.blocks ?? [];
       const earlier = look.earlierExpanded ? 0 : Math.max(0, blocks.length - BLOCKS_SHOWN);
       if (blocks.length > BLOCKS_SHOWN && this.toggles.earlier) {
         blank();
         this.targets.set(lines.length, "earlier");
-        lines.push(
-          `  ${theme.fg("dim", earlier ? `… ${earlier} earlier ▸` : "show only the latest ▴")}`,
-        );
+        const toggle = earlier ? `… ${earlier} earlier` : "show only the latest";
+        lines.push(`  ${theme.fg("dim", toggle)}${caretAfter(theme, earlier ? "▸" : "▴")}`);
       }
       let previous: Block["kind"] | undefined;
       for (const block of blocks.slice(this.toggles.earlier ? earlier : 0)) {
@@ -943,8 +989,7 @@ export class RowView implements Component {
           blank();
         previous = block.kind;
         if (block.kind === "text") lines.push(...markdown(block.text, width, theme, block.source));
-        else if (block.kind === "thinking")
-          lines.push(...thinkingLines(block.text, width, theme, block.source));
+        else if (block.kind === "thinking") this.thinking(block, lines, width);
         else if (block.kind === "message")
           lines.push(...taskBlock(block.text, true, width, theme).lines);
         else if (block.kind === "call") lines.push(`  ${callLine(block.row, theme, look.spinner)}`);
@@ -993,7 +1038,7 @@ export class RowView implements Component {
         break;
       case "resumed":
         if (look.expanded && look.note)
-          for (const line of wrapTextWithAnsi(look.note, Math.max(8, width - 2)))
+          for (const line of wrap(printable(look.note), Math.max(8, width - 2)))
             lines.push(`  ${theme.fg("muted", line)}`);
         break;
       default: {
@@ -1007,13 +1052,15 @@ export class RowView implements Component {
             : theme.fg(look.phase === "finished" ? "warning" : "muted", text);
         if (why.length && look.phase !== "stopped") {
           // Collapsed, its first line, wrapped, in at most three lines; expanded, all of it.
-          const wrap = (line: string) => wrapTextWithAnsi(printable(line), Math.max(8, width - 2));
-          let shown = look.expanded ? why.flatMap(wrap) : wrap(why[0]);
-          if (!look.expanded && shown.length > REASON_LINES)
+          const wrapped = (line: string) => wrap(printable(line), Math.max(8, width - 2));
+          let shown = look.expanded ? why.flatMap(wrapped) : wrapped(why[0]);
+          if (!look.expanded && shown.length > REASON_LINES) {
+            const rest = shown.slice(REASON_LINES).map(unmarked).join(" ");
             shown = [
               ...shown.slice(0, REASON_LINES - 1),
-              cut(`${shown[REASON_LINES - 1]} ${shown.slice(REASON_LINES).join(" ")}`, width - 2),
+              cut(`${shown[REASON_LINES - 1]} ${rest}`, width - 2),
             ];
+          }
           for (const line of shown) lines.push(`  ${tone(line)}`);
         }
         if (!look.expanded) break;
@@ -1087,10 +1134,11 @@ export class ListingLine implements Component {
     );
     const cost = runs.reduce((sum, run) => sum + run.usage.cost.total, 0);
     const caret = this.expanded() ? "▾" : "▸";
-    const tail = ` · ${formatCost(cost)}  ${caret}`;
+    // The caret is layout: a selection ends before it.
+    const tail = ` · ${formatCost(cost)}${CONTENT_END}  ${caret}`;
     const head = `· Comrades ${runs.map((run) => `#${run.id}`).join(", ")}  ${doing.join(" · ")}`;
     const line = cut(head, Math.max(0, room - visibleWidth(tail))) + tail;
-    return [" ".repeat(pad) + theme.fg("dim", line)];
+    return [" ".repeat(pad) + marked(theme.fg("dim", line))];
   }
 
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {

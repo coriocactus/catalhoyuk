@@ -41,7 +41,12 @@ writeFileSync(
     outputPad: 1,
     terminal: { hyperlinks: true, images: "kitty", imageWidthCells: 8, trueColor: true },
     enableInstallTelemetry: false,
-    showCacheMissNotices: false,
+    notices: {
+      cacheMisses: false,
+      cacheWarming: false,
+      compactionCosts: false,
+      reasoningDrops: false,
+    },
     shellPath: shell,
     defaultTools: ["+codemode"],
     shellCommandPrefix:
@@ -53,6 +58,11 @@ writeFileSync(join(root, filename), "const VIM_BUSY_TARGET = true;\n");
 writeFileSync(join(root, "b.txt"), "READ_B_RESULT\n");
 writeFileSync(join(root, "archived.txt"), "ARCHIVED_VIM_TARGET\n");
 writeFileSync(join(root, "edited.txt"), "before\n");
+// Linked from the last reply at its line 200, which a screen of 84 rows shows without line 1.
+writeFileSync(
+  join(root, "linked.md"),
+  Array.from({ length: 300 }, (_, i) => `LINKED_LINE_${String(i + 1).padStart(3, "0")}\n`).join(""),
+);
 writeFileSync(join(root, "edited-other.txt"), "before-second\n");
 writeFileSync(join(root, "scripted.txt"), "one\n");
 writeFileSync(
@@ -292,14 +302,14 @@ function cpuSeconds(pid: number): number {
 let terminal!: HeadlessTerminal;
 let running: HeadlessTerminal | undefined;
 /** A summary of commands: a tick or a cross, its counts, its caret, in the status's colour. */
-function assertSummary(needle: string, tone: keyof typeof colours, caret = "▸") {
+function assertSummary(needle: string, tone: "red" | "green", caret = "▸") {
   const { row } = terminal.locate(needle);
   const text = row.text.trim();
   assert(text.startsWith(tone === "red" ? "✗ " : "✓ ") && text.endsWith(` ${caret}`), text);
   terminal.assertColour(text[0], colours[tone]);
 }
 /** A command's own lines, from its `$` line through any continuation lines, to its caret. */
-function assertCommandHeader(needle: string, tone: keyof typeof colours, caret = "▸") {
+function assertCommandHeader(needle: string, tone: "red" | "green", caret = "▸") {
   const { rows } = terminal.snapshot;
   let y = terminal.locate(needle).y;
   while (
@@ -702,6 +712,18 @@ try {
   );
   terminal.send(":q\r");
   await terminal.waitFor((s) => s.includes("BACKGROUND_FINISHED"), "return after reload");
+  // A Markdown link to a text file opens in Vim at the line it names, as a filename does, not
+  // in the system's opener.
+  terminal.click("LINK_TARGET", true);
+  await terminal.waitFor(
+    (s) =>
+      s.includes("LINKED_LINE_200") &&
+      !s.includes("LINKED_LINE_001") &&
+      !s.includes("BACKGROUND_FINISHED"),
+    "Vim at a Markdown link's line",
+  );
+  terminal.send(":q\r");
+  await terminal.waitFor((s) => s.includes("BACKGROUND_FINISHED"), "return from a Markdown link");
   // The editor Interupt guards after a reload keeps the session's prompt history.
   const prompts = (s: string) => s.split("Run the fixture").length - 1;
   const promptsShown = prompts(terminal.screen);
@@ -919,7 +941,7 @@ try {
   await owners("DISABLED", 0);
   terminal.save();
   console.log(
-    `PASS: xterm.js VT + real Pi/Vim; inline snippet composition without submission, groups, codemode scripts live/reloaded/resumed, output padding, Unicode clicks, colours/underlines, interrupt hint without layout shifts, gated background work, newer/replacement drafts, saves, images, errors, Ctrl+O, resize, new/resume/fork/reload ownership and disable cleanup, bounded top paging/anchors, archived Vim/images, unchanged context. Pi idle CPU ${cpu.toFixed(2)}s/${IDLE_SECONDS}s. Artifacts: ${root}`,
+    `PASS: xterm.js VT + real Pi/Vim; inline snippet composition without submission, groups, codemode scripts live/reloaded/resumed, output padding, Unicode clicks, Markdown file links in Vim, colours/underlines, interrupt hint without layout shifts, gated background work, newer/replacement drafts, saves, images, errors, Ctrl+O, resize, new/resume/fork/reload ownership and disable cleanup, bounded top paging/anchors, archived Vim/images, unchanged context. Pi idle CPU ${cpu.toFixed(2)}s/${IDLE_SECONDS}s. Artifacts: ${root}`,
   );
 } catch (error) {
   running?.save();

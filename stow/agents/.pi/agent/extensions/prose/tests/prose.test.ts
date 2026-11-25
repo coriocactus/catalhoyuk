@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
 import { type TestContext, test } from "node:test";
 import type { MarkdownTheme } from "@earendil-works/pi-tui";
-import { CONTENT_START, CONTINUES_JOINED, CONTINUES_SPACED } from "../../shared/selection.ts";
-import { load, tui } from "../../test/pi.ts";
+import { paint } from "../../shared/colours.ts";
+import {
+  CONTENT_END,
+  CONTENT_START,
+  CONTINUES_JOINED,
+  CONTINUES_SPACED,
+} from "../../shared/selection.ts";
+import { core, load, tui } from "../../test/pi.ts";
 
 const { installProse, wrapLine } = await load<typeof import("../markdown.ts")>(
   "../markdown.ts",
@@ -143,6 +149,78 @@ test("every selection row ends at its text and starts at its content", (t) => {
   // A blank row selects nothing.
   const blank = columns.getSelectionColumns("          ", 1, across);
   assert(blank.end <= blank.start);
+});
+
+test("a selection ends where a line marks its content's end, before its caret", (t) => {
+  installed(t);
+  const across = { start: { row: 0, col: 0 }, end: { row: 2, col: 0 } };
+  const row = `${CONTENT_START}✓ Ran 2 commands${CONTENT_END} ▸`;
+  assert.deepEqual(columns.getSelectionColumns(row, 1, across), { start: 0, end: 16 });
+  assert.equal(copy([row]), "✓ Ran 2 commands");
+  // A caret too narrow to have its line's end marked is selected as Pi selects it.
+  assert.equal(copy(["✓ Ran 2 commands ▸"]), "✓ Ran 2 commands ▸");
+});
+
+test("inline code is bold in the terminal's yellow, and headings in its cyan", (t) => {
+  installed(t);
+  const bold = (text: string) => `<b>${text}</b>`;
+  const themedBold = new Proxy({} as MarkdownTheme, {
+    get: (_, key) =>
+      key === "bold"
+        ? bold
+        : key === "highlightCode" || key === "codeBlockIndent"
+          ? undefined
+          : (text: string) => text,
+  });
+  const markdown = (text: string) => new tui.Markdown(text, 0, 0, themedBold).render(40)[0] ?? "";
+  assert(markdown("Run `jj status` now").includes(bold(paint(undefined, "yellow", "jj status"))));
+  // Headings keep Pi's bold, in the terminal's cyan.
+  assert(markdown("## Fixed").includes(paint(undefined, "sky", bold("Fixed"))));
+});
+
+test("list markers, bulleted and numbered, take the text's colour", (t) => {
+  installed(t);
+  const marked = new Proxy({} as MarkdownTheme, {
+    get: (_, key) =>
+      key === "listBullet"
+        ? (text: string) => `<${text}>`
+        : key === "highlightCode" || key === "codeBlockIndent"
+          ? undefined
+          : (text: string) => text,
+  });
+  const lines = new tui.Markdown("- one\n- two\n\n1. first\n2. second", 0, 0, marked).render(40);
+  assert.deepEqual(plain(lines), ["- one", "- two", "", "1. first", "2. second"]);
+  assert(!lines.some((line) => line.includes("<")), "no colour of the theme's own");
+});
+
+test("a user message is a green bar beside green italic text, with no background", (t) => {
+  let release: (() => void) | undefined = installProse(() => {});
+  t.after(() => release?.());
+  const message = (text: string, pad = 1) =>
+    new core.UserMessageComponent(text, unstyled, pad).render(40);
+  const lines = message("First line\n\nSecond paragraph");
+  // The bar beside every line, the blank one between paragraphs too. Pi puts the blank lines
+  // around the message.
+  assert.deepEqual(plain(lines), [" ┃ First line", " ┃", " ┃ Second paragraph"]);
+  assert(lines[0].includes(paint(undefined, "moss", "┃")), "a green bar");
+  // Green italic text: Pi's italics are off while a test's output is a pipe.
+  assert(lines[0].includes(paint(undefined, "moss", "First line")), "green text");
+  assert(tui.visibleWidth(lines[0]) < 40, "no background reaching the edge");
+  // The bar is layout: a selection starts after it, and a copy has the text alone.
+  const across = { start: { row: 0, col: 0 }, end: { row: 2, col: 0 } };
+  assert.equal(columns.getSelectionColumns(lines[0], 1, across).start, 3);
+  assert.equal(copy(lines), "First line\n\nSecond paragraph");
+  // Pi's output padding comes before the bar.
+  assert.deepEqual(plain(message("x", 0)), ["┃ x"]);
+  // List markers, bulleted and numbered, stay in the message's green.
+  const list = message("- one\n\n1. two");
+  assert.deepEqual(plain(list), [" ┃ - one", " ┃", " ┃ 1. two"]);
+  assert(list[0].includes(paint(undefined, "moss", "- ")), JSON.stringify(list[0]));
+  assert(list[2].includes(paint(undefined, "moss", "1. ")), JSON.stringify(list[2]));
+  release();
+  release = undefined;
+  // Pi's own user message is back, padded: its background reaches the edge.
+  assert.equal(tui.visibleWidth(message("x")[1] ?? ""), 40);
 });
 
 test("a copy joins wrapped rows back into their lines", (t) => {

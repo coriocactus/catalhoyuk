@@ -1,22 +1,35 @@
-// Edit these six-digit RGB values, then /reload. Mirage's and comrade's rows use them; Pi's own
-// colours and the theme's syntax colours do not change.
+// Edit these colours, then /reload. Each is a six-digit RGB value, or a number for one of the
+// terminal's own 256 palette entries, which follow its theme (0–15: 1 red,
+// 2 green, 3 yellow, 4 blue). Mirage's and comrade's rows use them, and prose's inline code and
+// user messages; Pi's own colours and the theme's syntax colours do not change.
 import type { Theme } from "@earendil-works/pi-coding-agent";
 
 export const colours = {
   red: "#dd331d", // Removed lines and counts, failed status, and error output.
   green: "#65bd55", // Added lines and counts, and successful status.
   blue: "#265b81", // Clickable filenames.
+  yellow: 3, // Inline code, in bold, and flags in commands.
+  sky: 6, // Markdown headings, in bold.
+  moss: 2, // User messages, and strings in commands, dimmed.
 } as const;
 
 export type Tone = keyof typeof colours;
 
 /** The truecolour sequence, and the nearest fixed xterm colour for terminals without it. */
-function foreground(hex: string): { rgb: string; indexed: string } {
-  if (!/^#[\da-f]{6}$/i.test(hex)) throw new Error(`Invalid row colour: ${hex}. Use #RRGGBB.`);
-  const value = Number.parseInt(hex.slice(1), 16);
-  const r = value >> 16;
-  const g = (value >> 8) & 255;
-  const b = value & 255;
+function foreground(value: string | number): { rgb: string; indexed: string } {
+  if (typeof value === "number") {
+    if (!Number.isInteger(value) || value < 0 || value > 255)
+      throw new Error(`Invalid row colour: ${value}. Use a palette entry from 0 to 255.`);
+    // The terminal's own entry, whatever its colour depth.
+    const own = `\x1b[38;5;${value}m`;
+    return { rgb: own, indexed: own };
+  }
+  if (!/^#[\da-f]{6}$/i.test(value))
+    throw new Error(`Invalid row colour: ${value}. Use #RRGGBB, or a palette entry from 0 to 255.`);
+  const hex = Number.parseInt(value.slice(1), 16);
+  const r = hex >> 16;
+  const g = (hex >> 8) & 255;
+  const b = hex & 255;
   // Entries 0–15 are theme-dependent, so only the cube and the greys.
   const cube = [0, 95, 135, 175, 215, 255];
   let index = 16;
@@ -37,14 +50,21 @@ function foreground(hex: string): { rgb: string; indexed: string } {
 }
 
 // Validated once when the module loads, not midway through a terminal render.
-const tones = {
-  red: foreground(colours.red),
-  green: foreground(colours.green),
-  blue: foreground(colours.blue),
-};
+const tones = Object.fromEntries(
+  Object.entries(colours).map(([tone, value]) => [tone, foreground(value)]),
+) as Record<Tone, ReturnType<typeof foreground>>;
 
-/** Text in one of the row colours, ending with a foreground reset that keeps other styles. */
-export function paint(theme: Theme, tone: Tone, text: string): string {
+/**
+ * Text in one of the row colours, ending with a foreground reset that keeps other styles. Without
+ * a theme to say whether the terminal shows truecolour, an RGB colour takes its nearest fixed
+ * one: prose draws Markdown, which Pi hands no theme.
+ */
+export function paint(theme: Pick<Theme, "getColorMode"> | undefined, tone: Tone, text: string) {
   const colour = tones[tone];
-  return `${theme.getColorMode() === "truecolor" ? colour.rgb : colour.indexed}${text}\x1b[39m`;
+  return `${theme?.getColorMode() === "truecolor" ? colour.rgb : colour.indexed}${text}\x1b[39m`;
+}
+
+/** Text in a row colour, dimmed, as the strings in a command are. */
+export function muted(theme: Pick<Theme, "getColorMode"> | undefined, tone: Tone, text: string) {
+  return `\x1b[2m${paint(theme, tone, text)}\x1b[22m`;
 }

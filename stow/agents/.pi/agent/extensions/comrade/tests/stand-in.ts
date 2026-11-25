@@ -271,11 +271,12 @@ async function scenario(name: string, prompt: Prompt, history: string[]) {
       return settled();
     }
     case "work": {
-      // A comrade at work as Pi runs it: thinking, words, a read, then two commands.
+      // A comrade at work as Pi runs it: a titled thought, words, a read, then thinking without a
+      // title and two commands.
       write(
         assistant(
           [
-            { type: "thinking", thinking: "The notes come first." },
+            { type: "thinking", thinking: "**Notes first**\n\nThe notes come first." },
             { type: "text", text: "Reading the notes." },
             { type: "toolCall", id: "r", name: "read", arguments: { path: "/tmp/notes.md" } },
           ],
@@ -285,10 +286,16 @@ async function scenario(name: string, prompt: Prompt, history: string[]) {
       start("r", "read", { path: "/tmp/notes.md" });
       end("r", "read", false, { content: [{ type: "text", text: "notes" }] });
       const listing = { command: "cd /tmp &&\n  ls -la" };
-      asks([
-        ["b1", "bash", listing],
-        ["b2", "bash", { command: "false" }],
-      ]);
+      write(
+        assistant(
+          [
+            { type: "thinking", thinking: "The listing is untitled musing." },
+            { type: "toolCall", id: "b1", name: "bash", arguments: listing },
+            { type: "toolCall", id: "b2", name: "bash", arguments: { command: "false" } },
+          ],
+          "toolUse",
+        ),
+      );
       start("b1", "bash", listing);
       end("b1", "bash", false, { content: [{ type: "text", text: "total 0" }] });
       start("b2", "bash", { command: "false" });
@@ -297,7 +304,8 @@ async function scenario(name: string, prompt: Prompt, history: string[]) {
       return settled();
     }
     case "thinks": {
-      // Thinking streams a complete sentence, then the reply follows: the running row may say it.
+      // Thinking streams words without a title, then a titled thought, then the reply follows:
+      // the running row may say the title, never the words.
       write({ type: "turn_start" });
       write({ type: "message_start", message: { role: "assistant", content: [] } });
       const update = (type: string, extra: object = {}) =>
@@ -305,12 +313,15 @@ async function scenario(name: string, prompt: Prompt, history: string[]) {
           type: "message_update",
           assistantMessageEvent: { type, contentIndex: 0, ...extra },
         });
+      const thinking = "The plan is a secret. Then\n\n**Planning the reply**\n\nThe plan is";
       update("thinking_start");
-      update("thinking_delta", { delta: "The plan is a secret. Then" });
+      update("thinking_delta", { delta: thinking });
+      // The reply starts before the thought's report is due: its title still shows.
+      update("text_start", { contentIndex: 1 });
       await sleep(400);
       write(
         assistant([
-          { type: "thinking", thinking: "The plan is a secret. Then the reply." },
+          { type: "thinking", thinking: `${thinking} a secret too.` },
           { type: "text", text: "Done." },
         ]),
       );

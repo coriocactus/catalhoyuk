@@ -172,7 +172,8 @@ export function register(pi: ExtensionAPI, invocation: Invocation | (() => Invoc
           target === "all" ? [...background.jobs.keys()] : [Number(target?.replace(/^#/, ""))];
         const stopping = ids.flatMap((id) => background.jobs.get(id) ?? []);
         if (!stopping.length) {
-          ctx.ui.notify(`No running comrade ${target ?? ""}`.trimEnd(), "warning");
+          const named = target && target !== "all" ? target.replace(/^#/, "") : undefined;
+          ctx.ui.notify(named ? notRunning([named]) : "No background comrades running.", "warning");
           return;
         }
         for (const job of stopping) {
@@ -187,7 +188,7 @@ export function register(pi: ExtensionAPI, invocation: Invocation | (() => Invoc
         return;
       }
       if (!jobs.size) {
-        ctx.ui.notify("No comrades running.", "info");
+        ctx.ui.notify("No background comrades running.", "info");
         return;
       }
       if (!session.terminal) {

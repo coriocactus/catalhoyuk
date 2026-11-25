@@ -85,7 +85,12 @@ async function measure(name: "alone" | "extended", attempt: number): Promise<Map
       outputPad: 1,
       terminal: { hyperlinks: true, trueColor: true },
       enableInstallTelemetry: false,
-      showCacheMissNotices: false,
+      notices: {
+        cacheMisses: false,
+        cacheWarming: false,
+        compactionCosts: false,
+        reasoningDrops: false,
+      },
     }),
   );
   // A comrade's own Pi discovers extensions in the agent directory: it needs the provider.

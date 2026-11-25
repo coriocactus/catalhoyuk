@@ -2,6 +2,7 @@
 import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 import { type AssistantMessage, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import {
   AssistantMessageComponent,
@@ -164,12 +165,15 @@ export default function (pi: ExtensionAPI) {
             .map((message) => message.toolCallId),
         );
         if (completed.has("live-10")) {
-          output.content.push({ type: "text", text: "BACKGROUND_FINISHED" });
+          // With a Markdown link to a text file, which inspector opens at the line it names.
+          const linked = `${pathToFileURL(join(root, "linked.md")).href}#L200`;
+          const text = `BACKGROUND_FINISHED\n\n[LINK_TARGET](${linked})`;
+          output.content.push({ type: "text", text });
           stream.push({ type: "text_start", contentIndex: 0, partial: structuredClone(output) });
           stream.push({
             type: "text_delta",
             contentIndex: 0,
-            delta: "BACKGROUND_FINISHED",
+            delta: text,
             partial: structuredClone(output),
           });
           output.stopReason = "stop";

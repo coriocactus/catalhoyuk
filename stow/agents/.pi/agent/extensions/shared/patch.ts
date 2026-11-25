@@ -56,7 +56,18 @@ export interface PatchSpec<Owner, State> {
  * before it probes Pi's own methods, which a later owner would find already replaced.
  */
 export function isPatched(key: string, home: object): boolean {
-  return (home as { [key: symbol]: unknown })[Symbol.for(key)] !== undefined;
+  return patchRecord(key, home) !== undefined;
+}
+
+/**
+ * The record of a patch installed on `home`, whoever installed it. For what a replacement leaves
+ * behind beyond the patch's own methods, which must reach the owners of the patch installed now.
+ */
+export function patchRecord<Owner, State>(
+  key: string,
+  home: object,
+): PatchRecord<Owner, State> | undefined {
+  return (home as { [key: symbol]: PatchRecord<Owner, State> | undefined })[Symbol.for(key)];
 }
 
 /** Installs a patch, or joins it. Throws when Pi lacks a method, or another extension holds one. */

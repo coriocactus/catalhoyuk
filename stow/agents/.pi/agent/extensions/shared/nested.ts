@@ -20,14 +20,14 @@ export interface NestedRows {
    * that agent runs, for its calls still in progress.
    */
   transcript(cwd: string, spinner: () => string | undefined): NestedTranscript;
-  /** Whether Pi hides thinking blocks now, as Ctrl+T sets. */
-  thinkingHidden(): boolean;
 }
 
 export interface NestedTranscript {
   /**
    * Adds one of the agent's messages once it has ended: replies with their calls, and results.
    * The calls of a reply that ended asking for them are under way, as Pi runs them at once.
+   * Thinking in a reply separates calls as visible thinking does, whatever Ctrl+T says, so the
+   * asker leaves out of it the thinking it does not show.
    */
   add(message: AgentMessage): void;
   /** Whether mirage draws calls of this tool. Others are the asker's to draw, and end a group. */

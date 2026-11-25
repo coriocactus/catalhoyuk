@@ -3,8 +3,9 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { Theme, ToolInfo, ToolRenderers } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
-import { colours } from "../../shared/colours.ts";
+import { colours, muted } from "../../shared/colours.ts";
 import { OPEN_FILE_EVENT, type OpenFileRequest } from "../../shared/protocol.ts";
+import { CONTENT_END } from "../../shared/selection.ts";
 import { fake, fakePi } from "../../test/fake-pi.ts";
 import { core, loadFuture, themes, tui } from "../../test/pi.ts";
 import { assistant as assistantMessage } from "../../test/transcript.ts";
@@ -89,7 +90,13 @@ test("palette supplies RGB and indexed colours without losing diff word highligh
   t.mock.method(themes.Theme.prototype, "inverse", (text: string) => `\x1b[7m${text}\x1b[27m`);
   const rgb = fake<Theme>({ getColorMode: () => "truecolor" });
   const indexed = fake<Theme>({ getColorMode: () => "256color" });
-  for (const [tone, hex] of Object.entries(colours) as [keyof typeof colours, string][]) {
+  for (const [tone, hex] of Object.entries(colours) as [keyof typeof colours, string | number][]) {
+    if (typeof hex === "number") {
+      // A palette entry is the terminal's own colour, whatever its colour depth.
+      for (const theme of [rgb, indexed])
+        assert.equal(paint(theme, tone, "text"), `\x1b[38;5;${hex}mtext\x1b[39m`);
+      continue;
+    }
     const channels = (hex.slice(1).match(/../g) ?? []).map((value) => Number.parseInt(value, 16));
     assert.equal(paint(rgb, tone, "text"), `\x1b[38;2;${channels.join(";")}mtext\x1b[39m`);
     const escaped = paint(indexed, tone, "text");
@@ -517,8 +524,17 @@ test("an entry Pi does not draw between calls separates nothing when the transcr
     plain(quiet.call("read", "saved-a", { path: join(quiet.dir, "a.txt") }).view),
     "✓ Explored 2 files ▸",
   );
-  // Pi shows cache warming as a line of its own with showCacheMissNotices: then it separates.
-  const shown = await fixture({ global: { showCacheMissNotices: true } });
+  // Only the cache warming notice draws it: the other notices leave it out.
+  const others = await fixture({
+    global: { notices: { cacheMisses: true, compactionCosts: true, reasoningDrops: true } },
+  });
+  await others.rebuild("session_compact", calls(others.dir));
+  assert.equal(
+    plain(others.call("read", "saved-a", { path: join(others.dir, "a.txt") }).view),
+    "✓ Explored 2 files ▸",
+  );
+  // Pi shows cache warming as a line of its own with notices.cacheWarming: then it separates.
+  const shown = await fixture({ global: { notices: { cacheWarming: true } } });
   await shown.rebuild("session_compact", calls(shown.dir));
   assert.match(
     plain(shown.call("read", "saved-a", { path: join(shown.dir, "a.txt") }).view),
@@ -639,7 +655,26 @@ test("trailing carets survive truncation and toggle independently of filename li
   assert.equal(plain(write.view), "✓ Wrote new.ts +1 ▸");
 });
 
-test("a command's own line has a status-coloured dollar; its summary a tick or a cross", async () => {
+test("a command's flags are in the terminal's yellow and its strings in its green, dimmed", async () => {
+  const f = await fixture();
+  const call = f.call("bash", "colours", { command: "rg -n 'x' --glob '*.ts'" }, false);
+  call.result(result("found"));
+  // Drawn once, so a click finds its row.
+  call.view.render(160);
+  call.view.handleMouse(mouse(0));
+  const [header, line] = call.view.render(160);
+  for (const part of [
+    paint(themes.theme, "yellow", "-n"),
+    muted(themes.theme, "moss", "'x'"),
+    paint(themes.theme, "yellow", "--glob"),
+    muted(themes.theme, "moss", "'*.ts'"),
+  ])
+    assert(unmark(line).includes(part), JSON.stringify(line));
+  // Its caret is layout: the line marks where its content ends, before it, for prose's selection.
+  assert(header.includes(`${CONTENT_END} ${themes.theme.fg("dim", "▾")}`), JSON.stringify(header));
+});
+
+test("a command's own line has a bold, status-coloured dollar; its summary a tick or a cross", async () => {
   const f = await fixture();
   const a = f.call("bash", "dollar-a", { command: "npm test" }, false);
   const waiting = themes.theme.fg("muted", "…");
@@ -665,7 +700,9 @@ test("a command's own line has a status-coloured dollar; its summary a tick or a
   assert(
     line
       .trimStart()
-      .startsWith(`${paint(themes.theme, "red", "$")} ${themes.theme.bold("npm")} test`),
+      .startsWith(
+        `${paint(themes.theme, "red", themes.theme.bold("$"))} ${themes.theme.bold("npm")} test`,
+      ),
   );
   a.view.handleMouse(mouse(0));
   a.result(result("passed"));
@@ -693,8 +730,8 @@ test("a command's own line has a status-coloured dollar; its summary a tick or a
       .filter((line) => tui.stripTerminalSequences(line).endsWith("▾"));
   assert.equal(headers().length, 3);
   for (const [i, tone] of (["green", "red"] as const).entries()) {
-    const prefix = `  ${paint(themes.theme, tone, "$")} `;
-    assert(headers()[i + 1].startsWith(prefix), "each command's own line has its dollar");
+    const prefix = `  ${paint(themes.theme, tone, themes.theme.bold("$"))} `;
+    assert(headers()[i + 1].startsWith(prefix), "each command's own line has its bold dollar");
     assert(!/[✓✗]/.test(tui.stripTerminalSequences(headers()[i + 1])));
   }
   a.result(result("failed"), true);
@@ -1559,7 +1596,7 @@ test("multi-step commands are drawn one step per line, with where they ran and h
   ]);
   const lines = row.view.render(160).map(unmark);
   assert(
-    lines[1].trimStart().startsWith(paint(themes.theme, "red", "$")),
+    lines[1].trimStart().startsWith(paint(themes.theme, "red", themes.theme.bold("$"))),
     "a failed command's $ is red",
   );
   assert(lines[1].includes(themes.theme.bold("jj")), "command names are bold");

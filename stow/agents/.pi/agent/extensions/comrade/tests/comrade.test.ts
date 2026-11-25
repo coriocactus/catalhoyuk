@@ -14,6 +14,8 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
+import { paint } from "../../shared/colours.ts";
+import { CONTENT_START } from "../../shared/selection.ts";
 import { fake, fakePi, type Tool } from "../../test/fake-pi.ts";
 import { load, themes, tui } from "../../test/pi.ts";
 import { fixture, models, render, standIn, toolNames } from "./fixture.ts";
@@ -613,9 +615,13 @@ test("/comrades puts background comrades at the end of the thread, live, then as
   await slash("stop all");
   await delivered(2);
   await slash("");
-  assert.equal(notices.at(-1), "No comrades running.");
+  assert.equal(notices.at(-1), "No background comrades running.");
   await slash("stop 9");
-  assert.equal(notices.at(-1), "No running comrade 9");
+  assert.equal(notices.at(-1), "No background comrade #9 running.");
+  await slash("stop #9");
+  assert.equal(notices.at(-1), "No background comrade #9 running.");
+  await slash("stop all");
+  assert.equal(notices.at(-1), "No background comrades running.");
   await slash("pause");
   assert.equal(notices.at(-1), "Usage: /comrades [stop <n|all>]");
 });
@@ -738,8 +744,11 @@ test("an agent's comrades call reads text; its row shows the runs as their start
     "Stopping comrade #1, #5",
   );
   const stopped = await comrades({ stop: [1, 5] });
-  assert.equal(text(stopped), "Stopped comrade #1. No running comrade #5.");
-  assert.equal(row(stopped, "stop"), "↗ Comrade #1  first  background ▸\nNo running comrade #5.");
+  assert.equal(text(stopped), "Stopped comrade #1. No background comrade #5 running.");
+  assert.equal(
+    row(stopped, "stop"),
+    "↗ Comrade #1  first  background ▸\nNo background comrade #5 running.",
+  );
   entries.push(
     startRow(first),
     fake<SessionEntry>({
@@ -754,7 +763,7 @@ test("an agent's comrades call reads text; its row shows the runs as their start
   );
   assert.equal(
     row(stopped, "stop-again"),
-    "↗ Comrade #1  first  background · stopped ▸\nNo running comrade #5.",
+    "↗ Comrade #1  first  background · stopped ▸\nNo background comrade #5 running.",
   );
   // The listing made while it ran is history now too.
   assert.equal(row(listed, "list-again"), "↗ Comrade #1  first  background · stopped ▸");
@@ -980,7 +989,7 @@ test("the comrades tool lists and stops background comrades, and a stop sends no
   assert(running.every((run) => run.doing && typeof run.seconds === "number"));
 
   const stopped = await comrades({ stop: [1, 9] });
-  assert.equal(text(stopped), "Stopped comrade #1. No running comrade #9.");
+  assert.equal(text(stopped), "Stopped comrade #1. No background comrade #9 running.");
   assert.equal(stopped.isError, false);
   const { listed, ...stop } = stopped.details;
   assert.deepEqual(stop, { stopped: [1], missing: [9] });
@@ -1116,7 +1125,9 @@ test("a running comrade spins with Pi's working spinner until its result arrives
   t.mock.timers.tick(80);
   assert.equal(redraws, before, "frames drawn for anything else turn the spinner");
   assert.match(render(row), /^⠙ Comrade #1 {2}Spin {2}/, "the frame follows the clock");
-  assert((row?.render(120)[0] ?? "").startsWith(themes.theme.fg("accent", "⠙")), "in Pi's accent");
+  // In Pi's accent, after the marker of where its content starts for prose's selection.
+  const header = row?.render(120)[0] ?? "";
+  assert(header.startsWith(`${CONTENT_START}${themes.theme.fg("accent", "⠙")}`), "in Pi's accent");
   // An interval in which no frame drew the row: the timer asks Pi to redraw it.
   t.mock.timers.tick(160);
   assert.equal(redraws, before + 1, "the timer asks Pi to redraw when nothing else does");
@@ -1211,21 +1222,22 @@ test("rows drawn after their session ended, as on a resume, never ask Pi's stale
   } as typeof pi.api;
   const transcripts = createTranscripts(api);
   transcripts.started();
-  assert.equal(transcripts.thinkingShown(), true);
   transcripts.ended();
   stale = true;
   asked.length = 0;
   // The old session's rows are still on screen, and Pi draws them once more before the new
   // session's replace them.
-  assert.equal(transcripts.thinkingShown(), true);
   assert.deepEqual(
     transcripts.blocksFor("run", () => undefined, "/tmp", themes.theme, false),
     [],
   );
-  assert(!asked.includes("emit"), "mirage is not asked through a runtime that has ended");
+  assert.deepEqual(asked, [], "nothing is asked through a runtime that has ended");
   // A runtime gone stale without an end first is survived too.
   const unended = createTranscripts(api);
-  assert.equal(unended.thinkingShown(), true);
+  assert.deepEqual(
+    unended.blocksFor("run", () => undefined, "/tmp", themes.theme, false),
+    [],
+  );
 });
 
 test("a turn ends while background comrades run, and an answer after it starts a new one", async (t) => {
@@ -2581,6 +2593,9 @@ test("a run is interrupted when its last reply asked for tools or was aborted", 
 const view = await load<typeof import("../view.ts")>("../view.ts", import.meta.url);
 const { lastSaid } = await load<typeof import("../run.ts")>("../run.ts", import.meta.url);
 const { cleanTitle } = await load<typeof import("../request.ts")>("../request.ts", import.meta.url);
+const { thoughts, lastTitle, shownMessage, titledThinking } = await load<
+  typeof import("../thoughts.ts")
+>("../thoughts.ts", import.meta.url);
 
 test("a background comrade has a line in the widget above the editor until its answer is in", async (t) => {
   t.mock.timers.enable({ apis: ["setInterval", "Date"] });
@@ -2752,20 +2767,11 @@ test("a running row says the call it runs and the last complete thing its comrad
       "   parseList swallows the error that parseBlock rethrows.",
     ].join("\n"),
   );
-  // What it thought shows only where Pi shows thinking. Elsewhere, what it last wrote, or with
-  // nothing written yet, its tokens.
-  const thought = { ...card, saidThinking: true };
+  // With nothing said yet, its tokens.
+  const { said: _said, ...quiet } = card;
   assert.match(
-    render(new view.RowView(look, thought, "", theme, 1)),
+    render(new view.RowView(look, quiet, "", theme, 1)),
     /\n {3}⠋ Reading \/src\/b\.ts\n {3}↑1\.0k ↓100$/,
-  );
-  assert.match(
-    render(new view.RowView(look, { ...thought, spoke: "The parser is next." }, "", theme, 1)),
-    /\n {3}The parser is next\.$/,
-  );
-  assert.match(
-    render(new view.RowView({ ...look, thinking: true }, thought, "", theme, 1)),
-    /\n {3}parseList swallows the error that parseBlock rethrows\.$/,
   );
   // Between calls, what it waits on, over what it said, kept from an earlier turn, dimmer.
   const ended = {
@@ -2903,7 +2909,7 @@ test("an open row shows its task, then its work in order, mirage's rows among it
     },
   };
   const blocks: import("../view.ts").Block[] = [
-    { kind: "thinking", text: "The parser first." },
+    { kind: "thinking", text: "**The parser first**", key: 0 },
     { kind: "text", text: "Reading the **parser**." },
     { kind: "call", row: { kind: "read", status: "success", label: "Read /src/a.ts" } },
     { kind: "message", text: "Also the lexer" },
@@ -2936,7 +2942,7 @@ test("an open row shows its task, then its work in order, mirage's rows among it
       "",
       "   │ Review it",
       "",
-      "   The parser first.",
+      "   Chain of thought ▸",
       "",
       "   Reading the parser.",
       "",
@@ -2977,6 +2983,94 @@ test("what a comrade said is its last complete sentence or line, without Markdow
   assert.equal(lastSaid(`${"x".repeat(300)}. `)?.length, 200);
 });
 
+test("a titled thought is a line that is wholly bold, then its paragraphs up to the next", () => {
+  // As Gemini streams its thinking: each thought a title, then a paragraph.
+  const gemini =
+    "**Counting Matrices**\n\nI'm deriving a closed form.\n\n**Verifying `n=3`**\n\nIt holds.";
+  assert.deepEqual(thoughts(gemini), [
+    { title: "Counting Matrices", body: "I'm deriving a closed form." },
+    { title: "Verifying n=3", body: "It holds." },
+  ]);
+  // A title straight after another has no paragraph; what precedes the first belongs to none.
+  assert.deepEqual(thoughts("Preamble.\n**One**\n**Two**\nWords."), [
+    { title: "One", body: "" },
+    { title: "Two", body: "Words." },
+  ]);
+  // Not titles: prose (Anthropic's thinking), and bold within a line, as in a list that Gemini's
+  // summarizer sometimes leaks.
+  assert.deepEqual(thoughts("I'm checking the parser. Then the lexer."), []);
+  assert.deepEqual(
+    thoughts("Thinking Process:\n\n1.  **Analyze the Request:**\n    *   **Goal:** Sum up."),
+    [],
+  );
+  assert.deepEqual(thoughts("**Bold** and **more**\n"), []);
+  // Streaming, a title counts once its line has ended.
+  assert.equal(lastTitle("**Counting Matr"), undefined);
+  assert.equal(lastTitle("**Counting Matrices**"), undefined, "its line may go on");
+  assert.equal(lastTitle("**Counting Matrices**\n\nI'm deri"), "Counting Matrices");
+  assert.equal(lastTitle(`${gemini}\n`), "Verifying n=3");
+  assert.equal(lastTitle(`**${"x".repeat(300)}**\n`)?.length, 200);
+  // What an expanded row shows: the block from its first title on.
+  assert.equal(titledThinking(`Preamble.\n${gemini}`), gemini);
+  assert.equal(titledThinking("I'm checking the parser."), undefined);
+});
+
+test("a comrade's messages reach mirage without thinking that has no title", () => {
+  const message = (content: object[]) =>
+    ({ role: "assistant", content, stopReason: "toolUse" }) as unknown as Parameters<
+      typeof shownMessage
+    >[0];
+  const call = { type: "toolCall", id: "a", name: "read", arguments: {} };
+  const titled = message([{ type: "thinking", thinking: "**Reading**\n\nNow." }, call]);
+  assert.equal(shownMessage(titled), titled, "the same message when nothing is left out");
+  const untitled = message([{ type: "thinking", thinking: "Musing." }, call]);
+  assert.deepEqual(shownMessage(untitled), message([call]));
+  assert.equal(untitled.role === "assistant" && untitled.content.length, 2, "left as it was");
+});
+
+test("an open row's thinking is a line, `Chain of thought`, showing its thoughts on a click", () => {
+  const theme = themes.theme;
+  const blocks: import("../view.ts").Block[] = [
+    { kind: "text", text: "Starting." },
+    { kind: "thinking", text: "**Counting**\n\nCounting in words.\n\n**Verifying**", key: 0 },
+    { kind: "call", row: { kind: "read", status: "success", label: "Read /src/a.ts" } },
+  ];
+  const clicked: number[] = [];
+  const look = { phase: "finished" as const, task: "x", expanded: true, blocks };
+  const toggles = { thinking: (key: number) => void clicked.push(key) };
+  const row = new view.RowView(look, undefined, "", theme, 0, toggles);
+  const lines = render(row).split("\n");
+  assert.deepEqual(lines.slice(4), [
+    "  Starting.",
+    "",
+    "  Chain of thought ▸",
+    "",
+    "  ✓ Read /src/a.ts",
+  ]);
+  // In the colour and italics Pi gives its own thinking's label.
+  const drawn = row.render(80).find((line) => line.includes("Chain of thought")) ?? "";
+  assert(drawn.includes(theme.italic(theme.fg("thinkingText", "Chain of thought"))), drawn);
+  row.handleMouse({
+    type: "click",
+    button: "left",
+    x: 4,
+    y: lines.indexOf("  Chain of thought ▸"),
+  } as never);
+  assert.deepEqual(clicked, [0]);
+  // Expanded, its thoughts as Markdown, two columns further in.
+  const open = new view.RowView({ ...look, thinkingOpen: new Set([0]) }, undefined, "", theme, 0);
+  assert.deepEqual(render(open).split("\n").slice(6, 14), [
+    "  Chain of thought ▾",
+    "    Counting",
+    "",
+    "    Counting in words.",
+    "",
+    "    Verifying",
+    "",
+    "  ✓ Read /src/a.ts",
+  ]);
+});
+
 test("a title is one line of at most 60 characters", () => {
   assert.equal(cleanTitle("  Review\nthe   parser  "), "Review the parser");
   assert.equal(cleanTitle(" "), undefined);
@@ -3013,13 +3107,36 @@ const opened = (tool: Tool, result: Result, task: string) =>
     }),
   );
 
-test("a comrade's thinking shows only where Pi shows thinking", async (t) => {
+test("an opened row shows its comrade's titled thinking as one line whatever Pi's thinking setting, and no untitled thinking", async (t) => {
   for (const hide of [true, false]) {
     const { tool, call } = fixture(t, "work", { settings: { hideThinkingBlock: hide } });
     const shown = render(opened(tool, await call({ task: "Check the notes" }), "Check the notes"));
-    assert.equal(shown.includes("The notes come first."), !hide);
+    // Its titled thinking is one line; its untitled thinking shows nothing.
+    assert.equal(shown.match(/Chain of thought/g)?.length, 1, `thinking hidden: ${hide}`);
+    assert(!shown.includes("Notes first"), "its thoughts wait for a click");
+    assert(!shown.includes("untitled musing"));
     assert(shown.includes("Reading the notes."));
   }
+});
+
+test("a click on `Chain of thought` shows its thoughts, and Ctrl+T changes nothing", async (t) => {
+  const { tool, call, settings } = fixture(t, "work");
+  const row = opened(tool, await call({ task: "Check the notes" }), "Check the notes");
+  const lines = render(row).split("\n");
+  const title = lines.indexOf("  Chain of thought ▸");
+  assert(title > 0, lines.join("\n"));
+  assert.deepEqual(row?.handleMouse?.({ type: "click", button: "left", x: 4, y: title } as never), {
+    handled: true,
+  });
+  const open =
+    /\n {2}Chain of thought ▾\n {4}Notes first\n\n {4}The notes come first\.\n\n {2}Reading/;
+  assert.match(render(row), open);
+  // Pi's setting, which Ctrl+T changes, is not read: the row stays as drawn.
+  settings.hideThinkingBlock = true;
+  await new Promise((wake) => setTimeout(wake, 300));
+  assert.match(render(row), open);
+  row?.handleMouse?.({ type: "click", button: "left", x: 4, y: title } as never);
+  assert(!render(row).includes("The notes come first."));
 });
 
 test("without mirage, a comrade's calls are a row each, in mirage's words", async (t) => {
@@ -3051,7 +3168,7 @@ test("after a restart, an opened row reads what its comrade did from its convers
   );
   assert.match(
     answer,
-    /▾\n\n {2}│ Check the notes\n\n {2}The notes come first\.\n\n {2}Reading the notes\.\n\n {2}✓ Read \/tmp\/notes\.md\n/,
+    /▾\n\n {2}│ Check the notes\n\n {2}Chain of thought ▸\n\n {2}Reading the notes\.\n\n {2}✓ Read \/tmp\/notes\.md\n/,
   );
   // A foreground row, its run alone, though its comrade's conversation holds others.
   const row = render(
@@ -3071,11 +3188,11 @@ test("after a restart, an opened row reads what its comrade did from its convers
       }),
     ),
   );
-  assert.match(row, /▾\n\n {2}│ Check again\n\n {2}The notes come first\.\n/);
+  assert.match(row, /▾\n\n {2}│ Check again\n\n {2}Chain of thought ▸\n/);
   assert.equal(row.match(/Reading the notes/g)?.length, 1);
 });
 
-test("a running row keeps a comrade's thinking to itself where Pi hides thinking", async (t) => {
+test("a running row says its comrade's latest thought title, never its thinking's words", async (t) => {
   for (const hide of [true, false]) {
     const { tool, call, updates } = fixture(t, "thinks", { settings: { hideThinkingBlock: hide } });
     const lines: string[] = [];
@@ -3083,11 +3200,12 @@ test("a running row keeps a comrade's thinking to itself where Pi hides thinking
       const update = updates.at(-1);
       if (update) lines.push(progressOf(tool, update));
     });
-    assert.equal(
-      lines.some((line) => line.includes("The plan is a secret.")),
-      !hide,
-      `thinking hidden: ${hide}`,
+    const hidden = `thinking hidden: ${hide}`;
+    assert(
+      lines.some((line) => line.endsWith("| Planning the reply")),
+      `${hidden}\n${lines.join("\n")}`,
     );
+    assert(!lines.some((line) => line.includes("The plan is")), hidden);
   }
 });
 
@@ -3154,19 +3272,23 @@ test("a running group of one call is named as that call, not as mirage's group",
     spinner: "⠋",
     blocks: [{ kind: "rows" as const, component: rows, calls: 1, running: 0, last }],
   };
-  assert.match(
-    render(new view.RowView(look, card, "", theme, 0)),
-    /\n {2}\$ cd \/src && … \(exit code: 2\)\n/,
-  );
+  const row = new view.RowView(look, card, "", theme, 0);
+  assert.match(render(row), /\n {2}\$ cd \/src && … \(exit code: 2\)\n/);
+  // A command's dollar is bold, as mirage draws it, red as it failed.
+  assert(row.render(120)[1]?.includes(paint(theme, "red", theme.bold("$"))));
 });
 
 test("control bytes in what a comrade thought, or in a title, never reach the terminal", (t) => {
   const theme = themes.theme;
-  const block = {
-    kind: "thinking" as const,
-    text: "Clear\x1b[2J the\tscreen\x07 \x1b]0;title\x07now.",
+  const bad = "Clear\x1b[2J the\tscreen\x07 \x1b]0;title\x07now.";
+  const block = { kind: "thinking" as const, text: `**${bad}**\n\n${bad}`, key: 0 };
+  const look = {
+    phase: "finished" as const,
+    task: "x",
+    expanded: true,
+    blocks: [block],
+    thinkingOpen: new Set([0]),
   };
-  const look = { phase: "finished" as const, task: "x", expanded: true, blocks: [block] };
   const lines = new view.RowView(look, undefined, "", theme, 0).render(80);
   for (const line of lines) {
     for (const bad of ["\x1b[2J", "\x07", "\t", "\x1b]0;"])
@@ -3216,17 +3338,6 @@ test("an opened row shows its own run of a conversation, not the run next to it"
   assert.deepEqual(texts(1_900, 2_600), ["two", "ANSWER TWO."]);
   // A run refused before its prompt was saved has nothing of its own.
   assert.equal(texts(2_700, 2_800), undefined);
-});
-
-test("without mirage, a comrade's thinking follows Ctrl+T, which changes Pi's setting", async (t) => {
-  const { tool, call, settings } = fixture(t, "work");
-  const result = await call({ task: "Check the notes" });
-  const row = opened(tool, result, "Check the notes");
-  assert(render(row).includes("The notes come first."));
-  settings.hideThinkingBlock = true;
-  // One reading of the setting stands for a quarter of a second.
-  await new Promise((wake) => setTimeout(wake, 300));
-  assert(!render(row).includes("The notes come first."));
 });
 
 test("a running background comrade's open start row shows its work after /reload", async (t) => {
