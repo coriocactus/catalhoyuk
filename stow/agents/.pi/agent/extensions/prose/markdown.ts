@@ -1,7 +1,7 @@
 // Markdown drawn for reading, and selection bounded to text. Code blocks lose their fence lines and
-// are indented, and inline code is bold and yellow. Wrapped lines, in Markdown and
-// in plain text, keep their indent, and lines end where their text ends. User messages are a green
-// bar beside green italic text, with no background. In fullscreen, Pi's own
+// are indented, and inline code is bold and yellow. Wrapped lines, in Markdown and in plain text,
+// keep their indent, and lines end where their text ends. User messages show as typed, without
+// Markdown: a green bar beside green italic text, with no background. In fullscreen, Pi's own
 // selection then stops at each line's text, before any caret, and starts at its content, skipping
 // margins and indents, a copy joins continuation lines back into the lines they came from, and a
 // triple-click selects a whole wrapped line.
@@ -68,6 +68,7 @@ interface MarkdownInternals {
   [DEPTH]?: number;
 }
 interface UserMessageInternals {
+  text: string;
   children: Component[];
   outputPad: number;
   clear(): void;
@@ -217,48 +218,34 @@ function restyled(base: MarkdownTheme): MarkdownTheme {
   return theme;
 }
 
-/**
- * A user message's Markdown theme: as the others, with its list markers in its text's green. It
- * is restyled already, so drawing it keeps them green.
- */
-const userThemes = new WeakMap<MarkdownTheme, MarkdownTheme>();
-function forUser(base: MarkdownTheme): MarkdownTheme {
-  let theme = userThemes.get(base);
-  if (!theme) {
-    theme = Object.assign(Object.create(restyled(base)) as MarkdownTheme, {
-      listBullet: (text: string) => paint(undefined, "moss", text),
-    });
-    restyledThemes.set(theme, theme);
-    userThemes.set(base, theme);
-    userThemes.set(theme, theme);
-  }
-  return theme;
+/** A line of a user message: green italic, as typed. */
+function typed(line: string): string {
+  const text = line.replace(/ +$/, "");
+  return stripTerminalSequences(text) ? `\x1b[3m${paint(undefined, "moss", text)}\x1b[23m` : text;
 }
 
-/** A user message's text style: green italic, and no background. */
-const userText = { color: (text: string) => paint(undefined, "moss", text), italic: true };
-
 /**
- * A user message: a green bar beside each line of its text, and no background. Pi puts a blank
- * line above and below it. The bar is layout: a selection starts after it.
+ * A user message as typed: its text, without Markdown, in green italic, with a green bar beside
+ * each line, blank lines included, and no background. Pi puts a blank line above and below it.
+ * The bar is layout: a selection starts after it.
  */
 class Quoted implements Component {
-  private readonly markdown: Markdown;
+  private readonly text: Text;
   private readonly pad: () => number;
   private drawn?: { source: readonly string[]; pad: number; lines: string[] };
 
-  constructor(markdown: Markdown, pad: () => number) {
-    this.markdown = markdown;
+  constructor(text: string, pad: () => number) {
+    this.text = new Text(text, 0, 0);
     this.pad = pad;
   }
 
   render(width: number): string[] {
     const pad = Math.max(0, Math.min(this.pad(), width - 3));
-    const source = this.markdown.render(Math.max(1, width - pad - 2));
+    const source = this.text.render(Math.max(1, width - pad - 2));
     if (this.drawn?.source === source && this.drawn.pad === pad) return this.drawn.lines;
     const bar = `${" ".repeat(pad)}${paint(undefined, "moss", "┃")} `;
     const lines = source.map(
-      (line) => `${bar}${findMarker(line) ? line : `${CONTENT_START}${line}`}`,
+      (line) => `${bar}${findMarker(line) ? "" : CONTENT_START}${typed(line)}`,
     );
     this.drawn = { source, pad, lines };
     return lines;
@@ -266,7 +253,7 @@ class Quoted implements Component {
 
   invalidate(): void {
     this.drawn = undefined;
-    this.markdown.invalidate();
+    this.text.invalidate();
   }
 }
 
@@ -330,7 +317,8 @@ function knownUser(rebuild: Method): boolean {
     markdown?.paddingX === 1 &&
     markdown.paddingY === 1 &&
     typeof markdown.defaultTextStyle?.bgColor === "function" &&
-    typeof markdown.defaultTextStyle.color === "function"
+    typeof markdown.defaultTextStyle.color === "function" &&
+    probe.text === "x"
   );
 }
 
@@ -592,16 +580,11 @@ function replacement(key: string, original: Method): Method {
         original.call(this);
         const [markdown] = this.children;
         if (this.children.length !== 1 || !(markdown instanceof Markdown)) return;
-        // Pi's own Markdown, with its transform and options, drawn without its background and
-        // padding: the bar and the blank lines around it take their place.
-        const internals = markdown as unknown as MarkdownInternals;
-        internals.defaultTextStyle = userText;
-        internals.theme = forUser(internals.theme);
-        internals.paddingX = 0;
-        internals.paddingY = 0;
-        markdown.invalidate();
+        if (typeof this.text !== "string") return;
+        // The text as typed, in place of Pi's Markdown, its background and padding: the bar and
+        // the blank lines around it take their place.
         this.clear();
-        this.addChild(new Quoted(markdown, () => this.outputPad));
+        this.addChild(new Quoted(this.text, () => this.outputPad));
       };
     case "screen.getLineSelection":
       return function (this: ScreenInternals, point: Point) {

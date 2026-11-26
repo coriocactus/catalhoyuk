@@ -1,6 +1,6 @@
 # Prose
 
-Prose changes how Pi draws Markdown and plain text, and bounds its text selection to the text. Code blocks lose their fence lines, are indented, and keep their language's highlighting. Inline code, which already shows without backticks, is bold and in the terminal's yellow, headings are in its cyan, and list markers, bulleted and numbered, are in the text's colour. Wrapped lines keep their indent, in Markdown and in plain text such as tool output. Markdown lines end where their text ends instead of being padded with spaces to the right edge. A user message is a green bar beside green italic text, with no background.
+Prose changes how Pi draws Markdown and plain text, and bounds its text selection to the text. Code blocks lose their fence lines, are indented, and keep their language's highlighting. Inline code, which already shows without backticks, is bold and in the terminal's yellow, headings are in its cyan, and list markers, bulleted and numbered, are in the text's colour. Wrapped lines keep their indent, in Markdown and in plain text such as tool output. Markdown lines end where their text ends instead of being padded with spaces to the right edge. A user message shows as typed, without Markdown: a green bar beside green italic text, with no background.
 
 ## Colours
 
@@ -8,7 +8,7 @@ Inline code is `yellow`, headings `sky`, and user messages `moss`, in **`shared/
 
 ## User messages
 
-A user message keeps Pi's Markdown, and draws it without the background and its padding: a green `┃` beside every line of the text, blank lines between paragraphs included, and the blank lines Pi puts around every message. Its list markers are green, as its text is. Pi's output padding comes before the bar. The bar is layout: a selection starts after it.
+A user message shows as typed, without Markdown: `**`, backticks, `#` and indents stay as they were, all in green italic. It has no background or padding: a green `┃` beside every line of the text, blank lines between paragraphs included, and the blank lines Pi puts around every message. Long lines wrap beside the bar. Pi's output padding comes before the bar. The bar is layout: a selection starts after it.
 
 ## Selection
 
@@ -42,7 +42,7 @@ Prose is an adapter. It installs four patches through `shared/patch.ts`, which r
 
 The classes are imported by name, so `npm run pi-diff` watches their modules on upgrades.
 
-Before each patch, Prose probes Pi's own code: a code block, a wrapped and cached text, a selection, copy, and triple-click, and a user message built as one padded Markdown with a background. A patch whose Pi code no longer looks as expected is not installed, with one warning. After each patch, Prose checks again through the patched code, since Pi could pass a probe and yet stop calling what Prose replaced. It removes a patch that fails this check, with one warning. When Pi starts, such a warning waits for your first key: Pi draws the session's transcript after Prose loads, and the warning would otherwise sit above it. Sessions share the patches, and the last to shut down restores Pi's methods. If another extension has replaced one of Prose's methods, Prose does not load.
+Before each patch, Prose probes Pi's own code: a code block, a wrapped and cached text, a selection, copy, and triple-click, and a user message built as one padded Markdown with a background, from the text as typed. A patch whose Pi code no longer looks as expected is not installed, with one warning. After each patch, Prose checks again through the patched code, since Pi could pass a probe and yet stop calling what Prose replaced. It removes a patch that fails this check, with one warning. When Pi starts, such a warning waits for your first key: Pi draws the session's transcript after Prose loads, and the warning would otherwise sit above it. Sessions share the patches, and the last to shut down restores Pi's methods. If another extension has replaced one of Prose's methods, Prose does not load.
 
 Apply changes with `/reload`.
 

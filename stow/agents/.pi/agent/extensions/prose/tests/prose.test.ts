@@ -193,7 +193,7 @@ test("list markers, bulleted and numbered, take the text's colour", (t) => {
   assert(!lines.some((line) => line.includes("<")), "no colour of the theme's own");
 });
 
-test("a user message is a green bar beside green italic text, with no background", (t) => {
+test("a user message shows as typed: a green bar beside green italic text, no background", (t) => {
   let release: (() => void) | undefined = installProse(() => {});
   t.after(() => release?.());
   const message = (text: string, pad = 1) =>
@@ -203,8 +203,10 @@ test("a user message is a green bar beside green italic text, with no background
   // around the message.
   assert.deepEqual(plain(lines), [" ┃ First line", " ┃", " ┃ Second paragraph"]);
   assert(lines[0].includes(paint(undefined, "moss", "┃")), "a green bar");
-  // Green italic text: Pi's italics are off while a test's output is a pipe.
-  assert(lines[0].includes(paint(undefined, "moss", "First line")), "green text");
+  // Green italic text, one span to the line's end.
+  const green = paint(undefined, "moss", "").split("\x1b[39m")[0];
+  assert(lines[0].includes(`\x1b[3m${green}`), "green italic");
+  assert(lines[0].endsWith("First line\x1b[39m\x1b[23m"), "one span to the line's end");
   assert(tui.visibleWidth(lines[0]) < 40, "no background reaching the edge");
   // The bar is layout: a selection starts after it, and a copy has the text alone.
   const across = { start: { row: 0, col: 0 }, end: { row: 2, col: 0 } };
@@ -212,11 +214,33 @@ test("a user message is a green bar beside green italic text, with no background
   assert.equal(copy(lines), "First line\n\nSecond paragraph");
   // Pi's output padding comes before the bar.
   assert.deepEqual(plain(message("x", 0)), ["┃ x"]);
-  // List markers, bulleted and numbered, stay in the message's green.
-  const list = message("- one\n\n1. two");
-  assert.deepEqual(plain(list), [" ┃ - one", " ┃", " ┃ 1. two"]);
-  assert(list[0].includes(paint(undefined, "moss", "- ")), JSON.stringify(list[0]));
-  assert(list[2].includes(paint(undefined, "moss", "1. ")), JSON.stringify(list[2]));
+  // No Markdown: what was typed shows, marks, indents and all, in nothing but the green.
+  const typed = message(
+    "# Heading\n**bold** `code` [a](b)\n- one\n    indented\n```ts\nconst x = 1;\n```",
+    1,
+  );
+  assert.deepEqual(plain(typed), [
+    " ┃ # Heading",
+    " ┃ **bold** `code` [a](b)",
+    " ┃ - one",
+    " ┃     indented",
+    " ┃ ```ts",
+    " ┃ const x = 1;",
+    " ┃ ```",
+  ]);
+  for (const line of typed) {
+    const colours = line.split("\x1b[38;5;").slice(1);
+    assert(
+      colours.every((colour) => colour.startsWith("2m")),
+      JSON.stringify(line),
+    );
+    assert(!line.includes("\x1b[1m"), "nothing bold");
+  }
+  // A long line wraps beside the bar, and a copy joins it back.
+  const long = "a long message that wraps across more than one row of the transcript";
+  const wrapped = message(long);
+  assert(wrapped.length > 1 && plain(wrapped).every((line) => line.startsWith(" ┃ ")));
+  assert.equal(copy(wrapped), long);
   release();
   release = undefined;
   // Pi's own user message is back, padded: its background reaches the edge.
