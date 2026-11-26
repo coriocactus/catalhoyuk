@@ -1,6 +1,6 @@
 // Edit these colours, then /reload. Each is a six-digit RGB value, or a number for one of the
 // terminal's own 256 palette entries, which follow its theme (0–15: 1 red,
-// 2 green, 3 yellow, 4 blue). Mirage's and comrade's rows use them, and prose's inline code and
+// 2 green, 3 yellow, 4 blue, 6 cyan). Mirage's and comrade's rows use them, and prose's inline code and
 // user messages; Pi's own colours and the theme's syntax colours do not change.
 import type { Theme } from "@earendil-works/pi-coding-agent";
 

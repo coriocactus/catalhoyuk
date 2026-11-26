@@ -13,6 +13,15 @@ export function formatDuration(ms: number): string {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m ${total % 60}s`;
 }
 
+/** Pi's footer format for token counts: `805`, `7.2k`, `41k`, `1.2M`, `12M`. */
+export function formatTokens(count: number): string {
+  if (count < 1000) return `${count}`;
+  if (count < 1e4) return `${(count / 1000).toFixed(1)}k`;
+  if (count < 1e6) return `${Math.round(count / 1000)}k`;
+  if (count < 1e7) return `${(count / 1e6).toFixed(1)}M`;
+  return `${Math.round(count / 1e6)}M`;
+}
+
 /** Pi's format: cents from one cent up, two significant digits below a cent. */
 export function formatCost(cost: number): string {
   if (!cost) return "$0.00";

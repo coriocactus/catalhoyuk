@@ -6,7 +6,7 @@ import type {
   ExtensionContext,
   SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
-import type { TUI } from "@earendil-works/pi-tui";
+import type { Component, TUI } from "@earendil-works/pi-tui";
 import { type Fake, fake, fakePi } from "../../test/fake-pi.ts";
 import { core, load, piModule, themes, tui } from "../../test/pi.ts";
 
@@ -53,7 +53,8 @@ function fixture(
     current = previous,
     renders = 0,
     idle = false,
-    escapes = 0;
+    escapes = 0,
+    notices = 0;
   install(pi.api);
   const host = fake<TUI>({
     terminal: { rows: 40 } as Fake<TUI["terminal"]>,
@@ -63,11 +64,28 @@ function fixture(
   });
   const indicator = new WorkingStatusIndicator(host, "Working", { frames: ["⠋"] });
   t.after(() => indicator.dispose());
+  let footer: Component | undefined;
   const ctx = fake<ExtensionContext>({
     mode,
     isIdle: () => idle,
     sessionManager,
+    getContextUsage: () => undefined,
     ui: {
+      theme: themes.theme,
+      setFooter(factory) {
+        footer = factory?.(
+          host,
+          themes.theme,
+          fake<Parameters<NonNullable<typeof factory>>[2]>({
+            getGitBranch: () => "main",
+            getExtensionStatuses: () => new Map(),
+            getAvailableProviderCount: () => 1,
+          }),
+        );
+      },
+      notify() {
+        notices++;
+      },
       setStatus() {
         assert.fail("The hint must not add a footer row");
       },
@@ -106,15 +124,25 @@ function fixture(
     get installed() {
       return editor !== undefined;
     },
+    /** The hint, on the box's bottom border, where the working status is. */
     get status() {
-      const border = stripTerminalSequences(this.editor.render(100)[0]);
-      return border.match(/Press Esc again to stop/)?.[0];
+      const border = this.editor
+        .render(100)
+        .map(stripTerminalSequences)
+        .find((row) => row.startsWith("╰"));
+      return border?.match(/Press Esc again to stop/)?.[0];
+    },
+    get footer() {
+      return footer;
     },
     get renders() {
       return renders;
     },
     get escapes() {
       return escapes;
+    },
+    get notices() {
+      return notices;
     },
     set idle(value: boolean) {
       idle = value;
@@ -155,18 +183,24 @@ test("the hint replaces Working beside the spinner without changing the layout",
   f.editor.setText("keep this draft\nsecond line");
   for (const width of [1, 5, 20, 35, 60, 100]) {
     const before = f.editor.render(width);
+    // The status is on the box's bottom border; narrower than the box, on Pi's top border.
+    const bottom = before.findIndex((row) => stripTerminalSequences(row).startsWith("╰"));
+    const at = width >= 12 ? bottom : 0;
+    assert(at >= 0, `a status border at ${width} columns`);
     const renders = f.renders;
     f.editor.handleInput("\x1b");
     assert.equal(f.renders, renders + 1, "arming requests a repaint");
     const armed = f.editor.render(width);
     assert.equal(armed.length, before.length, "no added rows");
-    assert.deepEqual(armed.slice(1), before.slice(1), "draft, cursor and bottom border stay put");
-    assert.equal(visibleWidth(armed[0]), width, "border does not wrap");
-    assert.match(stripTerminalSequences(armed[0]), /⠋/, "keep Pi's spinner");
-    if (width >= 60) assert.match(stripTerminalSequences(armed[0]), /⠋ Press Esc again/);
+    for (const [index, row] of armed.entries())
+      if (index !== at)
+        assert.equal(row, before[index], "draft, cursor and other borders stay put");
+    assert.equal(visibleWidth(armed[at]), width, "border does not wrap");
+    assert.match(stripTerminalSequences(armed[at]), /⠋/, "keep Pi's spinner");
+    if (width >= 60) assert.match(stripTerminalSequences(armed[at]), /⠋ Press Esc again/);
     t.mock.timers.tick(1500);
     assert.equal(f.renders, renders + 2, "expiry repaints even without keyboard input");
-    assert.deepEqual(f.editor.render(width), before, "restore Pi's original working border");
+    assert.deepEqual(f.editor.render(width), before, "restore Pi's original working status");
   }
 });
 
@@ -330,6 +364,31 @@ test("an editor another extension set gets the prompt history too", (t) => {
   assert(f.editor instanceof Other);
   f.editor.handleInput("\x1b[A");
   assert.equal(f.editor.getText(), "first");
+});
+
+test("an editor the box cannot draw around gets Pi's footer back", async (t) => {
+  // Another extension's editor that is not Pi's: Interupt still guards its Escape.
+  class Foreign {
+    text = "";
+    render = () => ["foreign editor"];
+    invalidate() {}
+    handleInput() {}
+    getText = () => this.text;
+    setText(text: string) {
+      this.text = text;
+    }
+    setWorkingStatusIndicator() {}
+  }
+  const f = fixture(t, { previous: () => new Foreign() as unknown as CustomEditor });
+  assert(f.footer, "the footer is hidden behind an empty one, at first");
+  await new Promise<void>(queueMicrotask);
+  assert.equal(f.footer, undefined, "Pi's own footer is back");
+  assert.deepEqual(f.editor.render(80), ["foreign editor"]);
+  // A new session neither hides the footer again nor warns again, until /reload.
+  f.emit("session_start", { reason: "new" });
+  await new Promise<void>(queueMicrotask);
+  assert.equal(f.footer, undefined);
+  assert.equal(f.notices, 1, "one warning");
 });
 
 test("remapped interrupts are untouched; plain Escape does not arm", (t) => {

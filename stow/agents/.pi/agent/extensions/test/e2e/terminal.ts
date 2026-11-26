@@ -344,6 +344,10 @@ async function expandEditGroup() {
 async function setOutputPadding(padding: number) {
   terminal.send("/settings\r");
   await terminal.waitFor((s) => s.includes("Enter/Space to change"), "open settings");
+  // The dialog takes the editor's place, and its box with it: the labels stay, on one line
+  // where the footer was.
+  const footer = terminal.snapshot.rows.findLast((row) => row.text.trim())?.text ?? "";
+  assert(footer.includes("fixture") && !footer.includes("╰"), `labels below a dialog: ${footer}`);
   terminal.send("output padding");
   await terminal.waitFor((s) => /Output padding\s+[01]/.test(s), "find output padding");
   terminal.send("\r");
@@ -481,9 +485,17 @@ try {
     draft: terminal.locate("ESC_LAYOUT_DRAFT").y,
     transcript: terminal.locate("Explored 2 files").y,
   };
+  // The editor's box: its top border above the draft, with the model on its right; three rows of
+  // text; the bottom border, where the working status is.
+  const { rows: boxRows } = terminal.snapshot;
+  const boxTop = boxRows[hintAnchor.draft - 1].text.trim();
+  assert(boxTop.startsWith("╭") && boxTop.endsWith("─╮"), boxTop);
+  assert(boxTop.includes("fixture"), "the model is on the top border");
+  const boxBottom = boxRows[hintAnchor.draft + 3].text.trim();
+  assert(boxBottom.startsWith("╰─") && boxBottom.endsWith("─╯"), boxBottom);
   terminal.send("\x1b");
   await terminal.waitFor((s) => s.includes("Press Esc again"), "interrupt hint in editor border");
-  assert.equal(terminal.locate("Press Esc again").y, hintAnchor.draft - 1);
+  assert.equal(terminal.locate("Press Esc again").y, hintAnchor.draft + 3);
   assert.equal(terminal.locate("ESC_LAYOUT_DRAFT").y, hintAnchor.draft);
   assert.equal(terminal.locate("Explored 2 files").y, hintAnchor.transcript);
   await terminal.waitFor((s) => !s.includes("Press Esc again"), "interrupt hint expires in place");

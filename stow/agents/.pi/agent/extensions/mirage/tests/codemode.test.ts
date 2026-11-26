@@ -484,3 +484,20 @@ test("calls inside scripts follow their script through regrouping, prepends and 
   model.stagePrepend(older).commit();
   assert(model.startNested("old/1", "old/1/1", "read", {}, root), "prepended calls are indexed");
 });
+
+test("a script on its own holds its words steady while it spins, as a group's summary does", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "Date"] });
+  const f = await fixture({ busy: true });
+  const run = f.call("codemode", "steady-script", { code: CODE });
+  const nested = events(f, "steady-script");
+  const spinning = (label: string) => new RegExp(`^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Script: ${label} ▸$`);
+  plain(run.view);
+  await nested.start("1", "read", { path: "a.txt" });
+  t.mock.timers.tick(1000);
+  assert.match(plain(run.view), spinning("exploring 1 file"));
+  // Within the second, the read ends: what the script does now waits its turn.
+  await nested.end("1", "read", result("a"));
+  assert.match(plain(run.view), spinning("exploring 1 file"));
+  t.mock.timers.tick(1000);
+  assert.match(plain(run.view), spinning("explored 1 file"));
+});

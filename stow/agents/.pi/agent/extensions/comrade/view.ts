@@ -16,8 +16,9 @@ import {
   visibleWidth,
 } from "@earendil-works/pi-tui";
 import { paint } from "../shared/colours.ts";
-import { formatCost, formatDuration, homePath } from "../shared/format.ts";
+import { formatCost, formatDuration, formatTokens, homePath } from "../shared/format.ts";
 import { ALL_MARKERS, CONTENT_END, CONTENT_START, findMarker } from "../shared/selection.ts";
+import { Steady } from "../shared/steady.ts";
 import type { Activity, Streamed } from "./run.ts";
 import { type Live, oneLine, type Row, summary, type Work } from "./work.ts";
 
@@ -200,15 +201,6 @@ export function taskLine(task: string): string {
 export function formatElapsed(ms: number): string {
   const seconds = Math.max(0, Math.floor(ms / 1000));
   return seconds < 60 ? `${seconds}s` : formatDuration(seconds * 1000);
-}
-
-/** Pi's footer format: `805`, `7.2k`, `41k`, `1.2M`. */
-export function formatTokens(count: number): string {
-  if (count < 1000) return `${count}`;
-  if (count < 1e4) return `${(count / 1000).toFixed(1)}k`;
-  if (count < 1e6) return `${Math.round(count / 1000)}k`;
-  if (count < 1e7) return `${(count / 1e6).toFixed(1)}M`;
-  return `${Math.round(count / 1e6)}M`;
 }
 
 // Resets text styles but never the background, so a cut keeps any colour behind it.
@@ -497,12 +489,6 @@ const UNDERLINES = /\x1b\[(?:4|24)m/g;
 export const SETTLE_MS = 2000;
 
 /**
- * How long what a running row shows stays before it may change, so a state that lasted just long
- * enough to show does not flash by when it ends.
- */
-export const STEADY_MS = 1000;
-
-/**
  * What the comrade is doing has lasted long enough to name. A retry is named at once, and so is
  * what a run from an older version, which reported no activity, is doing.
  */
@@ -521,33 +507,6 @@ export function nowDoing(card: RunDetails): [kind: string, text: string] {
   const done = card.work?.tallies.length ? summary(card.work.tallies) : "";
   if (done && !lasting(card)) return ["done", done];
   return [card.activity?.state ?? "", activityText(card) || "starting"];
-}
-
-/**
- * A line that changes what it shows at most once every STEADY_MS. Its kind says what the line
- * shows, a wait or a call: another kind waits until the last has shown that long, and is dropped
- * if a third replaces it first. The same kind updates in place, as a clock ticks or a spinner
- * turns. While another waits, `redraw` draws the kind shown from what is known now, so a call held
- * on its line still turns its spinner, or says it has ended; a kind it cannot draw stays as drawn.
- */
-export class Steady {
-  private kind?: string;
-  private line = "";
-  private since = 0;
-
-  show(kind: string, line: string, redraw?: (kind: string) => string | undefined): string {
-    const now = Date.now();
-    if (kind !== this.kind) {
-      if (this.kind !== undefined && now - this.since < STEADY_MS) {
-        this.line = redraw?.(this.kind) ?? this.line;
-        return this.line;
-      }
-      this.kind = kind;
-      this.since = now;
-    }
-    this.line = line;
-    return line;
-  }
 }
 
 /** What it waits on: `thinking`, `waiting 48s`, a retry in the warning colour. */

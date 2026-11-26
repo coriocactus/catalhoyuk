@@ -305,11 +305,11 @@ export class ToolGroups {
   }
 
   /**
-   * Whether a group can still grow: it is the latest, and nothing that separates calls has come
-   * since. A call that can join it joins it.
+   * Whether a group is growing: it is the latest, no boundary has come since, and a call that can
+   * join it joins it. A group with a call nothing will end, as one a saved session left, is not.
    */
-  isOpen(group: ToolGroup): boolean {
-    return this.tail === group;
+  isGrowing(group: ToolGroup): boolean {
+    return this.tail === group && !group.rows.some((row) => row.abandoned);
   }
 
   addCall(id: string, name: string, args: unknown, cwd: string): ToolCallState | undefined {

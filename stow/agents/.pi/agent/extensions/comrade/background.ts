@@ -2,6 +2,7 @@
 // follow it, send it messages, and stop it. When it ends, its answer goes to the outbox.
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { formatCost, formatDuration } from "../shared/format.ts";
+import { Steady } from "../shared/steady.ts";
 import { reasonOf, respond } from "./answer.ts";
 import { type Delivery, emptyProgress, type Listed, live, summary } from "./details.ts";
 import type { Outbox } from "./outbox.ts";
@@ -16,7 +17,7 @@ import {
 import { dropRuns, follow, launched, quietly, saveRun, updateRun } from "./runs.ts";
 import type { Session } from "./session.ts";
 import type { Transcripts } from "./transcripts.ts";
-import { activityText, nowDoing, type Running, Steady, taskLine } from "./view.ts";
+import { activityText, nowDoing, type Running, taskLine } from "./view.ts";
 import { summary as workSummary } from "./work.ts";
 
 /** Background comrades running at once, to bound cost. */

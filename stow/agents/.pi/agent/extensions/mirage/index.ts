@@ -76,6 +76,8 @@ export default function (pi: ExtensionAPI) {
   const kinds: ToolKinds = (name) =>
     claims(name) ? (name as ToolName) : MCP_TOOL.test(name) || plain.get(name) ? "tool" : undefined;
   const groups = new ToolGroups(kinds);
+  /** The live model, as a renderer names the model of its own row `groups`. */
+  const live = groups;
   let historyGroups = new WeakMap<HistoryPage, ToolGroups>();
   const images = new WeakMap<ToolCallState, (width: number) => readonly string[]>();
   // Pi redraws a script's calls only when it redraws the script's row, so keep each script
@@ -96,22 +98,22 @@ export default function (pi: ExtensionAPI) {
   // Pi draws a compaction's summary below the entries it kept, until it next draws the whole
   // transcript, which puts the summary first: a call made after the compaction starts a group.
   let compacted = false;
-  // Live rows whose group still has calls in progress spin while Pi works: see shared/spinner.ts.
-  // Its timer stops once none remain or Pi is idle, when a row left in progress is redrawn once
-  // to show its resting glyph, so nothing runs between turns.
+  // Live rows whose group has calls in progress, or is growing, spin while Pi works: see
+  // shared/spinner.ts. Its timer stops once none remain or Pi is idle, when a row left spinning
+  // is redrawn once to show its final glyph, so nothing runs between turns.
   const working = () => sessionContext?.isIdle?.() === false;
   const spinning = new Spinner<ToolCallState>(working);
   const spinner = () => (working() ? spinnerFrame() : undefined);
   /** Whether Pi is drawing a row again with nothing changed that its view must throw away. */
   const animating = () => spinning.animating || redrawing;
   /**
-   * Whether a row still leads a group of the live model that has calls in progress, or can still
-   * grow: a group spins between its calls, and rests once something it cannot hold comes.
+   * Whether a row still leads a group of the live model that has calls in progress, or is
+   * growing: a group spins between its calls, and stops once a boundary comes.
    */
   const spins = (row: ToolCallState) =>
     groups.rows.get(row.id) === row &&
     row.group.rows[0] === row &&
-    (row.group.rows.some(inProgress) || groups.isOpen(row.group));
+    (row.group.rows.some(inProgress) || groups.isGrowing(row.group));
   const models = new Set([new WeakRef(groups)]);
   /** Another agent's calls (see below), which do not follow Ctrl+T. */
   const nestedModels = new WeakSet<ToolGroups>();
@@ -354,7 +356,7 @@ export default function (pi: ExtensionAPI) {
               renderImages: () => [],
               spinner: frame,
               // The agent's latest group grows while the agent runs, as Pi's own does.
-              open: (group) => model.isOpen(group),
+              grows: (group) => model.isGrowing(group),
             });
             views.set(id, view);
           }
@@ -408,8 +410,8 @@ export default function (pi: ExtensionAPI) {
               outputPad: () => state.outputPad ?? 0,
               renderImages: (target, width) => images.get(target)?.(width) ?? [],
               spinner,
-              // Only the live model grows: a page of history never does.
-              open: (group) => groups.isOpen(group),
+              // Only the live model grows: a page of history, with a model of its own, never does.
+              grows: (group) => live.isGrowing(group),
               spun: () => spinning.drew(row),
               animating,
             });

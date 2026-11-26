@@ -161,7 +161,7 @@ async function measure(name: "alone" | "extended", attempt: number): Promise<Map
     }
   };
   try {
-    await terminal.waitFor((screen) => screen.includes("stream"), "the footer names the model");
+    await terminal.waitFor((screen) => screen.includes("stream"), "the box names the model");
     await quiet(400);
     terminal.send("\x0f"); // Ctrl+O: tool output expanded from here on.
     await quiet(400);

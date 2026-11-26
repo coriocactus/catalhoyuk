@@ -14,7 +14,7 @@ export interface SpinningRow {
   redraw(): void;
   /** Whether it still spins. A row that does not is forgotten at the next tick. */
   spinning(): boolean;
-  /** Draw it once more as it is forgotten, for a row nothing else draws at rest. */
+  /** Draw it once more as it is forgotten, for a row nothing else draws once it stops. */
   settle?: boolean;
   /** Told once it is forgotten. */
   forgotten?(): void;
@@ -65,7 +65,7 @@ export class Spinner<Key> {
     else this.drawn = true;
   }
 
-  /** Stops the timer and forgets every row, each redrawn once to rest unless `quiet`. */
+  /** Stops the timer and forgets every row, each redrawn once, still, unless `quiet`. */
   stop(quiet = false): void {
     clearInterval(this.timer);
     this.timer = undefined;

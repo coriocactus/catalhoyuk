@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { Theme, ToolInfo, ToolRenderers } from "@earendil-works/pi-coding-agent";
+import type {
+  Theme,
+  ToolDefinition,
+  ToolInfo,
+  ToolRenderers,
+} from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 import { colours, muted } from "../../shared/colours.ts";
+import { HISTORY_PAGE, type HistoryPage } from "../../shared/history.ts";
 import { OPEN_FILE_EVENT, type OpenFileRequest } from "../../shared/protocol.ts";
 import { CONTENT_END } from "../../shared/selection.ts";
 import { fake, fakePi } from "../../test/fake-pi.ts";
@@ -209,7 +215,7 @@ test("mixed groups merge across tool-only turns without crossing messages or for
   const second = batch("second");
   const b = row("second");
   assert.equal(a.group, b.group, "a streaming call joins its run while arguments load");
-  assert(model.expanded(a) && model.expanded(a.group), "joining preserves open diffs");
+  assert(model.expanded(a) && model.expanded(a.group), "joining keeps expanded diffs");
   model.finishMessage(second as unknown as Message, root);
   assert.equal(a.group, b.group);
   // Late commentary renders above the call, so it must split the provisional join.
@@ -222,7 +228,7 @@ test("mixed groups merge across tool-only turns without crossing messages or for
     a.group.rows.map((value) => value.id),
     ["first", "second"],
   );
-  assert(model.expanded(a), "splitting preserves open rows");
+  assert(model.expanded(a), "splitting keeps expanded rows");
   model.finishMessage(late as unknown as Message, root);
   assert.notEqual(row("late").group, a.group);
 
@@ -714,7 +720,11 @@ test("a command's own line has a bold, status-coloured dollar; its summary a tic
   b.result(result("passed"));
   assert.equal(plain(a.view), "✓ Ran 2 commands ▸");
   b.result(result("failed"), true);
-  assert.equal(plain(a.view), "✓ Ran 2 commands ▸", "no failure count; closed groups are one line");
+  assert.equal(
+    plain(a.view),
+    "✓ Ran 2 commands ▸",
+    "no failure count; collapsed groups are one line",
+  );
   assert(
     a.view
       .render(160)
@@ -741,7 +751,7 @@ test("a command's own line has a bold, status-coloured dollar; its summary a tic
   );
 });
 
-test("closed groups hide failed calls; open groups show them with their error bodies", async () => {
+test("collapsed groups hide failed calls; expanded groups show them with their error bodies", async () => {
   const f = await fixture();
   const a = f.call("bash", "a", { command: "printf hello" }, false);
   const b = f.call("bash", "b", { command: "exit 1" }, false);
@@ -753,7 +763,7 @@ test("closed groups hide failed calls; open groups show them with their error bo
   assert.equal(plain(a.view), "✓ Ran 2 commands ▸");
   a.view.handleMouse(mouse(0));
   assert.match(plain(a.view), /^ {2}\$ exit 1 ▸$/m);
-  assert(!plain(a.view).includes("ERROR_BODY"), "error output stays closed with its row");
+  assert(!plain(a.view).includes("ERROR_BODY"), "error output stays collapsed with its row");
   a.view.handleMouse(mouse(0, 2));
   assert.match(plain(a.view), /ERROR_BODY\n\s*STACK_TRACE/);
   a.view.handleMouse(mouse(0, 2));
@@ -926,7 +936,7 @@ test("edit groups expand into clickable files with independent diffs and global 
   const c = f.call("edit", "expand-edit-c", { path: "c.txt" });
   c.result(result("done", { diff: "+1 AFTER_C" }));
   assert.match(plain(a.view), /Edited 3 files \(\+3 −1\) ▾/);
-  assert(plain(a.view).includes("AFTER_A"), "growing a group preserves its open diffs");
+  assert(plain(a.view).includes("AFTER_A"), "growing a group keeps its expanded diffs");
   assert(!plain(a.view).includes("AFTER_C"));
   f.expand(true);
   assert(plain(a.view).includes("AFTER_B") && plain(a.view).includes("AFTER_C"));
@@ -934,7 +944,7 @@ test("edit groups expand into clickable files with independent diffs and global 
   assert.equal(plain(a.view), "✓ Edited 3 files (+3 −1) ▸");
 });
 
-test("failed edits are hidden in closed groups, red only when all failed, and add no diff totals", async () => {
+test("failed edits are hidden in collapsed groups, red only when all failed, and add no diff totals", async () => {
   const f = await fixture();
   const a = f.call("edit", "good-edit", { path: "good.txt" });
   a.result(result("done", { diff: "-1 before\n+1 after" }));
@@ -1324,7 +1334,7 @@ test("Pi's searches and listings are drawn in their own words, and explore with 
   // Searches count together, per call; reads among only searches and listings explore.
   assert.equal(plain(grep.view), "✓ Ran 2 searches, listed 1 directory, explored 1 file ▸");
   f.expand(true);
-  const open = plain(grep.view).split("\n");
+  const expanded = plain(grep.view).split("\n");
   for (const line of [
     '  ✓ Searched "parseList" in src (*.ts) ▾',
     "    src/a.ts:1: parseList",
@@ -1332,7 +1342,7 @@ test("Pi's searches and listings are drawn in their own words, and explore with 
     "  ✓ Listed . ▾",
     "    b",
   ])
-    assert(open.includes(line), `${line}\n${open.join("\n")}`);
+    assert(expanded.includes(line), `${line}\n${expanded.join("\n")}`);
   // With a command among them, reads are reads again.
   f.call("bash", "s-bash", { command: "true" }).result(result(""));
   f.expand(false);
@@ -1372,7 +1382,7 @@ test("a tool with no renderer of its own is drawn as a plain call, grouped with 
     "✓ Read 1 file, called 1 docs tool, called source_check 2 times ▸",
   );
   f.expand(true);
-  const open = plain(read.view).split("\n");
+  const expanded = plain(read.view).split("\n");
   for (const line of [
     // Named by its server and tool, and by what an argument says it is about.
     "  ✓ docs · search auth bug ▾",
@@ -1382,7 +1392,7 @@ test("a tool with no renderer of its own is drawn as a plain call, grouped with 
     // Without such an argument, all of them.
     '  ✓ source_check {"claim":"x"} ▾',
   ])
-    assert(open.includes(line), `${line}\n${open.join("\n")}`);
+    assert(expanded.includes(line), `${line}\n${expanded.join("\n")}`);
 });
 
 test("a call seen before Pi resolves its renderer joins its group once mirage draws it", async () => {
@@ -1438,21 +1448,21 @@ test("calls in progress show Pi's working spinner while Pi works, and stop spinn
   // The label shown stays its second before the group's takes its place.
   assert.equal(plain(read.view), "⠸ Reading a.txt ▸");
   t.mock.timers.tick(760);
-  assert.match(plain(read.view), /^. Reading 1 file, running 1 command ▸$/);
+  assert.match(plain(read.view), /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Reading 1 file, running 1 command ▸$/);
   read.result(result("done"));
   command.result(result("ok"));
   t.mock.timers.tick(1000);
   // Done, but more can join it while Pi works: it spins between its calls.
-  assert.match(plain(read.view), /^. Read 1 file, ran 1 command ▸$/);
-  // A user ! command ends the group: it rests, and nothing redraws it any more.
+  assert.match(plain(read.view), /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Read 1 file, ran 1 command ▸$/);
+  // A user ! command ends the group: it stops spinning, and nothing redraws it any more.
   await f.pi.event("user_bash", {}, f.ctx);
   assert.equal(plain(read.view), "✓ Read 1 file, ran 1 command ▸");
   t.mock.timers.tick(80);
   const settled = f.invalidations;
   t.mock.timers.tick(800);
-  assert.equal(f.invalidations, settled, "no redraws once the group is closed");
+  assert.equal(f.invalidations, settled, "no redraws once the group can no longer grow");
 
-  // When Pi is idle, a call left in progress rests on the muted ellipsis.
+  // When Pi is idle, a call left in progress stops on the muted ellipsis.
   const left = f.call("read", "spin-left", { path: "b.txt" });
   f.setBusy(false);
   assert.equal(plain(left.view), "… Reading b.txt ▸");
@@ -1480,9 +1490,9 @@ test("a group spins until something it cannot hold comes, or Pi stops working", 
   const alone = f.call("read", "open-read", { path: "a.txt" });
   alone.result(result("text"));
   assert.match(plain(alone.view), spinning("Read a.txt"));
-  // The group closed when the user ! command came: a tick, and the calls inside keep theirs.
+  // The group stopped growing when the user ! command came: a tick, and the calls inside keep theirs.
   assert.equal(plain(first.view), "✓ Ran 2 commands ▸");
-  // Text that follows closes it.
+  // Text that follows ends it.
   await f.pi.event(
     "message_start",
     { message: { role: "assistant", content: [{ type: "text", text: "Done." }] } },
@@ -1494,7 +1504,7 @@ test("a group spins until something it cannot hold comes, or Pi stops working", 
     f.ctx,
   );
   assert.equal(plain(alone.view), "✓ Read a.txt ▸");
-  // A group still open when Pi stops working rests too.
+  // A group that could still grow stops spinning when Pi stops working, too.
   await f.pi.event("user_bash", {}, f.ctx);
   const last = f.call("bash", "open-last", { command: "true" });
   last.result(result(""));
@@ -1503,7 +1513,7 @@ test("a group spins until something it cannot hold comes, or Pi stops working", 
   assert.equal(plain(last.view), "✓ Ran 1 command ▸");
 });
 
-test("a spinning group's label changes at most once a second, and at rest at once", async (t) => {
+test("a spinning group's label changes at most once a second, and once it stops, at once", async (t) => {
   t.mock.timers.enable({ apis: ["setInterval", "Date"] });
   const f = await fixture({ busy: true });
   const spinning = (label: string) => new RegExp(`^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] ${label} ▸$`);
@@ -1527,10 +1537,88 @@ test("a spinning group's label changes at most once a second, and at rest at onc
   assert.match(plain(a.view), spinning("Ran 2 commands"));
   t.mock.timers.tick(500);
   assert.match(plain(a.view), spinning("Running 1 command \\(2 finished\\)"));
-  // At rest, the label shows at once, with its tick.
+  // Stopped, the label shows at once, with its tick.
   c.result(result("ok"));
   await f.pi.event("user_bash", {}, f.ctx);
   assert.equal(plain(a.view), "✓ Ran 3 commands ▸");
+});
+
+test("a lone call's arguments show as they stream; only its phase is held steady", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "Date"] });
+  const f = await fixture({ busy: true });
+  const spinning = (label: string) => new RegExp(`^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] ${label} ▸$`);
+  const read = f.call("read", "lone-stream", { path: "/tmp/pa" }, false);
+  assert.match(plain(read.view), spinning("Reading /tmp/pa"));
+  // The path fills in at once, as Pi streams it, not a second later.
+  read.context.args = { path: "/tmp/partial-name.txt" };
+  read.redraw();
+  assert.match(plain(read.view), spinning("Reading /tmp/partial-name.txt"));
+  // Its end, a change of phase, waits its second.
+  read.result(result("text"));
+  assert.match(plain(read.view), spinning("Reading /tmp/partial-name.txt"));
+  t.mock.timers.tick(1000);
+  assert.match(plain(read.view), spinning("Read /tmp/partial-name.txt"));
+});
+
+test("a lone edit that spins counts its changes once, not on every frame", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "Date"] });
+  const f = await fixture({ busy: true });
+  const change = f.call("edit", "counted-edit", { path: "a.ts" });
+  change.result(result("done", { diff: "-1 before\n+1 after" }));
+  const view = change.view as unknown as { changeSummary(rows: unknown[]): string };
+  const counts = t.mock.method(view, "changeSummary");
+  const first = plain(change.view);
+  assert.match(first, /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Edited a\.ts \+1 −1 ▸$/, "it spins: more can join it");
+  const counted = counts.mock.callCount();
+  assert(counted <= 1);
+  t.mock.timers.tick(160);
+  const second = plain(change.view);
+  assert.notEqual(second[0], first[0], "the frame moved on");
+  assert.equal(counts.mock.callCount(), counted, "its counts were kept");
+});
+
+test("a page of history, with a model of its own, never spins while Pi works", async () => {
+  const f = await fixture({ busy: true });
+  const archive = core.SessionManager.inMemory(f.dir);
+  archive.appendMessage(
+    assistantMessage("", [
+      { type: "toolCall", id: "page-a", name: "read", arguments: { path: "a.txt" } },
+    ]),
+  );
+  archive.appendMessage({
+    role: "toolResult",
+    toolCallId: "page-a",
+    toolName: "read",
+    content: [{ type: "text", text: "a" }],
+    isError: false,
+    timestamp: 1,
+  });
+  const page: HistoryPage = { entries: archive.getEntries(), cwd: f.dir };
+  type Context = Parameters<NonNullable<ToolDefinition["renderCall"]>>[2];
+  const context = fake<Context>({
+    args: { path: "a.txt" },
+    toolCallId: "page-a",
+    state: { [HISTORY_PAGE]: page },
+    cwd: f.dir,
+    executionStarted: true,
+    argsComplete: true,
+    isPartial: false,
+    expanded: false,
+    showImages: false,
+    isError: false,
+    outputPad: 0,
+    invalidate() {},
+  });
+  const view = f.tool("read").renderCall?.(context.args, themes.theme, context);
+  assert.equal(plain(view as Component), "✓ Read a.txt ▸");
+});
+
+test("a group with a call nothing will end, as a saved session leaves one, is not growing", () => {
+  const model = new ToolGroups();
+  const row = model.addCall("left", "read", { path: "a.txt" }, root);
+  assert(row && model.isGrowing(row.group));
+  model.abandonUnfinished();
+  assert.equal(model.isGrowing(row.group), false);
 });
 
 test("a spinner frame redraws a live group without building its output again", async (t) => {

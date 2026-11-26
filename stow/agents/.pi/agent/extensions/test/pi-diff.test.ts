@@ -45,6 +45,14 @@ test("a Pi module loaded by its path is watched by that path", () => {
   assert(watched?.users.has("inspector/paths.ts"), "inspector's path resolvers are watched");
 });
 
+test("the modules the editor's box follows are watched: Pi's editor, footer and status", () => {
+  const users = (module: string) =>
+    watchedModules().find((entry) => entry.module === module)?.users ?? new Set<string>();
+  assert(users("dist/components/editor").has("interupt/box.ts"), "pi-tui's Editor, imported");
+  assert(users("dist/modes/interactive/components/footer").has("interupt/labels.ts"));
+  assert(users("dist/modes/interactive/components/status-indicator").has("interupt/box.ts"));
+});
+
 test("the Pi release the extensions were last reviewed against is recorded", () => {
   assert.match(String(reviewed), /^\d+\.\d+\.\d+/);
 });
