@@ -304,6 +304,14 @@ export class ToolGroups {
     return undefined;
   }
 
+  /**
+   * Whether a group can still grow: it is the latest, and nothing that separates calls has come
+   * since. A call that can join it joins it.
+   */
+  isOpen(group: ToolGroup): boolean {
+    return this.tail === group;
+  }
+
   addCall(id: string, name: string, args: unknown, cwd: string): ToolCallState | undefined {
     const existing = this.rows.get(id);
     if (existing) {

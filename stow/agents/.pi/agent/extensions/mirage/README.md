@@ -31,7 +31,7 @@ Mirage draws Pi's own tools (`read`, `bash`, `edit`, `write`, `codemode`, `grep`
 
 A call is in progress from its first argument until its result, so it says `Running`, `Reading` or `Editing` while its arguments still stream, never `Run`, `Read` or `Edit`. While some calls of a kind are in progress, a summary counts those, and in grey how many have finished: `Running 1 command (2 finished), ran 1 search`. A kind whose calls have all finished says so in the past tense.
 
-While Pi works, a row or group with calls in progress shows Pi's working spinner (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`) in the accent colour. This includes the calls inside a script. A call left in progress while Pi is idle shows a muted **…**, and a command's own line a muted **$**. So does a saved call that never ended, as when Pi was killed while it ran, also while Pi works: nothing will end it. Pi runs no call of an aborted or failed turn, and mirage shows each as failed, with the error Pi shows, also after `/reload` and `/resume`.
+While Pi works, a row or group with calls in progress shows Pi's working spinner (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`) in the terminal's cyan, as headings are (`sky` in `shared/colours.ts`). So does the latest group, or call on its own, while more can still join it: between its calls, while the model writes its next request, it keeps spinning rather than showing a tick. It rests on its tick or cross once something it cannot hold comes (text, visible thinking, a user message, a call to a tool that draws itself) or Pi stops working. The calls inside an expanded group keep their own glyphs. While a group spins, its label changes at most once a second, as comrade's status line does: a label shown stays a second, then the latest takes its place, and a state that came and went in between, such as a quick command's `(1 finished)`, never shows. Once the group rests, its final label shows at once, with its tick or cross. This includes the calls inside a script. A call left in progress while Pi is idle shows a muted **…**, and a command's own line a muted **$**. So does a saved call that never ended, as when Pi was killed while it ran, also while Pi works: nothing will end it. Pi runs no call of an aborted or failed turn, and mirage shows each as failed, with the error Pi shows, also after `/reload` and `/resume`.
 
 A row reads its spinner frame from the clock each time Pi draws it. Pi's own working indicator makes Pi draw a frame every 80 ms, so the rows turn with it and Mirage asks for no frame of its own. Its timer asks Pi for a frame only when 80 ms passed in which no frame drew a spinning row, and then nothing but the frame is drawn again: output already built is kept. The timer stops once nothing is in progress or Pi is idle.
 
@@ -112,7 +112,7 @@ Edit the colours in **`shared/colours.ts`** and run `/reload`. Each is a six-dig
 - `blue`: filenames that can be clicked.
 - `yellow` (palette 3): flags in commands, and inline code in [`prose`](../prose/README.md).
 - `moss` (palette 2): strings in commands, dimmed, and user messages in `prose`.
-- `sky` (palette 6): headings in `prose`.
+- `sky` (palette 6): the spinner on rows at work, and headings in `prose`.
 
 Comrade's rows use the same file. `style.ts` keeps Pi's inverse word-change highlights in diffs, and `shared/colours.ts` picks the nearest fixed xterm colour for an RGB value where truecolour is unavailable. Pi's other colours and the theme's syntax colours are unchanged.
 

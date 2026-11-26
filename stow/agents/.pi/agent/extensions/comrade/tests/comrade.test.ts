@@ -1125,9 +1125,9 @@ test("a running comrade spins with Pi's working spinner until its result arrives
   t.mock.timers.tick(80);
   assert.equal(redraws, before, "frames drawn for anything else turn the spinner");
   assert.match(render(row), /^⠙ Comrade #1 {2}Spin {2}/, "the frame follows the clock");
-  // In Pi's accent, after the marker of where its content starts for prose's selection.
+  // In the terminal's cyan, as mirage's spinner, after the marker of where its content starts.
   const header = row?.render(120)[0] ?? "";
-  assert(header.startsWith(`${CONTENT_START}${themes.theme.fg("accent", "⠙")}`), "in Pi's accent");
+  assert(header.startsWith(`${CONTENT_START}${paint(themes.theme, "sky", "⠙")}`), "in cyan");
   // An interval in which no frame drew the row: the timer asks Pi to redraw it.
   t.mock.timers.tick(160);
   assert.equal(redraws, before + 1, "the timer asks Pi to redraw when nothing else does");

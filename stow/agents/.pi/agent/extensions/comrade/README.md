@@ -195,7 +195,7 @@ The title gives way so that the rest of the header always fits. Below 80 columns
 
 ### In progress
 
-A run in progress shows Pi's working spinner in the accent colour, as the editor and mirage's rows do, and its clock ticks in whole seconds. Before its run starts, a call's row spins only while Pi works, so a call that a saved session holds without its result, as when Pi was killed during it, is still. Two lines follow its header and change in place, so the row keeps its height:
+A run in progress shows Pi's working spinner in the terminal's cyan, as mirage's rows do, and its clock ticks in whole seconds. Before its run starts, a call's row spins only while Pi works, so a call that a saved session holds without its result, as when Pi was killed during it, is still. Two lines follow its header and change in place, so the row keeps its height:
 
 ```text
 ⠋ Comrade #3  Review parser error paths  $0.31 · 4m 12s ▸

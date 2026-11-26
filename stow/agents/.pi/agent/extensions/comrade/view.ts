@@ -289,7 +289,7 @@ const working = (look: Look) => look.phase === "running" || Boolean(look.live);
 /** The glyph that leads a row. */
 function glyph(look: Look, card: RunDetails | undefined, theme: Theme): string {
   const spinning = (fallback: string) =>
-    look.spinner ? theme.fg("accent", look.spinner) : theme.fg("muted", fallback);
+    look.spinner ? paint(theme, "sky", look.spinner) : theme.fg("muted", fallback);
   switch (look.phase) {
     case "running":
       return spinning("…");
@@ -452,7 +452,7 @@ function mark(row: { label: string; status: Live }, theme: Theme, spinner?: stri
   const command = row.label.startsWith("$ ");
   const glyph = (other: string) => (command ? theme.bold("$") : other);
   if (row.status === "running")
-    return spinner ? theme.fg("accent", spinner) : theme.fg("muted", glyph("…"));
+    return spinner ? paint(theme, "sky", spinner) : theme.fg("muted", glyph("…"));
   if (row.status === "success") return paint(theme, "green", glyph("✓"));
   if (row.status === "error") return paint(theme, "red", glyph("✗"));
   return theme.fg("muted", glyph("✗"));

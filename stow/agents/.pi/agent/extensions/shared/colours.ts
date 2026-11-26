@@ -9,7 +9,7 @@ export const colours = {
   green: "#65bd55", // Added lines and counts, and successful status.
   blue: "#265b81", // Clickable filenames.
   yellow: 3, // Inline code, in bold, and flags in commands.
-  sky: 6, // Markdown headings, in bold.
+  sky: 6, // Markdown headings, in bold, and the spinner on rows at work.
   moss: 2, // User messages, and strings in commands, dimmed.
 } as const;
 

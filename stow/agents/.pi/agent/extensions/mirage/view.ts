@@ -124,6 +124,11 @@ const GROUP_VERBS: Record<
   tool: { running: "Calling", success: "Called" },
 };
 const NOUNS = { bash: "command", codemode: "script", search: "search", ls: "directory" } as const;
+/**
+ * How long a spinning group's label stays before it may change, as comrade's status line holds
+ * its: between quick calls a label would change several times a second.
+ */
+export const STEADY_MS = 1000;
 /** Kinds whose calls a summary counts as files explored, so reads among them say `Explored`. */
 const EXPLORING: ReadonlySet<string> = new Set(["read", "image", "search", "ls"]);
 /** Argument names that say what a call to an unfamiliar tool is about, in this order. */
@@ -179,6 +184,11 @@ interface ViewActions {
   renderImages(row: ToolCallState, width: number): readonly string[];
   /** The working spinner's current frame while Pi is working, for calls still in progress. */
   spinner?(): string | undefined;
+  /**
+   * Whether a group can still grow while its agent works, so it spins between its calls too and
+   * rests only once something it cannot hold has come, or its agent has stopped.
+   */
+  open?(group: ToolGroup): boolean;
   /** Told each time a frame draws the row with its spinner. */
   spun?(): void;
   /**
@@ -338,6 +348,12 @@ export class ToolGroupView implements Component {
   private chunks = new Map<string, number>();
   /** The spinner frame this render paints, the same one its cache key records. */
   private frame = "";
+  /** The group spins as one that can still grow: its own glyph turns, whatever its calls show. */
+  private growing = false;
+  /** The label a spinning group shows, and since when it shows it. */
+  private steady?: { label: string; since: number };
+  /** When a label held back may show: the lines drawn before then are stale from then on. */
+  private heldUntil = 0;
   /** The padding every line starts with, as Pi's own rows have it. */
   private pad = "";
   /** The drawn lines with a filename link, which the lines Pi gets have without. */
@@ -378,9 +394,12 @@ export class ToolGroupView implements Component {
     if (this.model.rows.get(this.row.id) !== this.row || group.rows[0] !== this.row) return [];
     const padding = Math.min(this.actions.outputPad(), Math.max(0, Math.floor((width - 1) / 2)));
     const contentWidth = Math.max(0, width - padding * 2);
-    // A group with calls in progress redraws for each spinner frame. A finished one stays cached.
-    const frame = group.rows.some(inProgress) ? (this.actions.spinner?.() ?? "") : "";
+    // A group with calls in progress, or one that can still grow, redraws for each spinner frame.
+    // A closed one stays cached.
+    const open = this.actions.open?.(group) === true;
+    const frame = group.rows.some(inProgress) || open ? (this.actions.spinner?.() ?? "") : "";
     this.frame = frame;
+    this.growing = open && frame !== "";
     if (frame) this.actions.spun?.();
     if (
       this.cache?.group === group &&
@@ -388,9 +407,11 @@ export class ToolGroupView implements Component {
       this.cache.padding === padding &&
       this.cache.revision === group.revision &&
       this.cache.epoch === this.model.epoch &&
-      this.cache.frame === frame
+      this.cache.frame === frame &&
+      !(this.heldUntil && Date.now() >= this.heldUntil)
     )
       return this.cache.lines;
+    this.heldUntil = 0;
 
     this.rawLines = [];
     this.targets = [];
@@ -401,8 +422,10 @@ export class ToolGroupView implements Component {
       // A command on its own is counted as a group of one is: `Ran 1 command`.
       // Expanded, the command, then its output.
       const row = this.row;
-      // A summary, so a tick or a cross: only a command's own line has the dollar.
-      this.header(`${this.status(row.status)} ${this.summary([row])}`, row, contentWidth);
+      // A summary, so a tick or a cross: only a command's own line has the dollar. A command that
+      // more can still join spins.
+      const status = this.status(this.growing ? "pending" : row.status);
+      this.header(`${status} ${this.steadied(this.summary([row]))}`, row, contentWidth);
       if (this.model.expanded(row)) {
         const note = argumentsNote(row);
         if (text(row.args.command).trim()) this.commandHeader(row, 2, contentWidth, false);
@@ -410,16 +433,20 @@ export class ToolGroupView implements Component {
         this.body(row, contentWidth, 2);
       }
     } else if (group.rows.length === 1) {
-      this.entry(this.row, 0, contentWidth);
+      this.entry(this.row, 0, contentWidth, this.growing, true);
     } else {
       const expanded = this.model.expanded(group);
       // A group is red only when every call failed. Individual failures
       // show on their own lines once the group is expanded.
       let state: ToolCallState["status"] = "success";
-      if (!group.rows.every(isComplete)) state = "pending";
+      if (!group.rows.every(isComplete) || this.growing) state = "pending";
       else if (group.rows.every(isFailed)) state = "error";
       const status = this.status(state);
-      this.header(`${status} ${this.summary(leaves(group.rows))}`, group, contentWidth);
+      this.header(
+        `${status} ${this.steadied(this.summary(leaves(group.rows)))}`,
+        group,
+        contentWidth,
+      );
       if (expanded) for (const row of group.rows) this.drawnEntry(row, 2, contentWidth);
     }
     // Hit testing uses these padded lines, links included, until the next render. Pi gets them
@@ -530,10 +557,14 @@ export class ToolGroupView implements Component {
   }
 
   /** One call: its header, then its output or, for a script, its calls and output. */
-  private entry(row: ToolCallState, indent: number, width: number): void {
+  /**
+   * A call on its own lines. `growing`: a call alone in a group that can still grow, which spins.
+   * `own`: the call is the group's header, whose label is held steady while it spins.
+   */
+  private entry(row: ToolCallState, indent: number, width: number, growing = false, own = false) {
     if (row.kind === "bash" && text(row.args.command).trim())
       this.commandHeader(row, indent, width);
-    else this.header(`${" ".repeat(indent)}${this.rowLabel(row)}`, row, width);
+    else this.header(`${" ".repeat(indent)}${this.rowLabel(row, growing, own)}`, row, width);
     if (!this.model.expanded(row)) return;
     if (row.kind === "codemode") this.script(row, indent + 2, width);
     else this.body(row, width, indent + 2);
@@ -551,14 +582,14 @@ export class ToolGroupView implements Component {
     const dollar = this.theme.bold("$");
     if (status === "error") return paint(this.theme, "red", command ? dollar : "✗");
     if (status === "success") return paint(this.theme, "green", command ? dollar : "✓");
-    // In progress while Pi works: Pi's own working spinner, in its colour.
+    // In progress while Pi works: Pi's own working spinner, in the terminal's cyan, as headings.
     if (this.frame && !abandoned && status !== "cancelled")
-      return this.theme.fg("accent", this.frame);
+      return paint(this.theme, "sky", this.frame);
     if (command) return this.theme.fg("muted", dollar);
     return this.theme.fg("muted", status === "cancelled" ? "✗" : "…");
   }
 
-  private rowLabel(row: ToolCallState): string {
+  private rowLabel(row: ToolCallState, growing = false, own = false): string {
     let label: string;
     if (row.kind === "bash") {
       const note = argumentsNote(row);
@@ -605,7 +636,29 @@ export class ToolGroupView implements Component {
       if (range) label += this.theme.fg("dim", range);
       if (row.kind === "edit" || row.kind === "write") label += this.changeSummary([row]);
     }
-    return `${this.status(row.status, row.kind === "bash", row.abandoned)} ${label}`;
+    const status = growing ? "pending" : row.status;
+    if (own) label = this.steadied(label);
+    return `${this.status(status, row.kind === "bash", row.abandoned)} ${label}`;
+  }
+
+  /**
+   * A header's label, held steady while the group spins, as comrade's status line is: a label
+   * shown stays at least STEADY_MS, then the latest takes its place. One that came and went in
+   * between never shows, so quick calls cannot make it flash. At rest, the label shows at once.
+   */
+  private steadied(label: string): string {
+    if (!this.frame) {
+      this.steady = undefined;
+      return label;
+    }
+    const now = Date.now();
+    const shown = this.steady;
+    if (shown && shown.label !== label && now - shown.since < STEADY_MS) {
+      this.heldUntil = shown.since + STEADY_MS;
+      return shown.label;
+    }
+    if (shown?.label !== label) this.steady = { label, since: now };
+    return label;
   }
 
   /**

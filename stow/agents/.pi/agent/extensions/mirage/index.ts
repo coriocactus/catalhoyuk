@@ -104,9 +104,14 @@ export default function (pi: ExtensionAPI) {
   const spinner = () => (working() ? spinnerFrame() : undefined);
   /** Whether Pi is drawing a row again with nothing changed that its view must throw away. */
   const animating = () => spinning.animating || redrawing;
-  /** Whether a row still leads a group of the live model with calls in progress. */
+  /**
+   * Whether a row still leads a group of the live model that has calls in progress, or can still
+   * grow: a group spins between its calls, and rests once something it cannot hold comes.
+   */
   const spins = (row: ToolCallState) =>
-    groups.rows.get(row.id) === row && row.group.rows[0] === row && row.group.rows.some(inProgress);
+    groups.rows.get(row.id) === row &&
+    row.group.rows[0] === row &&
+    (row.group.rows.some(inProgress) || groups.isOpen(row.group));
   const models = new Set([new WeakRef(groups)]);
   /** Another agent's calls (see below), which do not follow Ctrl+T. */
   const nestedModels = new WeakSet<ToolGroups>();
@@ -348,6 +353,8 @@ export default function (pi: ExtensionAPI) {
               outputPad: () => 0,
               renderImages: () => [],
               spinner: frame,
+              // The agent's latest group grows while the agent runs, as Pi's own does.
+              open: (group) => model.isOpen(group),
             });
             views.set(id, view);
           }
@@ -401,6 +408,8 @@ export default function (pi: ExtensionAPI) {
               outputPad: () => state.outputPad ?? 0,
               renderImages: (target, width) => images.get(target)?.(width) ?? [],
               spinner,
+              // Only the live model grows: a page of history never does.
+              open: (group) => groups.isOpen(group),
               spun: () => spinning.drew(row),
               animating,
             });

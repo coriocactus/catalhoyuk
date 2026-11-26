@@ -1417,14 +1417,17 @@ test("calls in progress show Pi's working spinner while Pi works, and stop spinn
   const f = await fixture({ busy: true });
   const read = f.call("read", "spin-read", { path: "a.txt" });
   assert.equal(plain(read.view), "⠋ Reading a.txt ▸");
-  // The frame follows the clock, in Pi's accent colour. A frame drew the row during the
+  // The frame follows the clock, in the terminal's cyan, as headings are. A frame drew the row during the
   // interval, as Pi's own working indicator makes one do, so the timer asks for none.
   t.mock.timers.tick(80);
   assert.equal(plain(read.view), "⠙ Reading a.txt ▸");
   assert.equal(f.invalidations, 0, "frames drawn for anything else turn the spinner");
   assert(
-    read.view.render(160).map(unmark)[0].startsWith(themes.theme.fg("accent", "⠙")),
-    "the spinner uses Pi's accent colour",
+    read.view
+      .render(160)
+      .map(unmark)[0]
+      .startsWith(paint(themes.theme, "sky", "⠙")),
+    "the spinner is the terminal's cyan",
   );
   // An interval in which no frame drew the row: the timer asks Pi to redraw it.
   t.mock.timers.tick(160);
@@ -1432,16 +1435,24 @@ test("calls in progress show Pi's working spinner while Pi works, and stop spinn
 
   // A running command spins instead of its muted $, then shows the green $ when done.
   const command = f.call("bash", "spin-bash", { command: "npm test" });
-  assert.match(plain(read.view), /^⠸ Reading 1 file, running 1 command ▸$/);
+  // The label shown stays its second before the group's takes its place.
+  assert.equal(plain(read.view), "⠸ Reading a.txt ▸");
+  t.mock.timers.tick(760);
+  assert.match(plain(read.view), /^. Reading 1 file, running 1 command ▸$/);
   read.result(result("done"));
   command.result(result("ok"));
+  t.mock.timers.tick(1000);
+  // Done, but more can join it while Pi works: it spins between its calls.
+  assert.match(plain(read.view), /^. Read 1 file, ran 1 command ▸$/);
+  // A user ! command ends the group: it rests, and nothing redraws it any more.
+  await f.pi.event("user_bash", {}, f.ctx);
   assert.equal(plain(read.view), "✓ Read 1 file, ran 1 command ▸");
+  t.mock.timers.tick(80);
   const settled = f.invalidations;
   t.mock.timers.tick(800);
-  assert.equal(f.invalidations, settled, "no redraws once nothing is in progress");
+  assert.equal(f.invalidations, settled, "no redraws once the group is closed");
 
   // When Pi is idle, a call left in progress rests on the muted ellipsis.
-  await f.pi.event("user_bash", {}, f.ctx); // a user ! command starts a new group
   const left = f.call("read", "spin-left", { path: "b.txt" });
   f.setBusy(false);
   assert.equal(plain(left.view), "… Reading b.txt ▸");
@@ -1449,6 +1460,77 @@ test("calls in progress show Pi's working spinner while Pi works, and stop spinn
   const idle = f.invalidations;
   t.mock.timers.tick(800);
   assert.equal(f.invalidations, idle, "the timer stopped when Pi went idle");
+});
+
+test("a group spins until something it cannot hold comes, or Pi stops working", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "Date"] });
+  const f = await fixture({ busy: true });
+  const spinning = (label: string) => new RegExp(`^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] ${label} ▸$`);
+  const first = f.call("bash", "open-a", { command: "npm test" });
+  first.result(result("ok"));
+  // Between calls, the model writing its next request: the group spins, not a tick.
+  assert.match(plain(first.view), spinning("Ran 1 command"));
+  const second = f.call("bash", "open-b", { command: "npm run lint" });
+  assert.equal(second.view.row.group, first.view.row.group, "it joined the group");
+  second.result(result("ok"));
+  t.mock.timers.tick(1000);
+  assert.match(plain(first.view), spinning("Ran 2 commands"));
+  // A single call that more can join spins too, as a group of one.
+  await f.pi.event("user_bash", {}, f.ctx);
+  const alone = f.call("read", "open-read", { path: "a.txt" });
+  alone.result(result("text"));
+  assert.match(plain(alone.view), spinning("Read a.txt"));
+  // The group closed when the user ! command came: a tick, and the calls inside keep theirs.
+  assert.equal(plain(first.view), "✓ Ran 2 commands ▸");
+  // Text that follows closes it.
+  await f.pi.event(
+    "message_start",
+    { message: { role: "assistant", content: [{ type: "text", text: "Done." }] } },
+    f.ctx,
+  );
+  await f.pi.event(
+    "message_update",
+    { message: { role: "assistant", content: [{ type: "text", text: "Done." }] } },
+    f.ctx,
+  );
+  assert.equal(plain(alone.view), "✓ Read a.txt ▸");
+  // A group still open when Pi stops working rests too.
+  await f.pi.event("user_bash", {}, f.ctx);
+  const last = f.call("bash", "open-last", { command: "true" });
+  last.result(result(""));
+  assert.match(plain(last.view), spinning("Ran 1 command"));
+  f.setBusy(false);
+  assert.equal(plain(last.view), "✓ Ran 1 command ▸");
+});
+
+test("a spinning group's label changes at most once a second, and at rest at once", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "Date"] });
+  const f = await fixture({ busy: true });
+  const spinning = (label: string) => new RegExp(`^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] ${label} ▸$`);
+  const a = f.call("bash", "steady-a", { command: "one" });
+  assert.match(plain(a.view), spinning("Running 1 command"));
+  // Quick calls come and go within the second: the label shown stays.
+  a.result(result("ok"));
+  assert.match(plain(a.view), spinning("Running 1 command"));
+  const b = f.call("bash", "steady-b", { command: "two" });
+  assert.match(plain(a.view), spinning("Running 1 command"));
+  b.result(result("ok"));
+  t.mock.timers.tick(999);
+  assert.match(plain(a.view), spinning("Running 1 command"));
+  // Its second up, the latest shows. `Ran 1 command` and `Running 1 command (1 finished)`,
+  // which came and went in between, never did.
+  t.mock.timers.tick(1);
+  assert.match(plain(a.view), spinning("Ran 2 commands"));
+  // A later change waits its second too, and shows as it is then.
+  const c = f.call("bash", "steady-c", { command: "three" });
+  t.mock.timers.tick(500);
+  assert.match(plain(a.view), spinning("Ran 2 commands"));
+  t.mock.timers.tick(500);
+  assert.match(plain(a.view), spinning("Running 1 command \\(2 finished\\)"));
+  // At rest, the label shows at once, with its tick.
+  c.result(result("ok"));
+  await f.pi.event("user_bash", {}, f.ctx);
+  assert.equal(plain(a.view), "✓ Ran 3 commands ▸");
 });
 
 test("a spinner frame redraws a live group without building its output again", async (t) => {
