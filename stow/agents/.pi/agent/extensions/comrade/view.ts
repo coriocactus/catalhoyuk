@@ -17,7 +17,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { paint } from "../shared/colours.ts";
 import { formatCost, formatDuration, formatTokens, homePath } from "../shared/format.ts";
-import { ALL_MARKERS, CONTENT_END, CONTENT_START, findMarker } from "../shared/selection.ts";
+import { CONTENT_END, CONTENT_START, findMarker } from "../shared/selection.ts";
 import { Steady } from "../shared/steady.ts";
 import type { Activity, Streamed } from "./run.ts";
 import { type Live, oneLine, type Row, summary, type Work } from "./work.ts";
@@ -120,10 +120,8 @@ export interface Look {
   taskExpanded?: boolean;
   /** All its work, not just its latest blocks. */
   earlierExpanded?: boolean;
-  /** Its work, in order, once known: its words, thoughts, the steers sent to it, and its calls. */
+  /** Its work, in order, once known: its words, thinking, the steers sent to it, and its calls. */
   blocks?: Block[];
-  /** The thinking blocks expanded to their thoughts, by `key`. */
-  thinkingOpen?: ReadonlySet<number>;
   /** The caller's directory, which a comrade run elsewhere is named from. */
   home?: string;
   /**
@@ -140,11 +138,10 @@ export type Block =
   /** What it said. `source` is the message part it came from, by which it is drawn once. */
   | { kind: "text"; text: string; source?: object }
   /**
-   * A thinking block with titled thoughts (thoughts.ts): `Chain of thought ▸`, and once expanded
-   * its thoughts, from the first title on, as Markdown. `key` counts the thinking blocks of its run
-   * a row shows, so an expanded one stays expanded as the run goes on.
+   * A thinking block, while the thread shows thinking (Ctrl+T): Markdown in Pi's style for
+   * thinking, as Pi draws its own. `source` as for text.
    */
-  | { kind: "thinking"; text: string; key: number }
+  | { kind: "thinking"; text: string; source?: object }
   /** A steer sent to it. */
   | { kind: "message"; text: string }
   /**
@@ -164,8 +161,6 @@ export interface Toggles {
   task?: () => void;
   /** An expanded row's work before its latest blocks. */
   earlier?: () => void;
-  /** One of its thinking blocks, by key: its thoughts. */
-  thinking?: (key: number) => void;
 }
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: keep only newlines and tabs of a task.
@@ -181,8 +176,6 @@ const NOT_FINAL = /^\[Comrade(?:'s answer is (?:cut off|partial)| timed out)[^\n
 const TASK_LINES = 6;
 /** An expanded row shows at most this many blocks of its work, its latest, until asked for all. */
 const BLOCKS_SHOWN = 24;
-/** A row that did not succeed says why in at most this many lines until expanded. */
-const REASON_LINES = 3;
 /** Below these widths a header drops the model chip, then the cost. */
 const CHIP_WIDTH = 80;
 const COST_WIDTH = 60;
@@ -620,10 +613,6 @@ function marked(line: string): string {
   return `${line.slice(0, lead)}${CONTENT_START}${line.slice(lead)}`;
 }
 
-/** A line without its markers, to be joined to another. */
-const unmarked = (line: string) =>
-  ALL_MARKERS.reduce((text, each) => text.replaceAll(each, ""), line);
-
 /** A caret after a line's content, which a selection leaves out. */
 const caretAfter = (theme: Theme, caret: string, gap = " ") =>
   `${CONTENT_END}${gap}${theme.fg("dim", caret)}`;
@@ -691,10 +680,7 @@ const drawing = (theme: Theme) => {
   tasks.clear();
 };
 
-/**
- * Text as Markdown, two columns in, at most once per width. Thinking is four columns in, under
- * its `Chain of thought` line, in Pi's style for thinking.
- */
+/** Text as Markdown, two columns in, at most once per width. Thinking in Pi's style for it. */
 function markdown(
   text: string,
   width: number,
@@ -705,15 +691,13 @@ function markdown(
   drawing(theme);
   const part = source && drawnParts.get(source);
   if (part?.width === width && part.colours === theme.colors) return part.lines;
-  const key = `${width}\u0000${text}`;
+  const key = `${width}\u0000${thinking}\u0000${text}`;
   let lines = source ? undefined : drawn.get(key);
   if (!lines) {
     const style = thinking
       ? { color: (line: string) => theme.fg("thinkingText", line), italic: true }
       : undefined;
-    lines = new Markdown(printable(text), thinking ? 4 : 2, 0, getMarkdownTheme(), style).render(
-      width,
-    );
+    lines = new Markdown(printable(text), 2, 0, getMarkdownTheme(), style).render(width);
     if (source) drawnParts.set(source, { width, colours: theme.colors, lines });
     else {
       if (drawn.size >= DRAWN_MAX) drawn.delete(drawn.keys().next().value as string);
@@ -755,9 +739,7 @@ export class RowView implements Component {
   private theme: Theme;
   private pad: number;
   private toggles: Toggles;
-  private targets = new Map<number, Exclude<keyof Toggles, "thinking">>();
-  /** The lines that say `Chain of thought`, and the thinking block each expands. */
-  private thinkingTargets = new Map<number, number>();
+  private targets = new Map<number, keyof Toggles>();
   private zones: Zone[] = [];
   private indent = 0;
   /** While it works, what it is doing, collapsed and expanded, each held steady. */
@@ -839,7 +821,6 @@ export class RowView implements Component {
     );
     const room = Math.max(1, width - pad * 2);
     this.targets.clear();
-    this.thinkingTargets.clear();
     this.zones = [];
     this.indent = pad;
     const lines = this.lines(room, card).map((line) =>
@@ -871,13 +852,6 @@ export class RowView implements Component {
       return result;
     }
     if (event.type !== "click") return undefined;
-    // `Chain of thought` expands or collapses its thoughts.
-    const thinking = this.thinkingTargets.get(event.y);
-    if (thinking !== undefined && this.toggles.thinking) {
-      this.toggles.thinking(thinking);
-      this.invalidate();
-      return { handled: true };
-    }
     // Anywhere else, a click expands or collapses the row: Pi does it for a call's row, and the row
     // itself for its answer, which has no toggle of Pi's.
     const target = this.targets.get(event.y) ?? (this.targets.has(0) ? "row" : undefined);
@@ -886,19 +860,6 @@ export class RowView implements Component {
     toggle();
     this.invalidate();
     return { handled: true };
-  }
-
-  /**
-   * A thinking block: `Chain of thought ▸`, as Pi labels hidden thinking, which a click expands to
-   * its thoughts under it.
-   */
-  private thinking(block: Extract<Block, { kind: "thinking" }>, lines: string[], width: number) {
-    const { look, theme } = this;
-    const open = look.thinkingOpen?.has(block.key) === true;
-    if (this.toggles.thinking) this.thinkingTargets.set(lines.length, block.key);
-    const label = theme.italic(theme.fg("thinkingText", "Chain of thought"));
-    lines.push(`  ${label}${caretAfter(theme, open ? "▾" : "▸")}`);
-    if (open) lines.push(...markdown(block.text, width, theme, block, true));
   }
 
   private lines(width: number, card: RunDetails | undefined): string[] {
@@ -922,7 +883,7 @@ export class RowView implements Component {
           `  ${theme.fg("dim", `${card.files} file${card.files === 1 ? "" : "s"} attached`)}`,
         );
     };
-    // Its work, in order: its words, its thoughts, the steers sent to it, and its calls, mirage's
+    // Its work, in order: its words, its thinking, the steers sent to it, and its calls, mirage's
     // rows stacked as mirage stacks them. Its latest blocks unless all were asked for, with a
     // toggle for the rest.
     const work = () => {
@@ -948,7 +909,8 @@ export class RowView implements Component {
           blank();
         previous = block.kind;
         if (block.kind === "text") lines.push(...markdown(block.text, width, theme, block.source));
-        else if (block.kind === "thinking") this.thinking(block, lines, width);
+        else if (block.kind === "thinking")
+          lines.push(...markdown(block.text, width, theme, block.source, true));
         else if (block.kind === "message")
           lines.push(...taskBlock(block.text, true, width, theme).lines);
         else if (block.kind === "call") lines.push(`  ${callLine(block.row, theme, look.spinner)}`);
@@ -1001,7 +963,8 @@ export class RowView implements Component {
             lines.push(`  ${theme.fg("muted", line)}`);
         break;
       default: {
-        // Ended: why it did not succeed, always, whole once expanded; then its task and work.
+        // Ended: why it did not succeed, once expanded, as the header already says how it went. A
+        // row that never expands, a lost run's, says it always. Then its task and work.
         const why = (reason ?? (partialAnswer(card) ? partialReason(card) : ""))
           .split("\n")
           .filter((line) => line.trim());
@@ -1009,19 +972,9 @@ export class RowView implements Component {
           look.phase === "failed"
             ? paint(theme, "red", text)
             : theme.fg(look.phase === "finished" ? "warning" : "muted", text);
-        if (why.length && look.phase !== "stopped") {
-          // Collapsed, its first line, wrapped, in at most three lines; expanded, all of it.
-          const wrapped = (line: string) => wrap(printable(line), Math.max(8, width - 2));
-          let shown = look.expanded ? why.flatMap(wrapped) : wrapped(why[0]);
-          if (!look.expanded && shown.length > REASON_LINES) {
-            const rest = shown.slice(REASON_LINES).map(unmarked).join(" ");
-            shown = [
-              ...shown.slice(0, REASON_LINES - 1),
-              cut(`${shown[REASON_LINES - 1]} ${rest}`, width - 2),
-            ];
-          }
-          for (const line of shown) lines.push(`  ${tone(line)}`);
-        }
+        if (why.length && look.phase !== "stopped" && (look.expanded || !expands))
+          for (const line of why.flatMap((each) => wrap(printable(each), Math.max(8, width - 2))))
+            lines.push(`  ${tone(line)}`);
         if (!look.expanded) break;
         showTask();
         if (look.blocks?.length) work();

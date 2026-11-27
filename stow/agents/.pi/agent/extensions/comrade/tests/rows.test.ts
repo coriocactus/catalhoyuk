@@ -163,9 +163,12 @@ test("a row drawn from damaged saved details draws plainly instead of throwing",
         themes.theme,
         context("call", expanded),
       );
+      // Why it failed shows once it is expanded.
       assert.match(
         render(row),
-        /^✗ Comrade {2}Check the notes {2}failed [▸▾]\n {2}What it said\./,
+        expanded
+          ? /^✗ Comrade {2}Check the notes {2}failed ▾\n {2}What it said\./
+          : /^✗ Comrade {2}Check the notes {2}failed ▸$/,
         JSON.stringify(details),
       );
     }

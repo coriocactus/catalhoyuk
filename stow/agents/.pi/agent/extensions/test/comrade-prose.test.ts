@@ -32,12 +32,9 @@ test("with prose loaded, a comrade's wrapped lines mark their content and how th
     title: "Wrap",
     expanded: true,
     note: words("reason"),
-    blocks: [{ kind: "thinking" as const, text: `**Planning**\n\n${words("thought")}`, key: 0 }],
-    thinkingOpen: new Set([0]),
+    blocks: [{ kind: "thinking" as const, text: `**Planning**\n\n${words("thought")}` }],
   };
-  const lines = new view.RowView(look, undefined, "", themes.theme, 0, {
-    thinking() {},
-  }).render(60);
+  const lines = new view.RowView(look, undefined, "", themes.theme, 0).render(60);
   const marked = markers(lines);
   // Every line with text marks it.
   for (const [i, line] of lines.entries())
@@ -59,18 +56,12 @@ test("with prose loaded, a comrade's wrapped lines mark their content and how th
   const thought = at("thought thought");
   assert(thought.length > 1, "the thinking wraps");
   assert(thought.slice(1).every((line) => line?.marker === CONTINUES_SPACED));
-  // Its own lines mark where their content starts, after the indent.
-  assert.deepEqual(at("Chain of thought")[0], {
-    column: 2,
-    marker: CONTENT_START,
-    text: "Chain of thought ▾",
-  });
   // Its carets are layout: a selection ends before each.
   const screen = tui.TuiAltScreen.prototype as unknown as {
     getSelectionColumns(line: string, row: number, selection: object): { end: number };
   };
   const across = { start: { row: 0, col: 0 }, end: { row: 2, col: 0 } };
-  for (const text of ["Comrade", "Chain of thought"]) {
+  for (const text of ["Comrade"]) {
     const line = lines.find((each) => tui.stripTerminalSequences(each).includes(text)) ?? "";
     const shown = tui.stripTerminalSequences(line).trimEnd();
     assert(shown.endsWith(" ▾"), shown);

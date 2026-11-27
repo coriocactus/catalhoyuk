@@ -1,6 +1,7 @@
-// What each run did, as its row shows it: its words, its titled thoughts, the steers sent to it,
-// and its calls, as mirage's rows where mirage is loaded. Built as the run's messages arrive, so a
-// row drawn again costs nothing until its run has said or done more.
+// What each run did, as its row shows it: its words, its thinking while the thread shows thinking
+// (Ctrl+T), the steers sent to it, and its calls, as mirage's rows where mirage is loaded. Built as
+// the run's messages arrive, so a row drawn again costs nothing until its run has said or done
+// more, or Ctrl+T has changed what shows.
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import {
@@ -13,7 +14,6 @@ import { spinnerFrame } from "../shared/spinner.ts";
 import type { Details } from "./details.ts";
 import { runMessages } from "./resume.ts";
 import { fromSteering } from "./run.ts";
-import { shownMessage, titledThinking } from "./thoughts.ts";
 import type { Block, LiveRow, Look } from "./view.ts";
 import { callRow } from "./work.ts";
 
@@ -28,14 +28,14 @@ type CallBlock = Extract<Block, { kind: "call" }>;
 interface Built {
   // What the blocks depend on besides the messages. A change in any starts them over.
   running: boolean;
+  /** Thinking was hidden, as the thread hides it. */
+  hidden: boolean;
   theme: Theme;
   /** The theme's colours: Pi hands every row the same theme object whatever the theme. */
   colours: object;
   cwd: string;
   /** The messages read so far. */
   read: number;
-  /** The thinking blocks shown so far: the next one's key. */
-  thinking: number;
   blocks: Block[];
   /** `blocks` as last handed out: a new array each time they change, so a row can tell. */
   view: Block[];
@@ -54,6 +54,8 @@ interface Shown {
   messages: AgentMessage[];
   running: boolean;
   transcript?: NestedTranscript;
+  /** Whether the messages given to mirage were without their thinking. */
+  hidden?: boolean;
   /** The messages given to mirage so far. */
   added: number;
   built?: Built;
@@ -69,6 +71,16 @@ const textOf = (content: unknown) =>
           )
           .join("\n")
       : "";
+
+/**
+ * A message without its thinking, as the row shows it while the thread hides thinking: thinking
+ * shows nothing then, so it separates no calls. The same message when it has none.
+ */
+function withoutThinking(message: AgentMessage): AgentMessage {
+  if (message.role !== "assistant") return message;
+  const content = message.content.filter((part) => part.type !== "thinking");
+  return content.length === message.content.length ? message : { ...message, content };
+}
 
 export type Transcripts = ReturnType<typeof createTranscripts>;
 
@@ -88,6 +100,26 @@ export function createTranscripts(pi: ExtensionAPI) {
       mirage = request.rows ?? null;
     }
     return mirage ?? undefined;
+  };
+
+  // Whether the thread hides thinking: Pi's `hideThinkingBlock`, which Ctrl+T changes without
+  // telling extensions. Read as rows are drawn, once per frame however many rows draw. Once the
+  // session has ended, or Pi's runtime has gone stale without an end, what was last read stands.
+  let hidden = false;
+  let read = false;
+  let stale = false;
+  const thinkingHidden = () => {
+    if (read || stale) return hidden;
+    read = true;
+    queueMicrotask(() => {
+      read = false;
+    });
+    try {
+      hidden = pi.getSettings().hideThinkingBlock === true;
+    } catch {
+      stale = true;
+    }
+    return hidden;
   };
 
   // By run: a foreground row's tool call, or a background run's id. The few last drawn, as kept
@@ -155,8 +187,8 @@ export function createTranscripts(pi: ExtensionAPI) {
       if (message.role !== "assistant") continue;
       for (const part of message.content) {
         if (part.type === "thinking") {
-          const text = titledThinking(part.thinking);
-          if (text) blocks.push({ kind: "thinking", text, key: built.thinking++ });
+          if (!built.hidden && part.thinking.trim())
+            blocks.push({ kind: "thinking", text: part.thinking, source: part });
         } else if (part.type === "text") {
           if (part.text.trim()) blocks.push({ kind: "text", text: part.text, source: part });
         } else if (part.type === "toolCall") {
@@ -190,10 +222,10 @@ export function createTranscripts(pi: ExtensionAPI) {
   };
 
   /**
-   * What a run did, in order, for its row: its words, its titled thoughts, the steers sent to it,
-   * and its calls, mirage's rows for mirage's tools. Its task is the row's own, so it is left out.
-   * Nothing for a run whose conversation is not known. The array is the same one until the run
-   * has said or done more.
+   * What a run did, in order, for its row: its words, its thinking while the thread shows thinking,
+   * the steers sent to it, and its calls, mirage's rows for mirage's tools. Its task is the row's
+   * own, so it is left out. Nothing for a run whose conversation is not known. The array is the
+   * same one until the run has said or done more, or Ctrl+T has changed what shows.
    */
   const blocksFor = (
     key: string,
@@ -204,6 +236,13 @@ export function createTranscripts(pi: ExtensionAPI) {
   ): Block[] => {
     const known = keep(key, shown.get(key) ?? { messages: source() ?? [], running, added: 0 });
     known.running = running;
+    // Mirage groups the calls around what the row shows of the thinking, as around Pi's own: Ctrl+T
+    // groups them afresh.
+    const hidden = thinkingHidden();
+    if (known.hidden !== hidden) {
+      known.hidden = hidden;
+      known.transcript = undefined;
+    }
     const service = rowsService();
     if (service && !known.transcript) {
       known.transcript = service.transcript(cwd, () =>
@@ -212,26 +251,28 @@ export function createTranscripts(pi: ExtensionAPI) {
       known.added = 0;
       known.built = undefined;
     }
-    // Mirage groups the calls around what the row shows of the thinking, as around Pi's own.
-    for (; known.added < known.messages.length; known.added++)
-      known.transcript?.add(shownMessage(known.messages[known.added]));
+    for (; known.added < known.messages.length; known.added++) {
+      const message = known.messages[known.added];
+      known.transcript?.add(hidden ? withoutThinking(message) : message);
+    }
     let built = known.built;
-    // A run's messages only ever grow. Whether it still runs, and the theme and directory its
-    // calls are drawn in, can change behind them: each starts over.
+    // A run's messages only ever grow. Whether it still runs, whether thinking shows, and the theme
+    // and directory its calls are drawn in, can change behind them: each starts over.
     if (
       !built ||
       built.running !== running ||
+      built.hidden !== hidden ||
       built.colours !== theme.colors ||
       built.cwd !== cwd ||
       built.read > known.messages.length
     )
       built = known.built = {
         running,
+        hidden,
         theme,
         colours: theme.colors,
         cwd,
         read: 0,
-        thinking: 0,
         blocks: [],
         view: [],
         prompted: false,
@@ -244,14 +285,15 @@ export function createTranscripts(pi: ExtensionAPI) {
 
   /**
    * Keeps a row's work in step with its run. A row at work asks on every draw, which costs nothing
-   * until its run has done more. One at rest asks once: its run is over, and asking again could
-   * read its conversation from its file again.
+   * until its run has done more. One at rest asks once, and again only when Ctrl+T has changed what
+   * shows: its run is over, and asking again could read its conversation from its file again.
    */
   const keepCurrent = (look: Look, work: () => Block[] | undefined, atWork: boolean) => {
-    let done = false;
+    let asked: boolean | undefined;
     return () => {
-      if (!atWork && done) return;
-      done = true;
+      const hidden = thinkingHidden();
+      if (!atWork && asked === hidden) return;
+      asked = hidden;
       const blocks = work();
       if (blocks) look.blocks = blocks;
       else delete look.blocks;
@@ -271,9 +313,10 @@ export function createTranscripts(pi: ExtensionAPI) {
     savedRun,
     /** Forgets a run, whose row will read it again from its conversation. */
     forget: (key: string) => void shown.delete(key),
-    /** A session started: mirage is asked again. */
+    /** A session started: mirage and Pi's settings are asked again. */
     started() {
       mirage = undefined;
+      stale = false;
     },
     /**
      * The session ended. Mirage's rows belong to its runtime: a reloaded one draws them afresh.
@@ -283,6 +326,7 @@ export function createTranscripts(pi: ExtensionAPI) {
     ended() {
       shown.clear();
       mirage = null;
+      stale = true;
     },
   };
 }

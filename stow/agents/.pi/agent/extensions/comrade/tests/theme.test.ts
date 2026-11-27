@@ -18,10 +18,9 @@ test("a row drawn again after a theme change takes the new theme's colours", (t)
     phase: "finished" as const,
     task: "Check the notes",
     expanded: true,
-    thinkingOpen: new Set([0]),
     blocks: [
       { kind: "text" as const, text: "# Notes", source: {} },
-      { kind: "thinking" as const, text: "**Reading**\n\nThey read cleanly.", key: 0 },
+      { kind: "thinking" as const, text: "**Reading**\n\nThey read cleanly." },
     ],
   };
   const row = new view.RowView(look, undefined, "", theme, 0);

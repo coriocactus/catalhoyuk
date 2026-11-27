@@ -393,10 +393,8 @@ test("one line at rest, three while running, and its work behind Ctrl+O or a cli
     content: [{ type: "text" as const, text: "comrade needs a task.\nPass one." }],
     details: {},
   };
-  assert.equal(
-    result_(rejected, false),
-    "✗ Comrade  Review the diff  failed ▸\n  comrade needs a task.",
-  );
+  // Why, once opened: the header says it failed.
+  assert.equal(result_(rejected, false), "✗ Comrade  Review the diff  failed ▸");
   assert.match(result_(rejected, false, true), /comrade needs a task\.\n {2}Pass one\.\n/);
 });
 
@@ -1382,11 +1380,11 @@ test("a partial answer at the output limit says so first, and is not an error", 
       seconds: 0,
     },
   );
-  assert.equal(
-    row(tool, result, "✓"),
-    "! Comrade #1  ✓  partial · $0.01 · 1.0s ▸\n  Reached its output token limit. The answer is partial.",
+  assert.equal(row(tool, result, "✓"), "! Comrade #1  ✓  partial · $0.01 · 1.0s ▸");
+  assert.match(
+    row(tool, result, "✓", true),
+    /▾\n {2}Reached its output token limit\. The answer is partial\.\n\n {2}│ ✓\n\n {2}The first half of an$/,
   );
-  assert.match(row(tool, result, "✓", true), /\n\n {2}│ ✓\n\n {2}The first half of an$/);
 });
 
 test("output writes the whole answer to its file and returns the first lines and the path", async (t) => {
@@ -1439,15 +1437,11 @@ test("a comrade past its timeout is stopped, and its last text is marked as not 
       seconds: 0,
     },
   );
-  assert.equal(
-    row(slow.tool, result, "x"),
-    "✗ Comrade #1  x  timed out · $0.01 · 1.0s ▸\n  Stopped at its 1.0s limit. Its last text is kept.",
-  );
-  // What it said, and the call it was stopped in.
-  assert.match(
-    row(slow.tool, result, "x", true),
-    /\n\n {2}Notes so far\.\n\n {2}✗ Read \/tmp\/forever\.md$/,
-  );
+  assert.equal(row(slow.tool, result, "x"), "✗ Comrade #1  x  timed out · $0.01 · 1.0s ▸");
+  // Why, what it said, and the call it was stopped in.
+  const opened = row(slow.tool, result, "x", true);
+  assert.match(opened, /▾\n {2}Stopped at its 1\.0s limit\. Its last text is kept\.\n/);
+  assert.match(opened, /\n\n {2}Notes so far\.\n\n {2}✗ Read \/tmp\/forever\.md$/);
 
   const silent = await fixture(t, "hang").call({ task: "x", timeout: 1 });
   assert.match(text(silent), /^Comrade timed out after 1\.0s and was stopped\.\n\n\[comrade #1: /);
@@ -2593,9 +2587,10 @@ test("a run is interrupted when its last reply asked for tools or was aborted", 
 const view = await load<typeof import("../view.ts")>("../view.ts", import.meta.url);
 const { lastSaid } = await load<typeof import("../run.ts")>("../run.ts", import.meta.url);
 const { cleanTitle } = await load<typeof import("../request.ts")>("../request.ts", import.meta.url);
-const { thoughts, lastTitle, shownMessage, titledThinking } = await load<
-  typeof import("../thoughts.ts")
->("../thoughts.ts", import.meta.url);
+const { thoughts, lastTitle } = await load<typeof import("../thoughts.ts")>(
+  "../thoughts.ts",
+  import.meta.url,
+);
 
 test("a background comrade has a line in the widget above the editor until its answer is in", async (t) => {
   t.mock.timers.enable({ apis: ["setInterval", "Date"] });
@@ -2909,7 +2904,7 @@ test("an open row shows its task, then its work in order, mirage's rows among it
     },
   };
   const blocks: import("../view.ts").Block[] = [
-    { kind: "thinking", text: "**The parser first**", key: 0 },
+    { kind: "thinking", text: "**The parser first**" },
     { kind: "text", text: "Reading the **parser**." },
     { kind: "call", row: { kind: "read", status: "success", label: "Read /src/a.ts" } },
     { kind: "message", text: "Also the lexer" },
@@ -2942,7 +2937,7 @@ test("an open row shows its task, then its work in order, mirage's rows among it
       "",
       "   │ Review it",
       "",
-      "   Chain of thought ▸",
+      "   The parser first",
       "",
       "   Reading the parser.",
       "",
@@ -3010,65 +3005,29 @@ test("a titled thought is a line that is wholly bold, then its paragraphs up to 
   assert.equal(lastTitle("**Counting Matrices**\n\nI'm deri"), "Counting Matrices");
   assert.equal(lastTitle(`${gemini}\n`), "Verifying n=3");
   assert.equal(lastTitle(`**${"x".repeat(300)}**\n`)?.length, 200);
-  // What an expanded row shows: the block from its first title on.
-  assert.equal(titledThinking(`Preamble.\n${gemini}`), gemini);
-  assert.equal(titledThinking("I'm checking the parser."), undefined);
 });
 
-test("a comrade's messages reach mirage without thinking that has no title", () => {
-  const message = (content: object[]) =>
-    ({ role: "assistant", content, stopReason: "toolUse" }) as unknown as Parameters<
-      typeof shownMessage
-    >[0];
-  const call = { type: "toolCall", id: "a", name: "read", arguments: {} };
-  const titled = message([{ type: "thinking", thinking: "**Reading**\n\nNow." }, call]);
-  assert.equal(shownMessage(titled), titled, "the same message when nothing is left out");
-  const untitled = message([{ type: "thinking", thinking: "Musing." }, call]);
-  assert.deepEqual(shownMessage(untitled), message([call]));
-  assert.equal(untitled.role === "assistant" && untitled.content.length, 2, "left as it was");
-});
-
-test("an open row's thinking is a line, `Chain of thought`, showing its thoughts on a click", () => {
+test("an open row draws its comrade's thinking as Pi draws its own, in Pi's style for thinking", () => {
   const theme = themes.theme;
   const blocks: import("../view.ts").Block[] = [
     { kind: "text", text: "Starting." },
-    { kind: "thinking", text: "**Counting**\n\nCounting in words.\n\n**Verifying**", key: 0 },
+    { kind: "thinking", text: "**Counting**\n\nCounting in words." },
     { kind: "call", row: { kind: "read", status: "success", label: "Read /src/a.ts" } },
   ];
-  const clicked: number[] = [];
   const look = { phase: "finished" as const, task: "x", expanded: true, blocks };
-  const toggles = { thinking: (key: number) => void clicked.push(key) };
-  const row = new view.RowView(look, undefined, "", theme, 0, toggles);
-  const lines = render(row).split("\n");
-  assert.deepEqual(lines.slice(4), [
+  const row = new view.RowView(look, undefined, "", theme, 0);
+  assert.deepEqual(render(row).split("\n").slice(4), [
     "  Starting.",
     "",
-    "  Chain of thought ▸",
+    "  Counting",
+    "",
+    "  Counting in words.",
     "",
     "  ✓ Read /src/a.ts",
   ]);
-  // In the colour and italics Pi gives its own thinking's label.
-  const drawn = row.render(80).find((line) => line.includes("Chain of thought")) ?? "";
-  assert(drawn.includes(theme.italic(theme.fg("thinkingText", "Chain of thought"))), drawn);
-  row.handleMouse({
-    type: "click",
-    button: "left",
-    x: 4,
-    y: lines.indexOf("  Chain of thought ▸"),
-  } as never);
-  assert.deepEqual(clicked, [0]);
-  // Expanded, its thoughts as Markdown, two columns further in.
-  const open = new view.RowView({ ...look, thinkingOpen: new Set([0]) }, undefined, "", theme, 0);
-  assert.deepEqual(render(open).split("\n").slice(6, 14), [
-    "  Chain of thought ▾",
-    "    Counting",
-    "",
-    "    Counting in words.",
-    "",
-    "    Verifying",
-    "",
-    "  ✓ Read /src/a.ts",
-  ]);
+  // In the colour and italics Pi gives its own thinking.
+  const drawn = row.render(80).find((line) => line.includes("Counting in words.")) ?? "";
+  assert(drawn.includes(theme.italic(theme.fg("thinkingText", "Counting in words."))), drawn);
 });
 
 test("a title is one line of at most 60 characters", () => {
@@ -3107,40 +3066,27 @@ const opened = (tool: Tool, result: Result, task: string) =>
     }),
   );
 
-test("an opened row shows its comrade's titled thinking as one line whatever Pi's thinking setting, and no untitled thinking", async (t) => {
-  for (const hide of [true, false]) {
-    const { tool, call } = fixture(t, "work", { settings: { hideThinkingBlock: hide } });
-    const shown = render(opened(tool, await call({ task: "Check the notes" }), "Check the notes"));
-    // Its titled thinking is one line; its untitled thinking shows nothing.
-    assert.equal(shown.match(/Chain of thought/g)?.length, 1, `thinking hidden: ${hide}`);
-    assert(!shown.includes("Notes first"), "its thoughts wait for a click");
-    assert(!shown.includes("untitled musing"));
-    assert(shown.includes("Reading the notes."));
-  }
-});
-
-test("a click on `Chain of thought` shows its thoughts, and Ctrl+T changes nothing", async (t) => {
-  const { tool, call, settings } = fixture(t, "work");
+test("an opened row shows its comrade's thinking as the thread shows thinking, by Ctrl+T", async (t) => {
+  const { tool, call, settings } = fixture(t, "work", { settings: { hideThinkingBlock: true } });
   const row = opened(tool, await call({ task: "Check the notes" }), "Check the notes");
-  const lines = render(row).split("\n");
-  const title = lines.indexOf("  Chain of thought ▸");
-  assert(title > 0, lines.join("\n"));
-  assert.deepEqual(row?.handleMouse?.({ type: "click", button: "left", x: 4, y: title } as never), {
-    handled: true,
-  });
-  const open =
-    /\n {2}Chain of thought ▾\n {4}Notes first\n\n {4}The notes come first\.\n\n {2}Reading/;
-  assert.match(render(row), open);
-  // Pi's setting, which Ctrl+T changes, is not read: the row stays as drawn.
+  const hidden = render(row);
+  assert(hidden.includes("Reading the notes."), hidden);
+  assert(!hidden.includes("Notes first") && !hidden.includes("untitled musing"), hidden);
+  // Ctrl+T: Pi changes its setting and draws a frame, rendering no tool afresh. All of the
+  // thinking shows, titled or not, as Pi shows its own.
+  settings.hideThinkingBlock = false;
+  await Promise.resolve();
+  assert.match(
+    render(row),
+    /\n {2}Notes first\n\n {2}The notes come first\.\n\n {2}Reading the notes\.\n\n {2}✓ Read \/tmp\/notes\.md\n\n {2}The listing is untitled musing\.\n\n {2}\$ cd \/tmp && …\n/,
+  );
   settings.hideThinkingBlock = true;
-  await new Promise((wake) => setTimeout(wake, 300));
-  assert.match(render(row), open);
-  row?.handleMouse?.({ type: "click", button: "left", x: 4, y: title } as never);
-  assert(!render(row).includes("The notes come first."));
+  await Promise.resolve();
+  assert.equal(render(row), hidden);
 });
 
 test("without mirage, a comrade's calls are a row each, in mirage's words", async (t) => {
-  const { tool, call } = fixture(t, "work");
+  const { tool, call } = fixture(t, "work", { settings: { hideThinkingBlock: true } });
   const result = await call({ task: "Check the notes", title: "Check notes" });
   assert.match(
     render(opened(tool, result, "Check the notes")),
@@ -3168,7 +3114,7 @@ test("after a restart, an opened row reads what its comrade did from its convers
   );
   assert.match(
     answer,
-    /▾\n\n {2}│ Check the notes\n\n {2}Chain of thought ▸\n\n {2}Reading the notes\.\n\n {2}✓ Read \/tmp\/notes\.md\n/,
+    /▾\n\n {2}│ Check the notes\n\n {2}Notes first\n\n {2}The notes come first\.\n\n {2}Reading the notes\.\n\n {2}✓ Read \/tmp\/notes\.md\n/,
   );
   // A foreground row, its run alone, though its comrade's conversation holds others.
   const row = render(
@@ -3188,7 +3134,7 @@ test("after a restart, an opened row reads what its comrade did from its convers
       }),
     ),
   );
-  assert.match(row, /▾\n\n {2}│ Check again\n\n {2}Chain of thought ▸\n/);
+  assert.match(row, /▾\n\n {2}│ Check again\n\n {2}Notes first\n/);
   assert.equal(row.match(/Reading the notes/g)?.length, 1);
 });
 
@@ -3209,16 +3155,25 @@ test("a running row says its comrade's latest thought title, never its thinking'
   }
 });
 
-test("a row that did not succeed says why in up to three lines until opened", () => {
+test("a row that did not succeed says why once opened, its header alone until then", () => {
   const theme = themes.theme;
   const note = `Tool "grep" is not active here, so a comrade cannot have it. Active: ${Array.from({ length: 30 }, (_, i) => `tool${i}`).join(", ")}.`;
   const look = { phase: "failed" as const, task: "x", title: "Review", expanded: false, note };
-  const closed = render(new view.RowView(look, undefined, "", theme, 0), 60).split("\n");
-  assert.equal(closed.length, 4);
-  assert.match(closed[1], /^ {2}Tool "grep" is not active here, so a comrade cannot have/);
-  assert.match(closed[3], /…$/);
+  assert.equal(
+    render(new view.RowView(look, undefined, "", theme, 0), 60),
+    "✗ Comrade  Review  failed ▸",
+  );
   const open = render(new view.RowView({ ...look, expanded: true }, undefined, "", theme, 0), 60);
+  assert.match(open, /▾\n {2}Tool "grep" is not active here, so a comrade cannot have/);
   assert(open.includes("tool29."), "whole once opened");
+  // A lost run's row never opens: it says why at once.
+  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } };
+  const card = { model: "", thinking: "", tools: [], turns: 0, calls: 0, usage, reason: "Gone." };
+  const lost = { phase: "lost" as const, task: "x", title: "Review", expanded: false };
+  assert.equal(
+    render(new view.RowView(lost, card, "", theme, 0), 60),
+    "✗ Comrade  Review  lost\n  Gone.",
+  );
 });
 
 test("an open row shows its latest work, and the rest on a click", () => {
@@ -3281,14 +3236,8 @@ test("a running group of one call is named as that call, not as mirage's group",
 test("control bytes in what a comrade thought, or in a title, never reach the terminal", (t) => {
   const theme = themes.theme;
   const bad = "Clear\x1b[2J the\tscreen\x07 \x1b]0;title\x07now.";
-  const block = { kind: "thinking" as const, text: `**${bad}**\n\n${bad}`, key: 0 };
-  const look = {
-    phase: "finished" as const,
-    task: "x",
-    expanded: true,
-    blocks: [block],
-    thinkingOpen: new Set([0]),
-  };
+  const block = { kind: "thinking" as const, text: `**${bad}**\n\n${bad}` };
+  const look = { phase: "finished" as const, task: "x", expanded: true, blocks: [block] };
   const lines = new view.RowView(look, undefined, "", theme, 0).render(80);
   for (const line of lines) {
     for (const bad of ["\x1b[2J", "\x07", "\t", "\x1b]0;"])
@@ -3529,11 +3478,7 @@ test("a row whose saved record is not a run's shows its result's text, not a run
     { ...whole, usage: { ...usage, cost: {} } },
     { ...whole, usage: null },
   ])
-    assert.equal(
-      row(details),
-      "✗ Comrade  Check the notes  failed ▸\n  What it said.",
-      JSON.stringify(details),
-    );
+    assert.equal(row(details), "✗ Comrade  Check the notes  failed ▸", JSON.stringify(details));
 });
 
 test("without mirage, rows ask for it once, not on every draw", async (t) => {

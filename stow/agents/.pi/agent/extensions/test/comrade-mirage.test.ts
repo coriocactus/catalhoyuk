@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { fixture, render } from "../comrade/tests/fixture.ts";
 import { NESTED_ROWS_EVENT, type NestedRowsRequest } from "../shared/nested.ts";
 import { fake, type Tool } from "./fake-pi.ts";
-import { core, load, themes, tui } from "./pi.ts";
+import { load, themes, tui } from "./pi.ts";
 
 type Result = Awaited<ReturnType<Tool["execute"]>>;
 type RenderContext = Parameters<NonNullable<Tool["renderResult"]>>[3];
@@ -37,7 +37,10 @@ const opened = (tool: Tool, result: Result, task: string) =>
   );
 
 test("with mirage loaded, a comrade's calls are mirage's rows, which open with a click", async (t) => {
-  const { tool, call } = fixture(t, "work", { beside: installMirage });
+  const { tool, call } = fixture(t, "work", {
+    beside: installMirage,
+    settings: { hideThinkingBlock: true },
+  });
   const result = await call({ task: "Check the notes", title: "Check notes" });
   const row = opened(tool, result, "Check the notes");
   assert.equal(
@@ -46,8 +49,6 @@ test("with mirage loaded, a comrade's calls are mirage's rows, which open with a
       "✓ Comrade #1  Check notes  $0.03 · 1.0s ▾",
       "",
       "  │ Check the notes",
-      "",
-      "  Chain of thought ▸",
       "",
       "  Reading the notes.",
       "",
@@ -59,7 +60,7 @@ test("with mirage loaded, a comrade's calls are mirage's rows, which open with a
   // A click on mirage's group opens it, as on Pi's own rows: a command on its lines, and how a
   // failed one exited.
   assert(row?.handleMouse);
-  assert.deepEqual(row.handleMouse({ type: "click", button: "left", x: 4, y: 8 } as never), {
+  assert.deepEqual(row.handleMouse({ type: "click", button: "left", x: 4, y: 6 } as never), {
     handled: true,
   });
   assert.match(
@@ -68,29 +69,43 @@ test("with mirage loaded, a comrade's calls are mirage's rows, which open with a
   );
 });
 
-test("Pi's thinking toggle leaves a comrade's thoughts and its groups as they are", async (t) => {
-  const { tool, call } = fixture(t, "work", { beside: installMirage });
+test("Ctrl+T shows a comrade's thinking and splits its groups at it, as Pi's own", async (t) => {
+  const { tool, call, settings } = fixture(t, "work", {
+    beside: installMirage,
+    settings: { hideThinkingBlock: true },
+  });
   const result = await call({ task: "Check the notes" });
   const row = opened(tool, result, "Check the notes");
-  const before = render(row);
-  // Ctrl+T: Pi sets each assistant message's visibility and redraws, rendering no tool afresh.
-  const toggle = (hidden: boolean) =>
-    new core.AssistantMessageComponent(
-      fake<ConstructorParameters<typeof core.AssistantMessageComponent>[0]>({
-        role: "assistant",
-        content: [],
-      }),
-      !hidden,
-    ).setHideThinkingBlock(hidden);
-  for (const hidden of [true, false]) {
-    toggle(hidden);
-    assert.equal(render(row), before, `thinking hidden: ${hidden}`);
-  }
+  const hidden = render(row);
+  // Ctrl+T: Pi changes its setting and draws a frame, rendering no tool afresh.
+  settings.hideThinkingBlock = false;
+  await Promise.resolve();
+  assert.equal(
+    render(row).split("\n").slice(4).join("\n"),
+    [
+      "  Notes first",
+      "",
+      "  The notes come first.",
+      "",
+      "  Reading the notes.",
+      "",
+      "  ✓ Read /tmp/notes.md ▸",
+      "",
+      "  The listing is untitled musing.",
+      "",
+      "  ✓ Ran 2 commands ▸",
+      "",
+      "  All good: the notes read cleanly.",
+    ].join("\n"),
+  );
+  settings.hideThinkingBlock = true;
+  await Promise.resolve();
+  assert.equal(render(row), hidden, "hidden again, its groups join back");
 });
 
-test("a comrade's titled thought separates its calls in mirage's groups, untitled thinking none", async (t) => {
-  const { pi } = fixture(t, "echo", { beside: installMirage });
-  const transcripts = createTranscripts(pi.api);
+test("a comrade's thinking separates its calls in mirage's groups only while the thread shows it", async (t) => {
+  const { pi, settings } = fixture(t, "echo", { beside: installMirage });
+  const transcripts = createTranscripts({ ...pi.api, getSettings: () => ({ ...settings }) });
   const read = (id: string, thinking?: string) => [
     {
       role: "assistant",
@@ -107,18 +122,28 @@ test("a comrade's titled thought separates its calls in mirage's groups, untitle
     { role: "user", content: "task" },
     ...read("a"),
     ...read("b", "Musing without a title."),
-    ...read("c", "**Checking c**\n\nThe last file.\n\n**Wrapping up**\n\nDone."),
+    ...read("c", "**Checking c**\n\nThe last file."),
   ] as never[];
-  const blocks = transcripts.blocksFor("run", () => messages, "/tmp", themes.theme, false);
-  const shown = blocks.map((block) =>
-    block.kind === "rows" ? `rows of ${block.calls}` : block.kind === "thinking" ? block.text : "",
-  );
-  // One thinking block is one piece of the row, however many thoughts it holds.
-  assert.deepEqual(shown, [
-    "rows of 2",
-    "**Checking c**\n\nThe last file.\n\n**Wrapping up**\n\nDone.",
+  const shown = () =>
+    transcripts
+      .blocksFor("run", () => messages, "/tmp", themes.theme, false)
+      .map((block) =>
+        block.kind === "rows"
+          ? `rows of ${block.calls}`
+          : block.kind === "thinking"
+            ? block.text
+            : "",
+      );
+  assert.deepEqual(shown(), [
+    "rows of 1",
+    "Musing without a title.",
+    "rows of 1",
+    "**Checking c**\n\nThe last file.",
     "rows of 1",
   ]);
+  settings.hideThinkingBlock = true;
+  await Promise.resolve();
+  assert.deepEqual(shown(), ["rows of 3"]);
 });
 
 test("mirage draws a comrade's calls under way once the reply asking for them ends", async (t) => {
