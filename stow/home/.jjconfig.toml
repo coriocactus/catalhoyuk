@@ -10,6 +10,10 @@ merge-args = ["merge", "$base", "$left", "$right", "-o", "$output", "--fast"]
 merge-conflict-exit-codes = [1]
 conflict-marker-style = "git"
 
+[merge-tools.difft]
+# One difft per file. Dir mode makes difft follow symlinks and fail on dangling ones.
+diff-invocation-mode = "file-by-file"
+
 [revsets]
 log = "(trunk()..@):: | (trunk()..@)-"
 
