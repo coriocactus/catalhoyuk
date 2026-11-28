@@ -6,9 +6,10 @@
       "sourceType": "github",
       "sourceUrl": "https://github.com/mattpocock/skills.git",
       "skillPath": "skills/engineering/domain-modeling/SKILL.md",
-      "skillFolderHash": "ea30ee454ba264543dbe40737973b1a5afb9f0e6",
+      "skillFolderHash": "db8ef024fb9a7b2022d57289359ae96cff0d8483",
       "installedAt": "2026-09-27T10:55:29.189Z",
-      "updatedAt": "2026-10-04T09:37:47.857Z"
+      "updatedAt": "2026-11-28T08:08:26.749Z",
+      "commit": "bbadaa631c37af594e5a05c9cefacd9956136b18"
     },
     "postgres": {
       "source": "planetscale/database-skills",
@@ -33,9 +34,10 @@
       "sourceType": "github",
       "sourceUrl": "https://github.com/dmmulroy/anti-slop.git",
       "skillPath": "skills/install-anti-slop/SKILL.md",
-      "skillFolderHash": "97962dc9fad565ca7695bf57805d9d0138ce1def",
+      "skillFolderHash": "7fdaa6312dac0ec3a6929933dc45d516bb4a7b71",
       "installedAt": "2026-10-04T09:37:33.305Z",
-      "updatedAt": "2026-10-31T19:24:46.565Z"
+      "updatedAt": "2026-11-28T08:08:26.866Z",
+      "commit": "63dbb09f73438e550a6991dc6d778f979ffbf183"
     }
   },
   "dismissed": {
