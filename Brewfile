@@ -34,6 +34,7 @@ brew "pv"
 brew "scc"
 brew "sd"
 brew "tree"
+brew "try"
 
 brew "fd"
 brew "fzf"

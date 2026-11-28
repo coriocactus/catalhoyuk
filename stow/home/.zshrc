@@ -248,6 +248,9 @@ if command -v eza >/dev/null 2>&1; then alias ls="eza --icons --group-directorie
 if command -v mise >/dev/null 2>&1; then eval "$(mise activate zsh)"; source <(mise completion zsh); fi
 if command -v just >/dev/null 2>&1; then source <(JUST_COMPLETE=zsh just); fi
 
+export TRY_PATH=$HOME/arena
+if command -v try >/dev/null 2>&1; then eval "$(command try init "$TRY_PATH")"; fi
+
 # Also make the variables available immediately after sourcing this file.
 update_git_branch
 update_jj_bookmark
