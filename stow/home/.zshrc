@@ -33,7 +33,7 @@ brew_prefix=${HOMEBREW_PREFIX:-}
 if (( $+commands[brew] )); then
   brew_prefix=$(command brew --prefix)
 else
-  for candidate in "${HOMEBREW_PREFIX:-}" /opt/homebrew /home/linuxbrew/.linuxbrew /usr/local; do
+  for candidate in ${HOMEBREW_PREFIX:-} /opt/homebrew /home/linuxbrew/.linuxbrew /usr/local; do
     if [[ -n $candidate && -x $candidate/bin/brew ]]; then
       brew_prefix=$candidate
       break
@@ -68,16 +68,16 @@ SAVEHIST=1000000
 HISTFILE=$HOME/.zsh_history
 
 # disable start-up messages
-[ -f ~/.hushlogin ] || touch ~/.hushlogin
+[ -f $HOME/.hushlogin ] || touch $HOME/.hushlogin
 unset MAILCHECK
 unset MAIL
 
 # prompt
 prompt_path() {
-  local display_path=${PWD/#${HOME}/\~}
+  local display_path=${PWD/#$HOME/\~}
 
   if (( ${#display_path} <= 45 )); then
-    print -r -- "$display_path"
+    print -r -- $display_path
     return
   fi
 
@@ -86,10 +86,10 @@ prompt_path() {
   local i
 
   for (( i = 2; i < ${#dirs}; i++ )); do
-    shortened+="/${dirs[i][1]}"
+    shortened+=/${dirs[i][1]}
   done
 
-  print -r -- "$shortened/${dirs[-1]}"
+  print -r -- $shortened/${dirs[-1]}
 }
 PS1='%B%F{15}${USER:-%n}@%m%b:%f%F{2}$(prompt_path)%f%F{15}$ %f'
 setopt prompt_subst
@@ -116,27 +116,27 @@ fi
 _has_repo_marker() {
   local dir=${PWD:A}
   while true; do
-    [[ -e "$dir/$1" ]] && return 0
-    [[ "$dir" == / ]] && return 1
+    [[ -e $dir/$1 ]] && return 0
+    [[ $dir == / ]] && return 1
     dir=${dir:h}
   done
 }
 
 autoload -Uz vcs_info add-zsh-hook
-zstyle ':vcs_info:git:*' formats '%b'
+zstyle ':vcs_info:git:*' formats %b
 update_git_branch() {
   if _has_repo_marker .git; then
     vcs_info
     BRANCH=${vcs_info_msg_0_:-}
   else
-    BRANCH=""
+    BRANCH=
   fi
 }
 
 update_jj_bookmark() {
-  BOOKMARK=""
+  BOOKMARK=
   if _has_repo_marker .jj && (( $+commands[jj] )); then
-    BOOKMARK=$(jj --ignore-working-copy --no-pager log -r 'closest_bookmark(@)' -T 'bookmarks.map(|b| if(b.remote(), "", b.name() ++ "\n")).join("")' --no-graph 2>/dev/null) || BOOKMARK=""
+    BOOKMARK=$(jj --ignore-working-copy --no-pager log -r 'closest_bookmark(@)' -T 'bookmarks.map(|b| if(b.remote(), "", b.name() ++ "\n")).join("")' --no-graph 2>/dev/null) || BOOKMARK=
     BOOKMARK=${BOOKMARK%%$'\n'*}
   fi
 }
@@ -147,20 +147,20 @@ add-zsh-hook precmd update_jj_bookmark
 add-zsh-hook chpwd update_jj_bookmark
 
 # editor and colors (after setting brew path so we use brew vim)
-export VISUAL="$(which vim)"
-export EDITOR="$VISUAL"
+export VISUAL=$(which vim)
+export EDITOR=$VISUAL
 export CLICOLOR=1
 alias ls='ls --color=auto'
 
 # apps
 export PLAYWRIGHT_MCP_BROWSER=chromium
 export OPENCODE_ENABLE_EXA=1
-export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
-[[ -r "$XDG_CONFIG_HOME/repo4/repo4.zsh" ]] && source "$XDG_CONFIG_HOME/repo4/repo4.zsh"
-[ -f "$HOME/.ripgreprc" ] && export RIPGREP_CONFIG_PATH="$HOME/.ripgreprc"
-[ -s "$HOME/.bun/_bun" ] && source "$HOME/.bun/_bun"
+export XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$HOME/.config}
+[[ -r $XDG_CONFIG_HOME/repo4/repo4.zsh ]] && source $XDG_CONFIG_HOME/repo4/repo4.zsh
+[ -f $HOME/.ripgreprc ] && export RIPGREP_CONFIG_PATH=$HOME/.ripgreprc
+[ -s $HOME/.bun/_bun ] && source $HOME/.bun/_bun
 
-alias pi='PATH="$brew_prefix/opt/node/bin:$PATH" pi'
+alias pi='PATH=$brew_prefix/opt/node/bin:$PATH pi'
 
 # ssh port forwarding: mirror a remote dev server's ports onto localhost.
 #   fip <host> [port ...]  start a background watcher that forwards every port that, on
@@ -240,26 +240,26 @@ dip() {
 
 lip() {
   local f
-  for f in ${TMPDIR:-/tmp}/fip.*(N); do echo "${${f:t}#fip.}:"; cat $f; done
+  for f in ${TMPDIR:-/tmp}/fip.*(N); do echo ${${f:t}#fip.}:; cat $f; done
 }
 
 if command -v jj >/dev/null 2>&1; then source <(COMPLETE=zsh jj); fi
 if command -v eza >/dev/null 2>&1; then
   unalias ls 2>/dev/null
   # Folders the OS made in ~. macOS puts a .localized file in each, and Linux
-  # desktops name them in ~/.config/user-dirs.dirs. Plain ls in ~ hides them, plus
+  # desktops name them in $XDG_CONFIG_HOME/user-dirs.dirs. Plain ls in ~ hides them, plus
   # any names listed one per line in ~/.hidden (the file Linux file managers also
   # read). -a/-A or a path argument shows everything.
-  _os_home_dirs=(~/*/.localized(N:h:t))
-  if [[ -r ~/.config/user-dirs.dirs ]]; then
-    for _line in ${(f)"$(<~/.config/user-dirs.dirs)"}; do
+  _os_home_dirs=($HOME/*/.localized(N:h:t))
+  if [[ -r $XDG_CONFIG_HOME/user-dirs.dirs ]]; then
+    for _line in ${(f)"$(<$XDG_CONFIG_HOME/user-dirs.dirs)"}; do
       [[ $_line == XDG_*_DIR=\"\$HOME/?*\" ]] && _os_home_dirs+=(${${_line#*\$HOME/}%\"})
     done
     unset _line
   fi
   function ls {
     local arg hide=()
-    if [[ $PWD == ~ ]]; then
+    if [[ $PWD == $HOME ]]; then
       hide=($_os_home_dirs)
       [[ -f .hidden ]] && hide+=(${(f)"$(<.hidden)"})
     fi
@@ -272,7 +272,7 @@ if command -v mise >/dev/null 2>&1; then eval "$(mise activate zsh)"; source <(m
 if command -v just >/dev/null 2>&1; then source <(JUST_COMPLETE=zsh just); fi
 
 export TRY_PATH=$HOME/arena
-if command -v try >/dev/null 2>&1; then eval "$(command try init "$TRY_PATH")"; fi
+if command -v try >/dev/null 2>&1; then eval "$(command try init $TRY_PATH)"; fi
 
 # Also make the variables available immediately after sourcing this file.
 update_git_branch
