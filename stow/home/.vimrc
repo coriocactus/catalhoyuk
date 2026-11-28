@@ -355,6 +355,14 @@ function! s:GoyoEnter() abort
   if s:has_pencil && index(['markdown', 'text'], &filetype) >= 0
     call pencil#init({'wrap': 'soft'})
   endif
+  " Wrapped lines of a list item or quote hang under its text, not its marker:
+  " Vim's Markdown list pattern, plus quotes (nested, or holding a list) and 1).
+  setlocal breakindent breakindentopt=list:-1
+  if &filetype ==# 'markdown'
+    let b:goyo_formatlistpat = &l:formatlistpat
+    let &l:formatlistpat = '^\s*\%(>\s*\)\+\%(\%([-*+]\|\d\+[.)]\)\s\+\)\='
+          \ . '\|^\s*\%([-*+]\|\d\+[.)]\)\s\+\|^\[^\ze[^\]]\+\]:\&^.\{4\}'
+  endif
   call s:GoyoStatus()
   call s:GoyoStatusColor()
   nnoremap <leader>0 <cmd>Limelight!!<CR>
@@ -377,6 +385,10 @@ function! s:GoyoLeave() abort
   silent! nunmap <leader>0
   silent! nunmap <leader>c
   silent! cunmap <CR>
+  if exists('b:goyo_formatlistpat')
+    let &l:formatlistpat = b:goyo_formatlistpat
+    unlet b:goyo_formatlistpat
+  endif
   if get(b:, 'pencil_wrap_mode', 0)
     call pencil#init({'wrap': 'off'})
     let &l:filetype = &l:filetype

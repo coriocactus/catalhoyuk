@@ -46,10 +46,11 @@ function! s:FenceRegions() abort
     endif
     let l:group = 'mkdFenceBlock_' . substitute(l:lang, '\W', '_', 'g')
     " The info string must end at the language name: ```py is not ```python.
+    " Fences are concealed, as untagged ones are (after/syntax/markdown.vim).
     let l:info = l:lang . '[0-9A-Za-z_+-]\@!.*$'
     for l:fence in ['`', '\~']
       execute printf('syntax region %s matchgroup=mkdCodeStart start=/^\s*\z(%s\{3,}\)\s*%s/'
-            \ . ' matchgroup=mkdCodeEnd end=/^\s*\z1%s*\s*$/ keepend contains=@%s',
+            \ . ' matchgroup=mkdCodeEnd end=/^\s*\z1%s*\s*$/ keepend concealends contains=@%s',
             \ l:group, l:fence, l:info, l:fence, l:cluster)
     endfor
     execute 'syntax cluster mkdNonListItem add=' . l:group
