@@ -341,9 +341,11 @@ async function expandEditGroup() {
     "expand edit group into file rows",
   );
 }
+// Pi's settings hint names the confirm keys and space, "enter/space to change" by default.
+const settingsHint = /space to change/i;
 async function setOutputPadding(padding: number) {
   terminal.send("/settings\r");
-  await terminal.waitFor((s) => s.includes("Enter/Space to change"), "open settings");
+  await terminal.waitFor((s) => settingsHint.test(s), "open settings");
   // The dialog takes the editor's place, and its box with it: the labels stay, on one line
   // where the footer was.
   const footer = terminal.snapshot.rows.findLast((row) => row.text.trim())?.text ?? "";
@@ -357,7 +359,7 @@ async function setOutputPadding(padding: number) {
   );
   terminal.send("\x1b");
   await terminal.waitFor(
-    (s) => !s.includes("Enter/Space to change") && s.includes("Explored 2 files"),
+    (s) => !settingsHint.test(s) && s.includes("Explored 2 files"),
     "close settings",
   );
   assertOutputPadding(padding);
