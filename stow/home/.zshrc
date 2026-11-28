@@ -244,7 +244,30 @@ lip() {
 }
 
 if command -v jj >/dev/null 2>&1; then source <(COMPLETE=zsh jj); fi
-if command -v eza >/dev/null 2>&1; then alias ls="eza --icons --group-directories-first --sort oldest"; fi
+if command -v eza >/dev/null 2>&1; then
+  unalias ls 2>/dev/null
+  # Folders the OS made in ~. macOS puts a .localized file in each, and Linux
+  # desktops name them in ~/.config/user-dirs.dirs. Plain ls in ~ hides them, plus
+  # any names listed one per line in ~/.hidden (the file Linux file managers also
+  # read). -a/-A or a path argument shows everything.
+  _os_home_dirs=(~/*/.localized(N:h:t))
+  if [[ -r ~/.config/user-dirs.dirs ]]; then
+    for _line in ${(f)"$(<~/.config/user-dirs.dirs)"}; do
+      [[ $_line == XDG_*_DIR=\"\$HOME/?*\" ]] && _os_home_dirs+=(${${_line#*\$HOME/}%\"})
+    done
+    unset _line
+  fi
+  function ls {
+    local arg hide=()
+    if [[ $PWD == ~ ]]; then
+      hide=($_os_home_dirs)
+      [[ -f .hidden ]] && hide+=(${(f)"$(<.hidden)"})
+    fi
+    for arg; do [[ $arg != -* || $arg == --(all|almost-all) || $arg == -[^-]* && $arg == *[aA]* ]] && hide=(); done
+    eza --icons --group-directories-first --sort oldest ${hide:+--ignore-glob=${(j:|:)hide}} "$@"
+  }
+  (( $+_comps[eza] )) && compdef ls=eza
+fi
 if command -v mise >/dev/null 2>&1; then eval "$(mise activate zsh)"; source <(mise completion zsh); fi
 if command -v just >/dev/null 2>&1; then source <(JUST_COMPLETE=zsh just); fi
 
